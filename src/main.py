@@ -118,8 +118,6 @@ async def main_async(app: YASBApplication):
 
     # Connect the app's aboutToQuit signal to the close event
     app.aboutToQuit.connect(app_close_event.set)
-    app.start_lhm_heartbeat()
-
     # Initialize configuration early after the single instance check
     config, stylesheet = get_config_and_stylesheet()
 
