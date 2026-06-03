@@ -12,6 +12,7 @@ from core.events.service import EventService
 from core.utils.utilities import refresh_widget_style
 from core.utils.win32.app_icons import get_window_icon
 from core.utils.win32.utils import get_monitor_hwnd, get_process_info
+from core.utils.win32.window_actions import restore_window, set_foreground, show_window
 from core.validation.widgets.komorebi.workspaces import KomorebiWorkspacesConfig
 from core.widgets.base import BaseWidget
 from core.widgets.services.komorebi.client import KomorebiClient
@@ -113,7 +114,7 @@ class WorkspaceButtonWithIcons(QFrame):
         self.text_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.button_layout.addWidget(self.text_label)
 
-        self.icons = {}
+        self.icons = []
         self.icon_labels = []
         self.hide()
         self.update_icons()
@@ -145,7 +146,10 @@ class WorkspaceButtonWithIcons(QFrame):
 
     def update_icons(self, icons: dict[int, QPixmap] = None):
         if icons:
-            self.icons.update(icons)
+            for icon_entry in self.icons:
+                hwnd = icon_entry["hwnd"]
+                if hwnd in icons:
+                    icon_entry["pixmap"] = icons[hwnd]
         else:
             self.icons = self.parent_widget._get_all_icons_in_workspace(self.workspace_index)
 
@@ -160,24 +164,23 @@ class WorkspaceButtonWithIcons(QFrame):
         ):
             icons_list = []
         else:
-            icons_list = [icon for icon in self.icons.values() if icon is not None]
+            icons_list = [icon_entry for icon_entry in self.icons if icon_entry["pixmap"] is not None]
             if self.config.app_icons.max_icons > 0:
                 icons_list = icons_list[: self.config.app_icons.max_icons]
 
-        # Remove extra QLabel widgets if there are more than needed
+        # Remove extra icon widgets if there are more than needed.
         for extra_label in self.icon_labels[len(icons_list) :]:
             self.button_layout.removeWidget(extra_label)
             extra_label.setParent(None)
         self.icon_labels = self.icon_labels[: len(icons_list)]
 
-        # Add or update icons
-        for index, icon in enumerate(icons_list):
+        # Keep icon widgets aligned with the workspace window ordering.
+        for index, icon_entry in enumerate(icons_list):
             if index < len(self.icon_labels):
-                self.icon_labels[index].setPixmap(icon)
+                self.icon_labels[index].update_icon(icon_entry)
             else:
-                icon_label = QLabel()
-                icon_label.setProperty("class", f"icon icon-{index + 1}")
-                icon_label.setPixmap(icon)
+                icon_label = WorkspaceAppIconLabel(self.workspace_index, self.parent_widget)
+                icon_label.update_icon(icon_entry)
                 self.button_layout.addWidget(icon_label)
                 self.icon_labels.append(icon_label)
 
@@ -187,7 +190,7 @@ class WorkspaceButtonWithIcons(QFrame):
             self.text_label.show()
 
     def update_icon_by_hwnd(self, hwnd: int):
-        if hwnd in self.icons.keys():
+        if any(icon_entry["hwnd"] == hwnd for icon_entry in self.icons):
             pixmap = self.parent_widget._get_app_icon(hwnd, self.workspace_index, ignore_cache=True)
             if pixmap:
                 self.update_icons(icons={hwnd: pixmap})
@@ -197,6 +200,29 @@ class WorkspaceButtonWithIcons(QFrame):
             self.komorebic.activate_workspace(self.parent_widget._komorebi_screen["index"], self.workspace_index)
         except Exception:
             logging.exception("Failed to focus workspace at index %s", self.workspace_index)
+
+
+class WorkspaceAppIconLabel(QLabel):
+    def __init__(self, workspace_index: int, parent_widget: "WorkspaceWidget"):
+        super().__init__()
+        self.workspace_index = workspace_index
+        self.parent_widget = parent_widget
+        self.target_hwnd = None
+        self.app_key = None
+
+    def update_icon(self, icon_entry: dict):
+        self.target_hwnd = icon_entry["hwnd"]
+        self.app_key = icon_entry["app_key"]
+        self.setProperty("class", icon_entry["class_name"])
+        self.setPixmap(icon_entry["pixmap"])
+        refresh_widget_style(self)
+
+    def mousePressEvent(self, event: QMouseEvent):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.parent_widget.focus_workspace_window(self.workspace_index, self.target_hwnd, self.app_key)
+            event.accept()
+            return
+        super().mousePressEvent(event)
 
 
 class WorkspaceWidget(BaseWidget):
@@ -221,6 +247,8 @@ class WorkspaceWidget(BaseWidget):
         self._curr_workspace_index = None
         self._prev_num_windows_in_workspaces = []
         self._curr_num_windows_in_workspaces = []
+        self._workspace_last_active_hwnd = {}
+        self._workspace_app_last_active_hwnd = {}
         self._workspace_buttons: list[WorkspaceButton] = []
         self._workspace_focus_events = [
             KomorebiEvent.CycleFocusWorkspace.value,
@@ -303,6 +331,8 @@ class WorkspaceWidget(BaseWidget):
         self._komorebi_workspaces = []
         self._curr_workspace_index = None
         self._prev_workspace_index = None
+        self._workspace_last_active_hwnd = {}
+        self._workspace_app_last_active_hwnd = {}
         self._workspace_buttons = []
         self._clear_container_layout()
 
@@ -310,6 +340,7 @@ class WorkspaceWidget(BaseWidget):
         self._reset()
         self._hide_offline_status()
         if self._update_komorebi_state(state):
+            self._remember_active_window()
             self._add_or_update_buttons()
         if self.config.hide_if_offline:
             self.show()
@@ -321,6 +352,8 @@ class WorkspaceWidget(BaseWidget):
 
     def _on_komorebi_update_event(self, event: dict, state: dict) -> None:
         if self._update_komorebi_state(state):
+            if event["type"] == KomorebiEvent.FocusChange.value:
+                self._remember_active_window()
             if self._workspace_app_icons_enabled:
                 try:
                     if event["type"] in ["ToggleFloat"]:
@@ -427,6 +460,31 @@ class WorkspaceWidget(BaseWidget):
 
     def _has_active_workspace_index_changed(self):
         return self._prev_workspace_index != self._curr_workspace_index
+
+    def _remember_active_window(self) -> None:
+        focused_workspace = self._get_focused_workspace()
+        if not focused_workspace:
+            return
+
+        workspace_index = focused_workspace["index"]
+        focused_window = self._get_current_workspace_focused_window(focused_workspace)
+        if not focused_window:
+            return
+
+        hwnd = focused_window["hwnd"]
+        self._workspace_last_active_hwnd[workspace_index] = hwnd
+        app_key = self._get_app_key(hwnd)
+        if app_key:
+            self._workspace_app_last_active_hwnd[(workspace_index, app_key)] = hwnd
+
+    def _get_current_workspace_focused_window(self, workspace: dict) -> dict | None:
+        if workspace.get("layer") == "Floating":
+            return self._komorebic.get_focused_floating_window(workspace)
+
+        focused_container = self._komorebic.get_focused_container(workspace, get_monocle=True)
+        if not focused_container:
+            return None
+        return self._komorebic.get_focused_window(focused_container)
 
     def _get_workspace_new_status(self, workspace) -> WorkspaceStatus:
         if self._curr_workspace_index == workspace["index"]:
@@ -603,31 +661,40 @@ class WorkspaceWidget(BaseWidget):
             windows_in_workspace.extend(floating_windows)
         return windows_in_workspace
 
-    def _get_all_icons_in_workspace(self, workspace_index: int) -> list[QPixmap] | None:
+    def _get_all_icons_in_workspace(self, workspace_index: int) -> list[dict] | None:
         windows_in_workspace = self._get_all_windows_in_workspace(workspace_index)
-        self._unique_pids = set()
-        pixmaps = {
-            window["hwnd"]: self._get_app_icon(window["hwnd"], workspace_index) for window in windows_in_workspace
-        }
-        try:
-            existing_pixmaps = self._workspace_buttons[workspace_index].icons
-            for hwnd, pixmap in pixmaps.items():
-                if pixmap is None and hwnd in existing_pixmaps:
-                    pixmaps[hwnd] = existing_pixmaps[hwnd]
-        except IndexError:
-            pass
-        return pixmaps
+        self._unique_app_keys = set()
+        icon_entries = []
+        for index, window in enumerate(windows_in_workspace):
+            hwnd = window["hwnd"]
+            pixmap = self._get_app_icon(hwnd, workspace_index)
+            if pixmap is None:
+                continue
+            icon_entries.append(
+                {
+                    "hwnd": hwnd,
+                    "app_key": self._get_app_key(hwnd),
+                    "pixmap": pixmap,
+                    "class_name": f"icon icon-{index + 1}",
+                }
+            )
+        return icon_entries
 
     def _get_app_icon(self, hwnd: int, workspace_index: int, ignore_cache: bool = False) -> QPixmap | None:
         try:
-            process = get_process_info(hwnd)
-            pid = process["pid"]
-
             if self.config.app_icons.hide_duplicates:
-                if pid not in self._unique_pids:
-                    self._unique_pids.add(pid)
-                else:
+                app_key = self._get_app_key(hwnd)
+                if app_key and app_key not in self._unique_app_keys:
+                    self._unique_app_keys.add(app_key)
+                elif app_key:
                     return None
+                else:
+                    process = get_process_info(hwnd)
+                    pid = process["pid"]
+                    if pid not in self._unique_app_keys:
+                        self._unique_app_keys.add(pid)
+                    else:
+                        return None
 
             self.dpi = self.screen().devicePixelRatio()
             cache_key = (hwnd, self.dpi)
@@ -655,3 +722,84 @@ class WorkspaceWidget(BaseWidget):
         except Exception:
             logging.debug("Failed to get icons for window with HWND %s", hwnd, exc_info=True)
             return None
+
+    def _get_app_key(self, hwnd: int) -> str | None:
+        try:
+            process = get_process_info(hwnd)
+            process_path = process.get("path")
+            if process_path:
+                return f"path:{process_path.lower()}"
+            process_name = process.get("name")
+            if process_name:
+                return f"name:{process_name.lower()}"
+            pid = process.get("pid")
+            if pid:
+                return f"pid:{pid}"
+        except Exception:
+            pass
+        return None
+
+    def _workspace_contains_hwnd(self, workspace_index: int, hwnd: int) -> bool:
+        if not hwnd:
+            return False
+        return any(window["hwnd"] == hwnd for window in self._get_all_windows_in_workspace(workspace_index))
+
+    def _resolve_workspace_target_hwnd(self, workspace_index: int, target_hwnd: int | None, app_key: str | None) -> int | None:
+        if target_hwnd and self._workspace_contains_hwnd(workspace_index, target_hwnd):
+            return target_hwnd
+
+        if app_key:
+            cached_hwnd = self._workspace_app_last_active_hwnd.get((workspace_index, app_key))
+            if cached_hwnd and self._workspace_contains_hwnd(workspace_index, cached_hwnd):
+                return cached_hwnd
+
+            for window in self._get_all_windows_in_workspace(workspace_index):
+                hwnd = window["hwnd"]
+                if self._get_app_key(hwnd) == app_key:
+                    return hwnd
+
+        cached_workspace_hwnd = self._workspace_last_active_hwnd.get(workspace_index)
+        if cached_workspace_hwnd and self._workspace_contains_hwnd(workspace_index, cached_workspace_hwnd):
+            return cached_workspace_hwnd
+
+        windows_in_workspace = self._get_all_windows_in_workspace(workspace_index)
+        if windows_in_workspace:
+            return windows_in_workspace[0]["hwnd"]
+        return None
+
+    def _focus_hwnd(self, hwnd: int) -> bool:
+        if not hwnd:
+            return False
+        try:
+            restore_window(hwnd)
+        except Exception:
+            pass
+        try:
+            show_window(hwnd)
+            set_foreground(hwnd)
+            return True
+        except Exception:
+            logging.exception("Failed to focus window with HWND %s", hwnd)
+            return False
+
+    def focus_workspace_window(self, workspace_index: int, target_hwnd: int | None, app_key: str | None = None) -> None:
+        try:
+            if not self._komorebi_screen:
+                return
+
+            if self._curr_workspace_index != workspace_index:
+                self._komorebic.activate_workspace(self._komorebi_screen["index"], workspace_index, wait=True)
+
+            resolved_hwnd = self._resolve_workspace_target_hwnd(workspace_index, target_hwnd, app_key)
+            if not resolved_hwnd:
+                if self._curr_workspace_index != workspace_index:
+                    self._komorebic.activate_workspace(self._komorebi_screen["index"], workspace_index)
+                return
+
+            self._focus_hwnd(resolved_hwnd)
+        except Exception:
+            logging.exception(
+                "Failed to focus workspace window for workspace %s and HWND %s",
+                workspace_index,
+                target_hwnd,
+            )

@@ -1,4 +1,6 @@
 import datetime
+import os
+import sys
 
 from cx_Freeze import Executable, setup
 
@@ -12,6 +14,16 @@ if not arch_info:
 display_arch, msi_arch_suffix = arch_info
 
 hook_dll_name = "YASBTrayHook_arm64.dll" if display_arch == "ARM64" else "YASBTrayHook.dll"
+
+
+def _python_runtime_files() -> list[tuple[str, str]]:
+    runtime_files: list[tuple[str, str]] = []
+    runtime_root = sys.base_prefix or os.path.dirname(sys.executable)
+    for dll_name in ("python3.dll", f"python{sys.version_info.major}{sys.version_info.minor}.dll"):
+        dll_path = os.path.join(runtime_root, dll_name)
+        if os.path.exists(dll_path):
+            runtime_files.append((dll_path, dll_name))
+    return runtime_files
 
 build_options = {
     "packages": [
@@ -43,7 +55,8 @@ build_options = {
         ("core/widgets/services/quick_launch/providers/resources/Everything64.dll", "lib/Everything64.dll"),
         (f"core/widgets/services/systray/hook/{hook_dll_name}", f"lib/{hook_dll_name}"),
         ("core/widgets/services/quick_launch/providers/resources/emoji.json", "lib/emoji.json"),
-    ],
+    ]
+    + _python_runtime_files(),
 }
 
 directory_table = [
