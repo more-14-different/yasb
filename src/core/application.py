@@ -13,3 +13,4 @@ class YASBApplication(QApplication):
         super().__init__(args)
         self.loop: AbstractEventLoop | None = None
         self.close_event: Event | None = None
+        self.restart_requested = False

@@ -24,6 +24,7 @@ def reload_application(msg: str = "Reloading Application..."):
 
         app = QApplication.instance()
         if isinstance(app, YASBApplication):
+            app.restart_requested = True
             if app.loop and app.close_event:
                 app.loop.call_soon_threadsafe(app.close_event.set)
             else:  # Should never happen while we use qasync

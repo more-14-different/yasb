@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import ctypes
 import logging
+import os
 import sys
 import time
 from sys import argv
@@ -49,6 +50,11 @@ def _wait_for_process_exit(process_id: int, timeout_s: float) -> bool:
         return wait_result == WAIT_OBJECT_0
     finally:
         ctypes.windll.kernel32.CloseHandle(handle)
+
+
+def _exit_process(exit_code: int) -> None:
+    logging.shutdown()
+    os._exit(exit_code)
 
 
 @contextlib.contextmanager
@@ -135,6 +141,9 @@ def main():
         loop.run_until_complete(main_async(app))
     finally:
         loop.close()
+        if app.restart_requested:
+            logging.info("Forcing YASB process exit after reload cleanup.")
+            _exit_process(0)
 
 
 async def main_async(app: YASBApplication):
@@ -207,21 +216,21 @@ async def main_async(app: YASBApplication):
 
 if __name__ == "__main__":
     init_logger()
-    start_cli_server()
     load_env()
     set_font_engine()
 
     def exception_hook(_exctype: type, value: BaseException, _traceback: TracebackType | None):
         EventService().clear()
         logging.error("Unhandled exception", exc_info=value)
-        sys.exit(1)
+        _exit_process(1)
 
     sys.excepthook = exception_hook
 
     try:
         # Acquire the single instance lock before doing any heavy initialization
         with single_instance_lock():
+            start_cli_server()
             main()
     except Exception:
         logging.exception("Exception during application startup")
-        sys.exit(1)
+        _exit_process(1)
