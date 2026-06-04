@@ -32,6 +32,8 @@ def reload_application(msg: str = "Reloading Application..."):
         args = list(sys.argv)
         if "--restart-wait" not in args:
             args.append("--restart-wait")
+        if "--restart-parent-pid" not in args:
+            args.extend(["--restart-parent-pid", str(os.getpid())])
 
         QProcess.startDetached(sys.executable, args)
     except Exception as e:

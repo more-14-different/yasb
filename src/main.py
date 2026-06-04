@@ -22,6 +22,35 @@ from core.watcher import create_observer
 from env import load_env, set_font_engine
 
 
+def _get_arg_value(name: str) -> str | None:
+    try:
+        index = sys.argv.index(name)
+    except ValueError:
+        return None
+
+    if index + 1 >= len(sys.argv):
+        return None
+
+    return sys.argv[index + 1]
+
+
+def _wait_for_process_exit(process_id: int, timeout_s: float) -> bool:
+    SYNCHRONIZE = 0x00100000
+    WAIT_OBJECT_0 = 0x00000000
+    WAIT_TIMEOUT = 0x00000102
+    timeout_ms = max(0, int(timeout_s * 1000))
+
+    handle = ctypes.windll.kernel32.OpenProcess(SYNCHRONIZE, False, process_id)
+    if not handle:
+        return True
+
+    try:
+        wait_result = ctypes.windll.kernel32.WaitForSingleObject(handle, timeout_ms)
+        return wait_result == WAIT_OBJECT_0
+    finally:
+        ctypes.windll.kernel32.CloseHandle(handle)
+
+
 @contextlib.contextmanager
 def single_instance_lock(name: str = "yasb_reborn"):
     """Create a Windows mutex to ensure a single instance, with optional restart wait.
@@ -32,6 +61,7 @@ def single_instance_lock(name: str = "yasb_reborn"):
     """
     ERROR_ALREADY_EXISTS = 183
     wait_for_restart = "--restart-wait" in sys.argv
+    restart_parent_pid_value = _get_arg_value("--restart-parent-pid")
 
     # CreateMutexW(bInitialOwner=True) to own the mutex while we run
     mutex = ctypes.windll.kernel32.CreateMutexW(None, True, name)
@@ -70,6 +100,13 @@ def single_instance_lock(name: str = "yasb_reborn"):
                 sys.exit(1)
 
             logging.info("Previous instance exited, continuing startup.")
+
+            if restart_parent_pid_value and restart_parent_pid_value.isdigit():
+                restart_parent_pid = int(restart_parent_pid_value)
+                logging.info("Waiting for previous YASB process %s to terminate...", restart_parent_pid)
+                if not _wait_for_process_exit(restart_parent_pid, timeout_s=10):
+                    logging.error("Timeout waiting for previous YASB process to terminate. Aborting start.")
+                    sys.exit(1)
         else:
             ctypes.windll.kernel32.CloseHandle(mutex)
             logging.error("Another instance of the YASB is already running.")
