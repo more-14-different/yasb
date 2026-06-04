@@ -4,7 +4,7 @@
 - The user keeps active YASB config in `C:\Users\Xcz\.config\yasb`, which is a junction to `D:\C2D\dotfiles\yasb`.
 - Do not overwrite config or theme files when working in this repo unless explicitly asked.
 - Original Scoop YASB remains available at `E:\Scoop\apps\yasb\current\yasb.exe`.
-- Dev build entrypoint is `E:\MCP\Projects\yasb\src\dist\yasb.exe`.
+- Dev build entrypoint is `E:\MCP\Projects\yasb-fork\src\dist\yasb.exe`.
 
 ## Local Build Workflow
 - Preferred local Python is the repo venv at `.venv\Scripts\python.exe`.
@@ -17,7 +17,7 @@
 - Start menu has two entries:
   - `YASB` -> Scoop/original build
   - `YASB Dev` -> `src\dist\yasb.exe`
-- Autostart should stay pointed at the original Scoop entry unless the user explicitly asks to switch it.
+- Autostart currently points at the dev build entrypoint above; do not switch it back to Scoop unless explicitly asked.
 
 ## Editing Guidance
 - Changes to workspace icon click behavior live in `src\core\widgets\komorebi\workspaces.py`.
