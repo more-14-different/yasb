@@ -2,7 +2,6 @@ import logging
 from contextlib import suppress
 from typing import Literal
 
-import win32gui
 from PIL import Image
 from PyQt6.QtCore import QTimer, Qt, pyqtSignal
 from PyQt6.QtGui import QImage, QMouseEvent, QPixmap
@@ -136,7 +135,23 @@ class WorkspaceButtonWithIcons(QFrame):
 
     def mousePressEvent(self, event: QMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton:
+            icon_label = self._icon_label_at_position(event.pos())
+            if icon_label:
+                self.parent_widget.focus_workspace_window(self.workspace_index, icon_label.target_hwnd, icon_label.app_key)
+                event.accept()
+                return
             self.activate_workspace()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def _icon_label_at_position(self, position) -> "WorkspaceAppIconLabel | None":
+        # Give icon clicks a small hit slop so padding/gaps do not fall through to workspace activation.
+        padding = max(4, int(self.config.app_icons.size / 3))
+        for icon_label in self.icon_labels:
+            if icon_label.geometry().adjusted(-padding, -padding, padding, padding).contains(position):
+                return icon_label
+        return None
 
     def update_visible_buttons(self):
         visible_buttons = [btn for btn in self.parent_widget._workspace_buttons if not btn.isHidden()]
@@ -409,7 +424,7 @@ class WorkspaceWidget(BaseWidget):
 
             if event["type"] == KomorebiEvent.FocusChange.value:
                 self._remember_active_window()
-                self._finalize_pending_cursor_move()
+                QTimer.singleShot(16, self._finalize_pending_cursor_move)
             if self._workspace_app_icons_enabled:
                 try:
                     if event["type"] in ["ToggleFloat"]:
@@ -915,18 +930,39 @@ class WorkspaceWidget(BaseWidget):
             return False
         return any(window["hwnd"] == hwnd for window in self._get_all_windows_in_workspace(workspace_index))
 
+    def _get_workspace_focused_app_hwnd(self, workspace_index: int, app_key: str | None) -> int | None:
+        if not app_key:
+            return None
+
+        workspace = self._komorebic.get_workspace_by_index(self._komorebi_screen, workspace_index)
+        if not workspace:
+            return None
+
+        focused_window = self._get_current_workspace_focused_window(workspace)
+        if not focused_window:
+            return None
+
+        hwnd = focused_window.get("hwnd")
+        if hwnd and self._get_app_key(hwnd) == app_key:
+            return hwnd
+        return None
+
     def _resolve_workspace_target_hwnd(self, workspace_index: int, target_hwnd: int | None, app_key: str | None) -> int | None:
+        if (
+            not self.config.app_icons.hide_duplicates
+            and target_hwnd
+            and self._workspace_contains_hwnd(workspace_index, target_hwnd)
+        ):
+            return target_hwnd
+
         if app_key:
             cached_hwnd = self._workspace_app_last_active_hwnd.get((workspace_index, app_key))
             if cached_hwnd and self._workspace_contains_hwnd(workspace_index, cached_hwnd):
                 return cached_hwnd
 
-            if (
-                not self.config.app_icons.hide_duplicates
-                and target_hwnd
-                and self._workspace_contains_hwnd(workspace_index, target_hwnd)
-            ):
-                return target_hwnd
+            focused_app_hwnd = self._get_workspace_focused_app_hwnd(workspace_index, app_key)
+            if focused_app_hwnd and self._workspace_contains_hwnd(workspace_index, focused_app_hwnd):
+                return focused_app_hwnd
 
             for window in self._get_all_windows_in_workspace(workspace_index):
                 hwnd = window["hwnd"]
@@ -970,8 +1006,8 @@ class WorkspaceWidget(BaseWidget):
             if self._curr_workspace_index != pending_workspace_index:
                 return
             if self._workspace_last_active_hwnd.get(pending_workspace_index) != pending_hwnd:
-                return
-            if win32gui.GetForegroundWindow() != pending_hwnd:
+                self._pending_cursor_hwnd = None
+                self._pending_cursor_workspace_index = None
                 return
         except Exception:
             return
@@ -998,9 +1034,7 @@ class WorkspaceWidget(BaseWidget):
             self._pending_cursor_hwnd = resolved_hwnd
             self._pending_cursor_workspace_index = workspace_index
 
-            if self._focus_hwnd(resolved_hwnd):
-                self._finalize_pending_cursor_move()
-            else:
+            if not self._focus_hwnd(resolved_hwnd):
                 self._pending_cursor_hwnd = None
                 self._pending_cursor_workspace_index = None
         except Exception:
