@@ -106,6 +106,12 @@ class KomorebiClient:
 
     def activate_workspace(self, m_idx: int, ws_idx: int, wait: bool = False) -> None:
         args = [self._komorebic_path, "focus-monitor-workspace", str(m_idx), str(ws_idx)]
+        logging.info(
+            "[komorebi-client] activate workspace command: monitor=%s workspace=%s wait=%s",
+            m_idx,
+            ws_idx,
+            wait,
+        )
         if wait:
             try:
                 subprocess.run(args, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, shell=True)
@@ -149,6 +155,21 @@ class KomorebiClient:
             )
         except subprocess.SubprocessError, FileNotFoundError:
             logging.exception("Failed to toggle focus-follows-mouse")
+
+    def set_mouse_follows_focus(self, enabled: bool, wait: bool = False) -> None:
+        state = "enable" if enabled else "disable"
+        args = [self._komorebic_path, "mouse-follows-focus", state]
+        logging.info("[komorebi-client] mouse-follows-focus command: state=%s wait=%s", state, wait)
+        if wait:
+            try:
+                subprocess.run(args, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, shell=True)
+            except subprocess.SubprocessError, FileNotFoundError:
+                logging.exception("Failed to set mouse-follows-focus to %s", state)
+        else:
+            try:
+                subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, shell=True)
+            except subprocess.SubprocessError, FileNotFoundError:
+                logging.exception("Failed to set mouse-follows-focus to %s", state)
 
     def change_layout(self, m_idx: int, ws_idx: int, layout: str) -> None:
         try:
