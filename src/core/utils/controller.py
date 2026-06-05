@@ -86,12 +86,30 @@ def process_cli_command(command: str):
         action = base_command.split("-")[0]
         EventService().emit_event("handle_bar_cli", action, screen_name)
 
-    elif base_command == "komorebi-workspace-pending":
+    elif base_command in [
+        "komorebi-workspace-pending",
+        "komorebi-workspace-pending-cycle",
+        "komorebi-workspace-pending-empty",
+    ]:
         try:
-            workspace_index = int(parts[1])
-        except (IndexError, ValueError):
-            logging.warning("Invalid komorebi-workspace-pending command: %s", command)
+            raw_target = parts[1]
+        except IndexError:
+            logging.warning("Invalid %s command: %s", base_command, command)
             return
+
+        if base_command == "komorebi-workspace-pending":
+            try:
+                target = int(raw_target)
+            except ValueError:
+                logging.warning("Invalid workspace in komorebi-workspace-pending command: %s", command)
+                return
+        else:
+            direction = raw_target.lower()
+            if direction not in ["previous", "next"]:
+                logging.warning("Invalid direction in %s command: %s", base_command, command)
+                return
+            target_kind = "cycle-empty" if base_command == "komorebi-workspace-pending-empty" else "cycle"
+            target = f"{target_kind}:{direction}"
 
         monitor_index = None
         if "--monitor" in parts:
@@ -99,17 +117,17 @@ def process_cli_command(command: str):
             try:
                 monitor_index = int(parts[monitor_arg_index])
             except (IndexError, ValueError):
-                logging.warning("Invalid monitor in komorebi-workspace-pending command: %s", command)
+                logging.warning("Invalid monitor in %s command: %s", base_command, command)
                 return
         elif "-m" in parts:
             monitor_arg_index = parts.index("-m") + 1
             try:
                 monitor_index = int(parts[monitor_arg_index])
             except (IndexError, ValueError):
-                logging.warning("Invalid monitor in komorebi-workspace-pending command: %s", command)
+                logging.warning("Invalid monitor in %s command: %s", base_command, command)
                 return
 
-        EventService().emit_event("komorebi_workspace_pending", workspace_index, monitor_index)
+        EventService().emit_event("komorebi_workspace_pending", target, monitor_index)
 
 
 def start_cli_server():

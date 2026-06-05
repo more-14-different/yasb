@@ -244,7 +244,7 @@ class WorkspaceWidget(BaseWidget):
     k_signal_connect = pyqtSignal(dict)
     k_signal_update = pyqtSignal(dict, dict)
     k_signal_disconnect = pyqtSignal()
-    k_signal_workspace_pending = pyqtSignal(int, object)
+    k_signal_workspace_pending = pyqtSignal(object, object)
     validation_schema = KomorebiWorkspacesConfig
     event_listener = KomorebiEventListener
 
@@ -373,10 +373,16 @@ class WorkspaceWidget(BaseWidget):
         if self.config.hide_if_offline:
             self.hide()
 
-    def _on_workspace_pending_event(self, workspace_index: int, monitor_index: int | None) -> None:
+    def _on_workspace_pending_event(self, target: int | str, monitor_index: int | None) -> None:
         if monitor_index is not None:
             if not self._komorebi_screen or self._komorebi_screen.get("index") != monitor_index:
                 return
+        elif not self._is_focused_monitor():
+            return
+
+        workspace_index = self._resolve_pending_workspace_index(target)
+        if workspace_index is None:
+            return
         self.set_pending_workspace(workspace_index)
 
     def _on_komorebi_update_event(self, event: dict, state: dict) -> None:
@@ -533,6 +539,54 @@ class WorkspaceWidget(BaseWidget):
         if workspace and self._komorebic.get_num_windows(workspace) > 0:
             return WORKSPACE_STATUS_POPULATED
         return WORKSPACE_STATUS_EMPTY
+
+    def _is_focused_monitor(self) -> bool:
+        if not self._komorebi_state or not self._komorebi_screen:
+            return False
+        try:
+            return self._komorebi_state["monitors"]["focused"] == self._komorebi_screen["index"]
+        except (KeyError, TypeError):
+            return False
+
+    def _resolve_pending_workspace_index(self, target: int | str) -> int | None:
+        if isinstance(target, int):
+            return target
+        if not isinstance(target, str) or self._curr_workspace_index is None:
+            return None
+
+        try:
+            target_kind, direction = target.split(":", 1)
+        except ValueError:
+            return None
+        if direction not in ["previous", "next"]:
+            return None
+
+        if target_kind == "cycle":
+            return self._resolve_cycle_workspace_index(direction)
+        if target_kind == "cycle-empty":
+            return self._resolve_cycle_empty_workspace_index(direction)
+        return None
+
+    def _resolve_cycle_workspace_index(self, direction: str) -> int | None:
+        workspace_count = len(self._komorebi_workspaces)
+        if workspace_count <= 0 or self._curr_workspace_index is None:
+            return None
+
+        step = -1 if direction == "previous" else 1
+        return (self._curr_workspace_index + step + workspace_count) % workspace_count
+
+    def _resolve_cycle_empty_workspace_index(self, direction: str) -> int | None:
+        workspace_count = len(self._komorebi_workspaces)
+        if workspace_count <= 0 or self._curr_workspace_index is None:
+            return None
+
+        step = -1 if direction == "previous" else 1
+        for offset in range(1, workspace_count + 1):
+            candidate_index = (self._curr_workspace_index + step * offset + workspace_count) % workspace_count
+            workspace = self._komorebic.get_workspace_by_index(self._komorebi_screen, candidate_index)
+            if workspace and not self._komorebic.get_num_windows(workspace):
+                return candidate_index
+        return self._curr_workspace_index
 
     def set_pending_workspace(self, workspace_index: int) -> None:
         if self._komorebi_screen is None or self._curr_workspace_index is None:

@@ -343,6 +343,40 @@ class CLIHandler:
             help="Zero-based target monitor index (optional)",
         )
 
+        komorebi_pending_cycle_parser = subparsers.add_parser(
+            "komorebi-workspace-pending-cycle",
+            help="Show a pending Komorebi cycle workspace indicator",
+            prog="yasbc komorebi-workspace-pending-cycle",
+        )
+        komorebi_pending_cycle_parser.add_argument(
+            "direction",
+            choices=["previous", "next"],
+            help="Cycle direction",
+        )
+        komorebi_pending_cycle_parser.add_argument(
+            "-m",
+            "--monitor",
+            type=int,
+            help="Zero-based target monitor index (optional)",
+        )
+
+        komorebi_pending_empty_parser = subparsers.add_parser(
+            "komorebi-workspace-pending-empty",
+            help="Show a pending Komorebi empty workspace indicator",
+            prog="yasbc komorebi-workspace-pending-empty",
+        )
+        komorebi_pending_empty_parser.add_argument(
+            "direction",
+            choices=["previous", "next"],
+            help="Cycle direction",
+        )
+        komorebi_pending_empty_parser.add_argument(
+            "-m",
+            "--monitor",
+            type=int,
+            help="Zero-based target monitor index (optional)",
+        )
+
         # Channel management
         set_channel_parser = subparsers.add_parser(
             "set-channel",
@@ -463,6 +497,16 @@ class CLIHandler:
         elif args.command == "komorebi-workspace-pending":
             monitor_arg = f" --monitor {args.monitor}" if args.monitor is not None else ""
             self.send_command_to_application(f"komorebi-workspace-pending {args.workspace_index}{monitor_arg}")
+            sys.exit(0)
+
+        elif args.command == "komorebi-workspace-pending-cycle":
+            monitor_arg = f" --monitor {args.monitor}" if args.monitor is not None else ""
+            self.send_command_to_application(f"komorebi-workspace-pending-cycle {args.direction}{monitor_arg}")
+            sys.exit(0)
+
+        elif args.command == "komorebi-workspace-pending-empty":
+            monitor_arg = f" --monitor {args.monitor}" if args.monitor is not None else ""
+            self.send_command_to_application(f"komorebi-workspace-pending-empty {args.direction}{monitor_arg}")
             sys.exit(0)
 
         elif args.command == "set-channel":
