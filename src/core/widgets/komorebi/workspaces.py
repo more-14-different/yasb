@@ -12,7 +12,7 @@ from core.events.service import EventService
 from core.utils.utilities import refresh_widget_style
 from core.utils.win32.app_icons import get_window_icon
 from core.utils.win32.utils import get_monitor_hwnd, get_process_info
-from core.utils.win32.window_actions import restore_window, set_foreground, show_window
+from core.utils.win32.window_actions import move_cursor_to_window_center, restore_window, set_foreground, show_window
 from core.validation.widgets.komorebi.workspaces import KomorebiWorkspacesConfig
 from core.widgets.base import BaseWidget
 from core.widgets.services.komorebi.client import KomorebiClient
@@ -942,6 +942,7 @@ class WorkspaceWidget(BaseWidget):
         try:
             show_window(hwnd)
             set_foreground(hwnd)
+            QTimer.singleShot(0, lambda h=hwnd: move_cursor_to_window_center(h))
             return True
         except Exception:
             logging.exception("Failed to focus window with HWND %s", hwnd)
@@ -958,9 +959,6 @@ class WorkspaceWidget(BaseWidget):
 
             resolved_hwnd = self._resolve_workspace_target_hwnd(workspace_index, target_hwnd, app_key)
             if not resolved_hwnd:
-                if self._curr_workspace_index != workspace_index:
-                    self.set_pending_workspace(workspace_index)
-                    self._komorebic.activate_workspace(self._komorebi_screen["index"], workspace_index)
                 return
 
             self._focus_hwnd(resolved_hwnd)

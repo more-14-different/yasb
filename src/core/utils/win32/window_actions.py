@@ -6,6 +6,7 @@ import win32process
 
 from core.utils.win32.bindings import kernel32 as k32
 from core.utils.win32.bindings import user32 as u32
+from core.utils.win32.utils import get_window_rect
 
 # --- Resolution helpers ---
 
@@ -103,6 +104,20 @@ def show_window(hwnd: int) -> None:
         u32.ShowWindowAsync(int(hwnd), win32con.SW_SHOW)
     except Exception:
         u32.ShowWindow(hwnd, win32con.SW_SHOW)
+
+
+def move_cursor_to_window_center(hwnd: int) -> None:
+    """Move the mouse cursor to the center of the given window."""
+    if not hwnd:
+        return
+
+    try:
+        window_rect = get_window_rect(hwnd)
+        center_x = int(window_rect["x"] + window_rect["width"] / 2)
+        center_y = int(window_rect["y"] + window_rect["height"] / 2)
+        u32.SetCursorPos(center_x, center_y)
+    except Exception as e:
+        logging.debug("Failed to move cursor to window center for %s: %s", hwnd, e)
 
 
 # --- Foreground helper ---

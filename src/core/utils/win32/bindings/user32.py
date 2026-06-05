@@ -190,6 +190,9 @@ user32.GetClassNameW.restype = INT
 user32.SetForegroundWindow.argtypes = [HWND]
 user32.SetForegroundWindow.restype = BOOL
 
+user32.SetCursorPos.argtypes = [INT, INT]
+user32.SetCursorPos.restype = BOOL
+
 # Using LPVOID for the data pointer to avoid hard dependency on struct definition here
 user32.SetWindowCompositionAttribute.argtypes = [HWND, LPVOID]
 user32.SetWindowCompositionAttribute.restype = c_int
@@ -437,6 +440,10 @@ def GetClassName(hwnd: int, buf_size: int = 256) -> str:
 
 def SetForegroundWindow(hwnd: int) -> bool:
     return bool(user32.SetForegroundWindow(hwnd))
+
+
+def SetCursorPos(x: int, y: int) -> bool:
+    return bool(user32.SetCursorPos(x, y))
 
 
 def SetWindowCompositionAttribute(hwnd: int, data: LPVOID) -> int:
