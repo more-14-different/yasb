@@ -88,8 +88,7 @@ class WorkspaceButton(QPushButton):
 
     def activate_workspace(self):
         try:
-            self.parent_widget.set_pending_workspace(self.workspace_index)
-            self.komorebic.activate_workspace(self.parent_widget._komorebi_screen["index"], self.workspace_index)
+            self.parent_widget.request_workspace_switch(self.workspace_index)
         except Exception:
             self.parent_widget.clear_pending_workspace()
             logging.exception("Failed to focus workspace at index %s", self.workspace_index)
@@ -210,8 +209,7 @@ class WorkspaceButtonWithIcons(QFrame):
 
     def activate_workspace(self):
         try:
-            self.parent_widget.set_pending_workspace(self.workspace_index)
-            self.komorebic.activate_workspace(self.parent_widget._komorebi_screen["index"], self.workspace_index)
+            self.parent_widget.request_workspace_switch(self.workspace_index)
         except Exception:
             self.parent_widget.clear_pending_workspace()
             logging.exception("Failed to focus workspace at index %s", self.workspace_index)
@@ -651,6 +649,25 @@ class WorkspaceWidget(BaseWidget):
                 pending=workspace_index == pending_workspace_index,
             )
             refresh_widget_style(button)
+
+    def request_workspace_switch(self, workspace_index: int) -> None:
+        if self._komorebi_screen is None:
+            return
+
+        self.set_pending_workspace(workspace_index)
+        QTimer.singleShot(
+            0,
+            lambda: self._activate_workspace_after_pending(workspace_index),
+        )
+
+    def _activate_workspace_after_pending(self, workspace_index: int) -> None:
+        if self._komorebi_screen is None:
+            return
+        try:
+            self._komorebic.activate_workspace(self._komorebi_screen["index"], workspace_index)
+        except Exception:
+            self.clear_pending_workspace()
+            logging.exception("Failed to focus workspace at index %s", workspace_index)
 
     def _get_workspace_layer(self, workspace_index: int) -> None:
         """
