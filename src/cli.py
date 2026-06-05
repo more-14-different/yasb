@@ -326,6 +326,23 @@ class CLIHandler:
             help="Screen name (optional)",
         )
 
+        komorebi_pending_parser = subparsers.add_parser(
+            "komorebi-workspace-pending",
+            help="Show a pending Komorebi workspace switch indicator",
+            prog="yasbc komorebi-workspace-pending",
+        )
+        komorebi_pending_parser.add_argument(
+            "workspace_index",
+            type=int,
+            help="Zero-based target workspace index",
+        )
+        komorebi_pending_parser.add_argument(
+            "-m",
+            "--monitor",
+            type=int,
+            help="Zero-based target monitor index (optional)",
+        )
+
         # Channel management
         set_channel_parser = subparsers.add_parser(
             "set-channel",
@@ -441,6 +458,11 @@ class CLIHandler:
         elif args.command == "toggle-bar":
             screen_arg = f" --screen {args.screen}" if args.screen else ""
             self.send_command_to_application(f"toggle-bar{screen_arg}")
+            sys.exit(0)
+
+        elif args.command == "komorebi-workspace-pending":
+            monitor_arg = f" --monitor {args.monitor}" if args.monitor is not None else ""
+            self.send_command_to_application(f"komorebi-workspace-pending {args.workspace_index}{monitor_arg}")
             sys.exit(0)
 
         elif args.command == "set-channel":

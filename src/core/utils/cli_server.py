@@ -256,7 +256,7 @@ class CliPipeHandler:
 
         logger.info("CLI server received command: %s", full_command)
 
-        if command in ["stop", "reload", "show-bar", "hide-bar", "toggle-bar"]:
+        if command in ["stop", "reload", "show-bar", "hide-bar", "toggle-bar", "komorebi-workspace-pending"]:
             success = WriteFile(pipe, b"ACK")
             if not success:
                 logger.error("Write ACK failed. Err: %s", GetLastError())

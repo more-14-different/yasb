@@ -244,6 +244,7 @@ class WorkspaceWidget(BaseWidget):
     k_signal_connect = pyqtSignal(dict)
     k_signal_update = pyqtSignal(dict, dict)
     k_signal_disconnect = pyqtSignal()
+    k_signal_workspace_pending = pyqtSignal(int, object)
     validation_schema = KomorebiWorkspacesConfig
     event_listener = KomorebiEventListener
 
@@ -326,9 +327,11 @@ class WorkspaceWidget(BaseWidget):
         self.k_signal_connect.connect(self._on_komorebi_connect_event)
         self.k_signal_update.connect(self._on_komorebi_update_event)
         self.k_signal_disconnect.connect(self._on_komorebi_disconnect_event)
+        self.k_signal_workspace_pending.connect(self._on_workspace_pending_event)
         self._event_service.register_event(KomorebiEvent.KomorebiConnect, self.k_signal_connect)
         self._event_service.register_event(KomorebiEvent.KomorebiDisconnect, self.k_signal_disconnect)
         self._event_service.register_event(KomorebiEvent.KomorebiUpdate, self.k_signal_update)
+        self._event_service.register_event("komorebi_workspace_pending", self.k_signal_workspace_pending)
         try:
             self.destroyed.connect(self._on_destroyed)  # type: ignore[attr-defined]
         except Exception:
@@ -339,6 +342,7 @@ class WorkspaceWidget(BaseWidget):
             self._event_service.unregister_event(KomorebiEvent.KomorebiConnect, self.k_signal_connect)
             self._event_service.unregister_event(KomorebiEvent.KomorebiDisconnect, self.k_signal_disconnect)
             self._event_service.unregister_event(KomorebiEvent.KomorebiUpdate, self.k_signal_update)
+            self._event_service.unregister_event("komorebi_workspace_pending", self.k_signal_workspace_pending)
         except Exception:
             pass
 
@@ -368,6 +372,12 @@ class WorkspaceWidget(BaseWidget):
         self._show_offline_status()
         if self.config.hide_if_offline:
             self.hide()
+
+    def _on_workspace_pending_event(self, workspace_index: int, monitor_index: int | None) -> None:
+        if monitor_index is not None:
+            if not self._komorebi_screen or self._komorebi_screen.get("index") != monitor_index:
+                return
+        self.set_pending_workspace(workspace_index)
 
     def _on_komorebi_update_event(self, event: dict, state: dict) -> None:
         if self._update_komorebi_state(state):

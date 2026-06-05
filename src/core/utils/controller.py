@@ -86,6 +86,31 @@ def process_cli_command(command: str):
         action = base_command.split("-")[0]
         EventService().emit_event("handle_bar_cli", action, screen_name)
 
+    elif base_command == "komorebi-workspace-pending":
+        try:
+            workspace_index = int(parts[1])
+        except (IndexError, ValueError):
+            logging.warning("Invalid komorebi-workspace-pending command: %s", command)
+            return
+
+        monitor_index = None
+        if "--monitor" in parts:
+            monitor_arg_index = parts.index("--monitor") + 1
+            try:
+                monitor_index = int(parts[monitor_arg_index])
+            except (IndexError, ValueError):
+                logging.warning("Invalid monitor in komorebi-workspace-pending command: %s", command)
+                return
+        elif "-m" in parts:
+            monitor_arg_index = parts.index("-m") + 1
+            try:
+                monitor_index = int(parts[monitor_arg_index])
+            except (IndexError, ValueError):
+                logging.warning("Invalid monitor in komorebi-workspace-pending command: %s", command)
+                return
+
+        EventService().emit_event("komorebi_workspace_pending", workspace_index, monitor_index)
+
 
 def start_cli_server():
     handler = CliPipeHandler(process_cli_command)
