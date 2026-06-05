@@ -287,7 +287,6 @@ class WorkspaceWidget(BaseWidget):
     event_listener = KomorebiEventListener
     _pending_clear_delay_ms = 120
     _focus_diag_sample_delays_ms = (0, 50, 150, 300)
-
     def __init__(self, config: KomorebiWorkspacesConfig):
         super().__init__(class_name="komorebi-workspaces")
         self.config = config
@@ -314,6 +313,11 @@ class WorkspaceWidget(BaseWidget):
         self._pending_focus_workspace_index = None
         self._pending_focus_token = None
         self._icon_focus_suspended_mouse_follows_focus = False
+        self._icon_focus_request_id = 0
+        self._active_icon_focus_request_id = None
+        self._active_icon_focus_hwnd = None
+        self._active_icon_focus_workspace_index = None
+        self._active_icon_focus_reason = None
         self._workspace_buttons: list[WorkspaceButton] = []
         self._workspace_focus_events = [
             KomorebiEvent.CycleFocusWorkspace.value,
@@ -409,6 +413,10 @@ class WorkspaceWidget(BaseWidget):
         self._pending_focus_workspace_index = None
         self._pending_focus_token = None
         self._icon_focus_suspended_mouse_follows_focus = False
+        self._active_icon_focus_request_id = None
+        self._active_icon_focus_hwnd = None
+        self._active_icon_focus_workspace_index = None
+        self._active_icon_focus_reason = None
         self._workspace_buttons = []
         self._clear_container_layout()
 
@@ -688,6 +696,83 @@ class WorkspaceWidget(BaseWidget):
             self._mouse_follows_focus_enabled(),
             self._icon_focus_suspended_mouse_follows_focus,
         )
+
+    def _clear_active_icon_focus_request(self) -> None:
+        self._active_icon_focus_request_id = None
+        self._active_icon_focus_hwnd = None
+        self._active_icon_focus_workspace_index = None
+        self._active_icon_focus_reason = None
+
+    def _begin_icon_focus_request(self, workspace_index: int, hwnd: int, reason: str) -> int:
+        self._icon_focus_request_id += 1
+        request_id = self._icon_focus_request_id
+        self._active_icon_focus_request_id = request_id
+        self._active_icon_focus_workspace_index = workspace_index
+        self._active_icon_focus_hwnd = hwnd
+        self._active_icon_focus_reason = reason
+        _log_workspace_diag(
+            "icon focus request started: id=%s workspace=%s hwnd=%s source=%s",
+            request_id,
+            workspace_index,
+            hwnd,
+            reason,
+        )
+        return request_id
+
+    def _cancel_icon_focus_request(self, reason: str, clear_pending_workspace: bool = False) -> None:
+        active_request_id = self._active_icon_focus_request_id
+        active_workspace_index = self._active_icon_focus_workspace_index
+        active_hwnd = self._active_icon_focus_hwnd
+        active_reason = self._active_icon_focus_reason
+        had_pending_focus = self._pending_focus_hwnd or self._pending_focus_workspace_index is not None
+        had_pending_cursor = self._pending_cursor_hwnd or self._pending_cursor_workspace_index is not None
+        had_pending_workspace = self._pending_workspace_index is not None
+
+        if (
+            active_request_id is None
+            and not had_pending_focus
+            and not had_pending_cursor
+            and not self._icon_focus_suspended_mouse_follows_focus
+            and not (clear_pending_workspace and had_pending_workspace)
+        ):
+            return
+
+        _log_workspace_diag(
+            "icon focus request cancelled: reason=%s id=%s workspace=%s hwnd=%s source=%s",
+            reason,
+            active_request_id,
+            active_workspace_index,
+            active_hwnd,
+            active_reason,
+        )
+        self._pending_cursor_hwnd = None
+        self._pending_cursor_workspace_index = None
+        if had_pending_focus:
+            self._clear_pending_workspace_focus(reason)
+        else:
+            self._restore_mouse_follows_focus_after_icon_focus(reason)
+        self._clear_active_icon_focus_request()
+        if clear_pending_workspace and had_pending_workspace:
+            self.clear_pending_workspace()
+
+    def _complete_icon_focus_request(self, reason: str) -> None:
+        request_id = self._active_icon_focus_request_id
+        workspace_index = self._active_icon_focus_workspace_index
+        hwnd = self._active_icon_focus_hwnd
+        source = self._active_icon_focus_reason
+        if request_id is None or workspace_index is None or not hwnd:
+            return
+
+        _log_workspace_diag(
+            "icon focus request completed: reason=%s id=%s workspace=%s hwnd=%s source=%s",
+            reason,
+            request_id,
+            workspace_index,
+            hwnd,
+            source,
+        )
+        self._clear_active_icon_focus_request()
+        self._restore_mouse_follows_focus_after_icon_focus(reason)
 
     def _schedule_focus_diag_samples(
         self,
@@ -1169,6 +1254,93 @@ class WorkspaceWidget(BaseWidget):
             return windows_in_workspace[0]["hwnd"]
         return None
 
+    def _get_tiling_window_location(self, workspace_index: int, hwnd: int) -> dict | None:
+        workspace = self._komorebic.get_workspace_by_index(self._komorebi_screen, workspace_index)
+        if not workspace or workspace.get("layer") != "Tiling":
+            return None
+
+        containers = workspace.get("containers", {})
+        container_elements = containers.get("elements") if isinstance(containers, dict) else None
+        if not isinstance(container_elements, list):
+            return None
+
+        focused_container_index = containers.get("focused")
+        if not isinstance(focused_container_index, int):
+            return None
+
+        for container_index, container in enumerate(container_elements):
+            windows = self._komorebic.get_windows(container)
+            for window_index, window in enumerate(windows):
+                if window.get("hwnd") == hwnd:
+                    focused_window_index = container.get("windows", {}).get("focused")
+                    return {
+                        "container_index": container_index,
+                        "container_count": len(container_elements),
+                        "focused_container_index": focused_container_index,
+                        "window_index": window_index,
+                        "focused_window_index": focused_window_index if isinstance(focused_window_index, int) else None,
+                    }
+        return None
+
+    def _focus_same_workspace_window_native(self, workspace_index: int, hwnd: int) -> bool:
+        if not self._is_focused_monitor():
+            _log_workspace_diag(
+                "native same-workspace focus skipped: reason=monitor_not_focused workspace=%s hwnd=%s",
+                workspace_index,
+                hwnd,
+            )
+            return False
+
+        location = self._get_tiling_window_location(workspace_index, hwnd)
+        if not location:
+            _log_workspace_diag(
+                "native same-workspace focus skipped: reason=target_not_tiling workspace=%s hwnd=%s",
+                workspace_index,
+                hwnd,
+            )
+            return False
+
+        container_index = location["container_index"]
+        focused_container_index = location["focused_container_index"]
+        container_count = location["container_count"]
+        window_index = location["window_index"]
+        focused_window_index = location["focused_window_index"]
+
+        if container_count <= 0:
+            return False
+
+        forward_steps = (container_index - focused_container_index) % container_count
+        backward_steps = (focused_container_index - container_index) % container_count
+        if forward_steps <= backward_steps:
+            direction = "next"
+            steps = forward_steps
+        else:
+            direction = "previous"
+            steps = backward_steps
+
+        _log_workspace_diag(
+            "native same-workspace focus executing: workspace=%s hwnd=%s container=%s focused_container=%s "
+            "steps=%s direction=%s window_index=%s focused_window_index=%s",
+            workspace_index,
+            hwnd,
+            container_index,
+            focused_container_index,
+            steps,
+            direction,
+            window_index,
+            focused_window_index,
+        )
+
+        try:
+            for _ in range(steps):
+                self._komorebic.cycle_focus(direction, wait=True)
+            if focused_window_index != window_index:
+                self._komorebic.focus_stack_window(window_index, wait=True)
+            return True
+        except Exception:
+            logging.exception("Failed to use native komorebi focus for HWND %s", hwnd)
+            return False
+
     def _focus_hwnd(self, hwnd: int) -> bool:
         if not hwnd:
             return False
@@ -1325,11 +1497,11 @@ class WorkspaceWidget(BaseWidget):
                 pending_hwnd,
                 pending_token,
             )
-            self._restore_mouse_follows_focus_after_icon_focus("delayed_focus_failed")
+            self._cancel_icon_focus_request("delayed_focus_failed")
         else:
             self._schedule_focus_diag_samples("after-delayed-icon-focus", pending_hwnd, pending_workspace_index)
             self._move_cursor_after_icon_focus(pending_workspace_index, pending_hwnd, "delayed_icon_focus")
-            self._restore_mouse_follows_focus_after_icon_focus("delayed_focus_complete")
+            self._complete_icon_focus_request("delayed_focus_complete")
 
     def focus_workspace_window(self, workspace_index: int, target_hwnd: int | None, app_key: str | None = None) -> None:
         try:
@@ -1364,6 +1536,13 @@ class WorkspaceWidget(BaseWidget):
                     self._komorebic.activate_workspace(self._komorebi_screen["index"], workspace_index)
                 return
 
+            self._cancel_icon_focus_request("superseded_by_new_request", clear_pending_workspace=True)
+            self._begin_icon_focus_request(
+                workspace_index,
+                resolved_hwnd,
+                "cross_workspace_icon_focus" if self._curr_workspace_index != workspace_index else "same_workspace_icon_focus",
+            )
+
             if self._curr_workspace_index != workspace_index:
                 self.set_pending_workspace(workspace_index)
                 self._set_pending_workspace_focus(workspace_index, resolved_hwnd)
@@ -1378,9 +1557,21 @@ class WorkspaceWidget(BaseWidget):
                 self._komorebic.activate_workspace(self._komorebi_screen["index"], workspace_index)
                 return
 
+            if self._workspace_last_active_hwnd.get(workspace_index) == resolved_hwnd:
+                self._log_focus_diag("same-workspace-already-focused", resolved_hwnd, workspace_index)
+                self._move_cursor_after_icon_focus(workspace_index, resolved_hwnd, "same_workspace_already_focused")
+                self._complete_icon_focus_request("already_focused")
+                return
+
             self._pending_cursor_hwnd = resolved_hwnd
             self._pending_cursor_workspace_index = workspace_index
             self._schedule_focus_diag_samples("before-same-workspace-icon-focus", resolved_hwnd, workspace_index)
+
+            if self._focus_same_workspace_window_native(workspace_index, resolved_hwnd):
+                self._schedule_focus_diag_samples("after-same-workspace-native-focus", resolved_hwnd, workspace_index)
+                self._move_cursor_after_icon_focus(workspace_index, resolved_hwnd, "same_workspace_native_focus")
+                self._complete_icon_focus_request("same_workspace_native_focus_complete")
+                return
 
             if not self._focus_hwnd(resolved_hwnd):
                 self._pending_cursor_hwnd = None
@@ -1391,14 +1582,13 @@ class WorkspaceWidget(BaseWidget):
                     target_hwnd,
                     resolved_hwnd,
                 )
+                self._cancel_icon_focus_request("same_workspace_focus_failed")
             else:
                 self._schedule_focus_diag_samples("after-same-workspace-icon-focus", resolved_hwnd, workspace_index)
                 self._move_cursor_after_icon_focus(workspace_index, resolved_hwnd, "same_workspace_icon_focus")
+                self._complete_icon_focus_request("same_workspace_focus_complete")
         except Exception:
-            self.clear_pending_workspace()
-            self._pending_cursor_hwnd = None
-            self._pending_cursor_workspace_index = None
-            self._restore_mouse_follows_focus_after_icon_focus("icon_focus_exception")
+            self._cancel_icon_focus_request("icon_focus_exception", clear_pending_workspace=True)
             logging.exception(
                 "Failed to focus workspace window for workspace %s and HWND %s",
                 workspace_index,

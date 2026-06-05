@@ -297,14 +297,23 @@ class KomorebiClient:
         except KeyError, TypeError, IndexError:
             return None
 
-    def focus_stack_window(self, w_idx: int) -> None:
+    def cycle_focus(self, direction: str, wait: bool = False) -> None:
+        args = [self._komorebic_path, "cycle-focus", direction]
         try:
-            subprocess.Popen(
-                [self._komorebic_path, "focus-stack-window", str(w_idx)],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                shell=True,
-            )
+            if wait:
+                subprocess.run(args, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, shell=True)
+            else:
+                subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, shell=True)
+        except subprocess.SubprocessError, FileNotFoundError:
+            logging.exception("Failed to cycle komorebi focus")
+
+    def focus_stack_window(self, w_idx: int, wait: bool = False) -> None:
+        args = [self._komorebic_path, "focus-stack-window", str(w_idx)]
+        try:
+            if wait:
+                subprocess.run(args, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, shell=True)
+            else:
+                subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, shell=True)
         except subprocess.SubprocessError, FileNotFoundError:
             logging.exception("Failed to focus stack window")
 
