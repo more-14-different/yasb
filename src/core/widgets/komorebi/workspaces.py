@@ -11,7 +11,7 @@ from core.events.komorebi import KomorebiEvent
 from core.events.service import EventService
 from core.utils.utilities import refresh_widget_style
 from core.utils.win32.app_icons import get_window_icon
-from core.utils.win32.utils import get_monitor_hwnd, get_process_info
+from core.utils.win32.utils import get_foreground_hwnd, get_monitor_hwnd, get_process_info
 from core.utils.win32.window_actions import move_cursor_to_window_center, restore_window, set_foreground, show_window
 from core.validation.widgets.komorebi.workspaces import KomorebiWorkspacesConfig
 from core.widgets.base import BaseWidget
@@ -286,6 +286,7 @@ class WorkspaceWidget(BaseWidget):
     validation_schema = KomorebiWorkspacesConfig
     event_listener = KomorebiEventListener
     _pending_clear_delay_ms = 120
+    _focus_diag_sample_delays_ms = (0, 50, 150, 300)
 
     def __init__(self, config: KomorebiWorkspacesConfig):
         super().__init__(class_name="komorebi-workspaces")
@@ -509,6 +510,7 @@ class WorkspaceWidget(BaseWidget):
 
             if event["type"] == KomorebiEvent.FocusChange.value:
                 self._remember_active_window()
+                self._log_focus_diag("focuschange-event", self._pending_cursor_hwnd, self._pending_cursor_workspace_index)
                 QTimer.singleShot(16, self._finalize_pending_cursor_move)
             if self._workspace_app_icons_enabled:
                 try:
@@ -655,6 +657,53 @@ class WorkspaceWidget(BaseWidget):
             return focused_window.get("hwnd") if focused_window else None
         except Exception:
             return None
+
+    def _log_focus_diag(
+        self,
+        reason: str,
+        target_hwnd: int | None = None,
+        workspace_index: int | None = None,
+    ) -> None:
+        foreground_hwnd = None
+        try:
+            foreground_hwnd = get_foreground_hwnd()
+        except Exception:
+            pass
+
+        _log_workspace_diag(
+            "focus diag: reason=%s monitor=%s curr_ws=%s target_ws=%s target_hwnd=%s "
+            "foreground_hwnd=%s komorebi_focused_hwnd=%s remembered_hwnd=%s pending_cursor_hwnd=%s "
+            "pending_focus_hwnd=%s pending_token=%s mff_enabled=%s mff_suspended=%s",
+            reason,
+            self._komorebi_screen.get("index") if self._komorebi_screen else None,
+            self._curr_workspace_index,
+            workspace_index,
+            target_hwnd,
+            foreground_hwnd,
+            self._get_current_focused_hwnd_for_log(),
+            self._workspace_last_active_hwnd.get(workspace_index) if workspace_index is not None else None,
+            self._pending_cursor_hwnd,
+            self._pending_focus_hwnd,
+            self._pending_focus_token,
+            self._mouse_follows_focus_enabled(),
+            self._icon_focus_suspended_mouse_follows_focus,
+        )
+
+    def _schedule_focus_diag_samples(
+        self,
+        reason: str,
+        target_hwnd: int | None = None,
+        workspace_index: int | None = None,
+    ) -> None:
+        for delay_ms in self._focus_diag_sample_delays_ms:
+            QTimer.singleShot(
+                delay_ms,
+                lambda delay=delay_ms, r=reason, hwnd=target_hwnd, ws=workspace_index: self._log_focus_diag(
+                    f"{r}+{delay}ms",
+                    hwnd,
+                    ws,
+                ),
+            )
 
     def _get_workspace_new_status(self, workspace) -> WorkspaceStatus:
         if self._curr_workspace_index == workspace["index"]:
@@ -1124,6 +1173,7 @@ class WorkspaceWidget(BaseWidget):
         if not hwnd:
             return False
         _log_workspace_diag("windows focus request: hwnd=%s", hwnd)
+        self._log_focus_diag("before-win32-focus", hwnd, self._curr_workspace_index)
         try:
             restore_window(hwnd)
         except Exception:
@@ -1131,6 +1181,7 @@ class WorkspaceWidget(BaseWidget):
         try:
             show_window(hwnd)
             set_foreground(hwnd)
+            self._log_focus_diag("after-win32-focus", hwnd, self._curr_workspace_index)
             _log_workspace_diag("windows focus request completed: hwnd=%s", hwnd)
             return True
         except Exception:
@@ -1264,6 +1315,7 @@ class WorkspaceWidget(BaseWidget):
             pending_hwnd,
             pending_token,
         )
+        self._schedule_focus_diag_samples("before-delayed-icon-focus", pending_hwnd, pending_workspace_index)
         if not self._focus_hwnd(pending_hwnd):
             self._pending_cursor_hwnd = None
             self._pending_cursor_workspace_index = None
@@ -1275,6 +1327,7 @@ class WorkspaceWidget(BaseWidget):
             )
             self._restore_mouse_follows_focus_after_icon_focus("delayed_focus_failed")
         else:
+            self._schedule_focus_diag_samples("after-delayed-icon-focus", pending_hwnd, pending_workspace_index)
             self._move_cursor_after_icon_focus(pending_workspace_index, pending_hwnd, "delayed_icon_focus")
             self._restore_mouse_follows_focus_after_icon_focus("delayed_focus_complete")
 
@@ -1299,6 +1352,7 @@ class WorkspaceWidget(BaseWidget):
                 app_key,
                 resolved_hwnd,
             )
+            self._log_focus_diag("icon-click-resolved", resolved_hwnd, workspace_index)
             if not resolved_hwnd:
                 if self._curr_workspace_index != workspace_index:
                     self.set_pending_workspace(workspace_index)
@@ -1320,11 +1374,13 @@ class WorkspaceWidget(BaseWidget):
                     workspace_index,
                     resolved_hwnd,
                 )
+                self._schedule_focus_diag_samples("before-workspace-activate-for-icon-focus", resolved_hwnd, workspace_index)
                 self._komorebic.activate_workspace(self._komorebi_screen["index"], workspace_index)
                 return
 
             self._pending_cursor_hwnd = resolved_hwnd
             self._pending_cursor_workspace_index = workspace_index
+            self._schedule_focus_diag_samples("before-same-workspace-icon-focus", resolved_hwnd, workspace_index)
 
             if not self._focus_hwnd(resolved_hwnd):
                 self._pending_cursor_hwnd = None
@@ -1336,6 +1392,7 @@ class WorkspaceWidget(BaseWidget):
                     resolved_hwnd,
                 )
             else:
+                self._schedule_focus_diag_samples("after-same-workspace-icon-focus", resolved_hwnd, workspace_index)
                 self._move_cursor_after_icon_focus(workspace_index, resolved_hwnd, "same_workspace_icon_focus")
         except Exception:
             self.clear_pending_workspace()
