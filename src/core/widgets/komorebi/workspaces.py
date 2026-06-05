@@ -247,6 +247,7 @@ class WorkspaceWidget(BaseWidget):
     k_signal_workspace_pending = pyqtSignal(object, object)
     validation_schema = KomorebiWorkspacesConfig
     event_listener = KomorebiEventListener
+    _pending_clear_delay_ms = 120
 
     def __init__(self, config: KomorebiWorkspacesConfig):
         super().__init__(class_name="komorebi-workspaces")
@@ -389,8 +390,17 @@ class WorkspaceWidget(BaseWidget):
         if self._update_komorebi_state(state):
             active_workspace_changed = self._has_active_workspace_index_changed()
             if self._pending_workspace_index is not None and active_workspace_changed:
-                self._pending_workspace_index = None
-                self._pending_switch_token += 1
+                try:
+                    prev_workspace_button = self._workspace_buttons[self._prev_workspace_index]
+                    self._update_button(prev_workspace_button)
+                except (IndexError, TypeError):
+                    self._add_or_update_buttons()
+
+                pending_token = self._pending_switch_token
+                QTimer.singleShot(
+                    self._pending_clear_delay_ms,
+                    lambda token=pending_token: self.clear_pending_workspace(token),
+                )
 
             if event["type"] == KomorebiEvent.FocusChange.value:
                 self._remember_active_window()
@@ -426,8 +436,9 @@ class WorkspaceWidget(BaseWidget):
                 try:
                     prev_workspace_button = self._workspace_buttons[self._prev_workspace_index]
                     self._update_button(prev_workspace_button)
-                    new_workspace_button = self._workspace_buttons[self._curr_workspace_index]
-                    self._update_button(new_workspace_button)
+                    if self._pending_workspace_index is None:
+                        new_workspace_button = self._workspace_buttons[self._curr_workspace_index]
+                        self._update_button(new_workspace_button)
                 except (IndexError, TypeError):
                     self._add_or_update_buttons()
             elif event["type"] in self._update_buttons_event_watchlist:
