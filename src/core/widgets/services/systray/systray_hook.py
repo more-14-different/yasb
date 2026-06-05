@@ -14,6 +14,7 @@ from PIL import Image
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from core.utils.win32.bindings.kernel32 import (
+    CancelIoEx,
     CloseHandle,
     CreateMutex,
     FreeLibrary,
@@ -124,6 +125,7 @@ class SystrayHook(QObject):
         self._h_mutex = None
         self._message_pipe = None
         self._h_hook: int = 0
+        self._io_event = None
 
         # Create the watchdog mutex — held for entire lifetime.
         try:
@@ -156,11 +158,19 @@ class SystrayHook(QObject):
     def destroy(self):
         """Clean up the hook"""
         self._running = False
+        if self._io_event is not None:
+            try:
+                win32event.SetEvent(self._io_event)
+            except pywintypes.error:
+                pass
         if self._h_hook:
             UnhookWindowsHookEx(self._h_hook)
             self._h_hook = 0
         if self._message_pipe is not None:
-            # Closing the handle will also cancel any pending overlapped I/O in the worker thread
+            try:
+                CancelIoEx(self._message_pipe, None)
+            except Exception:
+                pass
             win32api.CloseHandle(self._message_pipe)
             self._message_pipe = None
         if self._h_mutex is not None:
@@ -176,8 +186,10 @@ class SystrayHook(QObject):
             logger.error("Pipe not initialized")
             return
 
+        message_pipe = self._message_pipe
         self._running = True
         h_event = win32event.CreateEvent(None, True, False, None)
+        self._io_event = h_event
         overlapped = win32file.OVERLAPPED()
         overlapped.hEvent = h_event
 
@@ -199,7 +211,7 @@ class SystrayHook(QObject):
             try:
                 logger.debug("Waiting for DLL to connect")
                 win32event.ResetEvent(h_event)
-                res = win32pipe.ConnectNamedPipe(self._message_pipe, overlapped)
+                res = win32pipe.ConnectNamedPipe(message_pipe, overlapped)
                 if res == winerror.ERROR_PIPE_CONNECTED:
                     pass
                 elif res == winerror.ERROR_IO_PENDING:
@@ -231,7 +243,7 @@ class SystrayHook(QObject):
                     while True:
                         win32event.ResetEvent(h_event)
                         try:
-                            hr, _data = win32file.ReadFile(self._message_pipe, buffer, overlapped)
+                            hr, _data = win32file.ReadFile(message_pipe, buffer, overlapped)
                         except pywintypes.error as e:
                             if e.winerror == winerror.ERROR_BROKEN_PIPE:
                                 logger.debug("DLL Disconnected")
@@ -251,7 +263,7 @@ class SystrayHook(QObject):
                                 break
                         # Retrieve completed result
                         try:
-                            n_read = win32file.GetOverlappedResult(self._message_pipe, overlapped, True)
+                            n_read = win32file.GetOverlappedResult(message_pipe, overlapped, True)
                             chunks.append(bytes(buffer[:n_read]))
                             break  # Full message received
                         except pywintypes.error as e:
@@ -274,11 +286,12 @@ class SystrayHook(QObject):
                     logger.error("Worker error: %s", e)
             finally:
                 try:
-                    win32pipe.DisconnectNamedPipe(self._message_pipe)
+                    win32pipe.DisconnectNamedPipe(message_pipe)
                 except pywintypes.error:
                     pass
             if self._running:
                 time.sleep(3)
+        self._io_event = None
         win32api.CloseHandle(h_event)
 
     def process_message(self, data_bytes: bytes) -> None:

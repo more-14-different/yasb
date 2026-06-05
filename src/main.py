@@ -38,7 +38,6 @@ def _get_arg_value(name: str) -> str | None:
 def _wait_for_process_exit(process_id: int, timeout_s: float) -> bool:
     SYNCHRONIZE = 0x00100000
     WAIT_OBJECT_0 = 0x00000000
-    WAIT_TIMEOUT = 0x00000102
     timeout_ms = max(0, int(timeout_s * 1000))
 
     handle = ctypes.windll.kernel32.OpenProcess(SYNCHRONIZE, False, process_id)
@@ -137,12 +136,17 @@ def main():
         return
 
     loop = qasync.QEventLoop(app)
+    completed = False
     try:
         loop.run_until_complete(main_async(app))
+        completed = True
     finally:
         loop.close()
         if app.restart_requested:
             logging.info("Forcing YASB process exit after reload cleanup.")
+            _exit_process(0)
+        if completed:
+            logging.info("Forcing YASB process exit after shutdown cleanup.")
             _exit_process(0)
 
 

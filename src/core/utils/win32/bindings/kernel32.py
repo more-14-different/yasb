@@ -128,6 +128,9 @@ kernel32.DeviceIoControl.argtypes = [
 ]
 kernel32.DeviceIoControl.restype = BOOL
 
+kernel32.CancelIoEx.argtypes = [HANDLE, LPVOID]
+kernel32.CancelIoEx.restype = BOOL
+
 kernel32.CloseHandle.argtypes = [HANDLE]
 kernel32.CloseHandle.restype = BOOL
 
@@ -294,6 +297,10 @@ def DisconnectNamedPipe(hNamedPipe: int) -> bool:
 
 def WaitNamedPipe(hNamedPipe: str, nTimeOut: int) -> bool:
     return bool(kernel32.WaitNamedPipeW(hNamedPipe, nTimeOut))
+
+
+def CancelIoEx(hFile: int, lpOverlapped: int | None = None) -> bool:
+    return bool(kernel32.CancelIoEx(hFile, lpOverlapped))
 
 
 def PeekNamedPipe(hNamedPipe: int) -> tuple[bool, int, int]:
