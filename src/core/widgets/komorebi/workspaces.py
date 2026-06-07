@@ -656,6 +656,37 @@ class WorkspaceWidget(BaseWidget):
             return None
         return self._komorebic.get_focused_window(focused_container)
 
+    def _get_workspace_focused_hwnd(self, workspace_index: int) -> int | None:
+        workspace = self._komorebic.get_workspace_by_index(self._komorebi_screen, workspace_index)
+        if not workspace:
+            return None
+
+        focused_window = self._get_current_workspace_focused_window(workspace)
+        if not focused_window:
+            return None
+        return focused_window.get("hwnd")
+
+    def _is_workspace_default_focus_hwnd(self, workspace_index: int, hwnd: int | None) -> bool:
+        if not hwnd:
+            return False
+
+        focused_hwnd = self._get_workspace_focused_hwnd(workspace_index)
+        if focused_hwnd:
+            return focused_hwnd == hwnd
+
+        cached_hwnd = self._workspace_last_active_hwnd.get(workspace_index)
+        return cached_hwnd == hwnd and self._workspace_contains_hwnd(workspace_index, hwnd)
+
+    def _is_hwnd_already_focused(self, workspace_index: int, hwnd: int | None) -> bool:
+        if not hwnd or self._curr_workspace_index != workspace_index:
+            return False
+
+        try:
+            foreground_hwnd = get_foreground_hwnd()
+        except Exception:
+            foreground_hwnd = None
+        return foreground_hwnd == hwnd and self._get_workspace_focused_hwnd(workspace_index) == hwnd
+
     def _get_current_focused_hwnd_for_log(self) -> int | None:
         try:
             focused_workspace = self._get_focused_workspace()
@@ -1488,6 +1519,21 @@ class WorkspaceWidget(BaseWidget):
             pending_token,
         )
         self._schedule_focus_diag_samples("before-delayed-icon-focus", pending_hwnd, pending_workspace_index)
+        if self._is_hwnd_already_focused(pending_workspace_index, pending_hwnd):
+            _log_workspace_diag(
+                "delayed icon focus skipped: reason=already_focused workspace=%s hwnd=%s token=%s",
+                pending_workspace_index,
+                pending_hwnd,
+                pending_token,
+            )
+            self._move_cursor_after_icon_focus(
+                pending_workspace_index,
+                pending_hwnd,
+                "delayed_icon_focus_already_focused",
+            )
+            self._complete_icon_focus_request("delayed_focus_already_focused")
+            return
+
         if not self._focus_hwnd(pending_hwnd):
             self._pending_cursor_hwnd = None
             self._pending_cursor_workspace_index = None
@@ -1534,6 +1580,24 @@ class WorkspaceWidget(BaseWidget):
                         workspace_index,
                     )
                     self._komorebic.activate_workspace(self._komorebi_screen["index"], workspace_index)
+                return
+
+            if (
+                self._curr_workspace_index != workspace_index
+                and self._is_workspace_default_focus_hwnd(workspace_index, resolved_hwnd)
+            ):
+                self._cancel_icon_focus_request(
+                    "superseded_by_cross_workspace_default_focus_fast_path",
+                    clear_pending_workspace=True,
+                )
+                self.set_pending_workspace(workspace_index)
+                _log_workspace_diag(
+                    "icon click fast path activates workspace only: monitor=%s target_ws=%s resolved_hwnd=%s",
+                    self._komorebi_screen.get("index"),
+                    workspace_index,
+                    resolved_hwnd,
+                )
+                self._komorebic.activate_workspace(self._komorebi_screen["index"], workspace_index)
                 return
 
             self._cancel_icon_focus_request("superseded_by_new_request", clear_pending_workspace=True)
