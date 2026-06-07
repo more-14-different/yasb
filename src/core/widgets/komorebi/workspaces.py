@@ -412,11 +412,11 @@ class WorkspaceLayoutPreview(QFrame):
 
     def sizeHint(self) -> QSize:
         if not self._current_canvas_size.isEmpty():
-            return QSize(self._current_canvas_size.width(), 1)
+            return QSize(self._current_canvas_size.width(), self._current_canvas_size.height())
         cfg = self.parent_widget.config.app_icons
         height = max(cfg.size + 8, cfg.preview_height)
         width = max(int(height * max(1.2, cfg.preview_aspect_ratio)), cfg.size * 2)
-        return QSize(width, 1)
+        return QSize(width, height)
 
     def minimumSizeHint(self) -> QSize:
         return self.sizeHint()
@@ -508,8 +508,8 @@ class WorkspaceLayoutPreview(QFrame):
 
         previous_size = QSize(self._current_canvas_size)
         self._current_canvas_size = content_size
-        self.setFixedSize(content_size.width(), 1)
-        self.setMinimumSize(content_size.width(), 1)
+        self.setFixedSize(content_size.width(), content_size.height())
+        self.setMinimumSize(content_size.width(), content_size.height())
         self._overlay.setFixedSize(content_size)
         if previous_size != content_size:
             self._request_parent_layout_update()
@@ -960,6 +960,7 @@ class WorkspaceWidget(BaseWidget):
                             self._queue_title_update_icon_refresh(i, hwnd)
                 except (IndexError, TypeError):
                     pass
+                QTimer.singleShot(0, self._refresh_all_workspace_icons)
 
             if event["type"] == KomorebiEvent.MoveWorkspaceToMonitorNumber.value:
                 if event["content"] != self._komorebi_screen["index"]:
