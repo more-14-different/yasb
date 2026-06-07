@@ -6,10 +6,12 @@ from PIL import Image
 from PyQt6.QtCore import QPoint, QRect, QSize, QTimer, Qt, pyqtSignal
 from PyQt6.QtGui import QImage, QMouseEvent, QPixmap
 from PyQt6.QtWidgets import QApplication, QFrame, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QWidget
+from win32con import HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE
 
 from core.events.komorebi import KomorebiEvent
 from core.events.service import EventService
 from core.utils.utilities import refresh_widget_style
+from core.utils.win32.bindings import SetWindowPos
 from core.utils.win32.app_icons import get_window_icon
 from core.utils.win32.utils import get_foreground_hwnd, get_monitor_hwnd, get_process_info
 from core.utils.win32.window_actions import move_cursor_to_window_center, restore_window, set_foreground, show_window
@@ -478,9 +480,11 @@ class WorkspaceLayoutPreview(QFrame):
             self.clear_preview()
             self._preview_failed = True
             return False
+        self.show()
         self._overlay.show()
         self._sync_overlay_geometry()
-        self.show()
+        self._raise_overlay()
+        QTimer.singleShot(0, self._raise_overlay)
         return True
 
     def _apply_layout(self) -> bool:
@@ -516,8 +520,8 @@ class WorkspaceLayoutPreview(QFrame):
             cell_width = max(1, int(round(rel_width * canvas.width())))
             cell_height = max(1, int(round(rel_height * canvas.height())))
 
-            tile_width = min(cell_width, icon_footprint)
-            tile_height = min(cell_height, icon_footprint)
+            tile_width = icon_footprint
+            tile_height = icon_footprint
             tile_rect = QRect(
                 tile_left + max(0, int((cell_width - tile_width) / 2)),
                 tile_top + max(0, int((cell_height - tile_height) / 2)),
@@ -532,10 +536,13 @@ class WorkspaceLayoutPreview(QFrame):
         if content_size.width() <= 0 or content_size.height() <= 0:
             return False
 
+        previous_size = QSize(self._current_canvas_size)
         self._current_canvas_size = content_size
         self.setFixedSize(content_size.width(), 1)
         self.setMinimumSize(content_size.width(), 1)
         self._overlay.setFixedSize(content_size)
+        if previous_size != content_size:
+            self._request_parent_layout_update()
 
         while len(self._tiles) < len(self._entries):
             self._tiles.append(WorkspacePreviewTile(self.workspace_index, self.parent_widget, self))
@@ -553,6 +560,7 @@ class WorkspaceLayoutPreview(QFrame):
                 tile_class += " focused"
             tile.update_entry(icon_entry, tile_class)
             tile.show()
+            tile.raise_()
 
         self.setProperty("class", "layout-preview-anchor")
         refresh_widget_style(self)
@@ -605,6 +613,39 @@ class WorkspaceLayoutPreview(QFrame):
         x = center_global.x() - int(self._current_canvas_size.width() / 2)
         y = center_global.y() - int(self._current_canvas_size.height() / 2)
         self._overlay.setGeometry(x, y, self._current_canvas_size.width(), self._current_canvas_size.height())
+        self._raise_overlay()
+
+    def _raise_overlay(self) -> None:
+        if not self._overlay.isVisible():
+            return
+        self._overlay.raise_()
+        try:
+            SetWindowPos(
+                int(self._overlay.winId()),
+                HWND_TOPMOST,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            )
+        except Exception:
+            pass
+
+    def _request_parent_layout_update(self) -> None:
+        self.updateGeometry()
+        self.parent_button.updateGeometry()
+        for layout in (
+            self.parent_button.layout(),
+            self.parent_widget._workspace_container_layout,
+            self.parent_widget.widget_layout,
+        ):
+            if layout:
+                layout.invalidate()
+                layout.activate()
+        self.parent_widget._workspace_container.updateGeometry()
+        QTimer.singleShot(0, self.parent_widget._sync_all_layout_preview_overlays)
+        QTimer.singleShot(16, self.parent_widget._sync_all_layout_preview_overlays)
 
     def _compute_bounds(self, icon_entries: list[dict]) -> tuple[int, int, int, int] | None:
         bounds = [self._rect_to_geometry(icon_entry.get("window_rect")) for icon_entry in icon_entries]
@@ -663,6 +704,8 @@ class WorkspaceWidget(BaseWidget):
         self._pending_switch_token = 0
         self._prev_num_windows_in_workspaces = []
         self._curr_num_windows_in_workspaces = []
+        self._prev_workspace_layout_signatures = []
+        self._curr_workspace_layout_signatures = []
         self._workspace_last_active_hwnd = {}
         self._workspace_app_last_active_hwnd = {}
         self._pending_cursor_hwnd = None
@@ -793,6 +836,8 @@ class WorkspaceWidget(BaseWidget):
         self._active_icon_focus_reason = None
         self._pending_title_update_icon_hwnds = {}
         self._title_update_icon_flush_token += 1
+        self._prev_workspace_layout_signatures = []
+        self._curr_workspace_layout_signatures = []
         self._workspace_buttons = []
         self._clear_container_layout()
 
@@ -929,7 +974,15 @@ class WorkspaceWidget(BaseWidget):
                         self._workspace_buttons[self._prev_workspace_index].update_icons()
                         self._workspace_buttons[self._curr_workspace_index].update_icons()
                     for i in range(len(self._komorebi_workspaces)):
-                        if self._prev_num_windows_in_workspaces[i] != self._curr_num_windows_in_workspaces[i]:
+                        layout_signature_changed = (
+                            i < len(self._prev_workspace_layout_signatures)
+                            and i < len(self._curr_workspace_layout_signatures)
+                            and self._prev_workspace_layout_signatures[i] != self._curr_workspace_layout_signatures[i]
+                        )
+                        if (
+                            self._prev_num_windows_in_workspaces[i] != self._curr_num_windows_in_workspaces[i]
+                            or layout_signature_changed
+                        ):
                             self._workspace_buttons[i].update_icons()
                         elif event["type"] in [KomorebiEvent.TitleUpdate.value]:
                             hwnd = event["content"][1]["hwnd"]
@@ -1017,13 +1070,35 @@ class WorkspaceWidget(BaseWidget):
                     : len(self._komorebi_workspaces)
                 ] + [0] * (len(self._komorebi_workspaces) - len(self._curr_num_windows_in_workspaces))
                 self._prev_num_windows_in_workspaces = self._curr_num_windows_in_workspaces.copy()
+                self._curr_workspace_layout_signatures = self._curr_workspace_layout_signatures[
+                    : len(self._komorebi_workspaces)
+                ] + [()] * (len(self._komorebi_workspaces) - len(self._curr_workspace_layout_signatures))
+                self._prev_workspace_layout_signatures = self._curr_workspace_layout_signatures.copy()
                 for i in range(len(self._komorebi_workspaces)):
                     windows = self._get_all_windows_in_workspace(i)
                     self._curr_num_windows_in_workspaces[i] = len(windows) if windows else 0
+                    self._curr_workspace_layout_signatures[i] = self._get_windows_layout_signature(windows)
 
                 return True
         except TypeError:
             return False
+
+    @staticmethod
+    def _get_windows_layout_signature(windows: list[dict] | None) -> tuple:
+        signature = []
+        for window in windows or []:
+            rect = window.get("rect") if isinstance(window, dict) else None
+            if isinstance(rect, dict):
+                rect_signature = (
+                    rect.get("left"),
+                    rect.get("top"),
+                    rect.get("right"),
+                    rect.get("bottom"),
+                )
+            else:
+                rect_signature = None
+            signature.append((window.get("hwnd"), rect_signature))
+        return tuple(signature)
 
     def _get_focused_workspace(self):
         return self._komorebic.get_focused_workspace(self._komorebi_screen)
@@ -1574,6 +1649,15 @@ class WorkspaceWidget(BaseWidget):
                 workspace_button.update_icons()
         except Exception:
             logging.exception("Failed to refresh workspace icons")
+
+    def _sync_all_layout_preview_overlays(self) -> None:
+        if not self._workspace_app_icons_enabled:
+            return
+        for workspace_button in self._workspace_buttons:
+            preview_widget = getattr(workspace_button, "preview_widget", None)
+            if preview_widget and preview_widget.isVisible():
+                preview_widget._sync_overlay_geometry()
+                preview_widget._raise_overlay()
 
     def _refresh_layout_preview_from_current_state(self) -> None:
         if not self._workspace_app_icons_enabled:
