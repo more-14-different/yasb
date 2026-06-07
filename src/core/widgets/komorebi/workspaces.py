@@ -287,6 +287,7 @@ class WorkspaceWidget(BaseWidget):
     event_listener = KomorebiEventListener
     _pending_clear_delay_ms = 120
     _focus_diag_sample_delays_ms = (0, 50, 150, 300)
+    _title_update_icon_refresh_delay_ms = 75
     def __init__(self, config: KomorebiWorkspacesConfig):
         super().__init__(class_name="komorebi-workspaces")
         self.config = config
@@ -318,6 +319,8 @@ class WorkspaceWidget(BaseWidget):
         self._active_icon_focus_hwnd = None
         self._active_icon_focus_workspace_index = None
         self._active_icon_focus_reason = None
+        self._pending_title_update_icon_hwnds: dict[int, set[int]] = {}
+        self._title_update_icon_flush_token = 0
         self._workspace_buttons: list[WorkspaceButton] = []
         self._workspace_focus_events = [
             KomorebiEvent.CycleFocusWorkspace.value,
@@ -417,6 +420,8 @@ class WorkspaceWidget(BaseWidget):
         self._active_icon_focus_hwnd = None
         self._active_icon_focus_workspace_index = None
         self._active_icon_focus_reason = None
+        self._pending_title_update_icon_hwnds = {}
+        self._title_update_icon_flush_token += 1
         self._workspace_buttons = []
         self._clear_container_layout()
 
@@ -532,7 +537,7 @@ class WorkspaceWidget(BaseWidget):
                             self._workspace_buttons[i].update_icons()
                         elif event["type"] in [KomorebiEvent.TitleUpdate.value]:
                             hwnd = event["content"][1]["hwnd"]
-                            self._workspace_buttons[i].update_icon_by_hwnd(hwnd)
+                            self._queue_title_update_icon_refresh(i, hwnd)
                 except (IndexError, TypeError):
                     pass
 
@@ -820,6 +825,35 @@ class WorkspaceWidget(BaseWidget):
                     ws,
                 ),
             )
+
+    def _queue_title_update_icon_refresh(self, workspace_index: int, hwnd: int) -> None:
+        if hwnd <= 0:
+            return
+
+        pending_hwnds = self._pending_title_update_icon_hwnds.setdefault(workspace_index, set())
+        pending_hwnds.add(hwnd)
+        flush_token = self._title_update_icon_flush_token + 1
+        self._title_update_icon_flush_token = flush_token
+        QTimer.singleShot(
+            self._title_update_icon_refresh_delay_ms,
+            lambda token=flush_token: self._flush_pending_title_update_icon_refreshes(token),
+        )
+
+    def _flush_pending_title_update_icon_refreshes(self, token: int) -> None:
+        if token != self._title_update_icon_flush_token:
+            return
+        if not self._pending_title_update_icon_hwnds:
+            return
+
+        pending_refreshes = self._pending_title_update_icon_hwnds
+        self._pending_title_update_icon_hwnds = {}
+        for workspace_index, hwnds in pending_refreshes.items():
+            try:
+                workspace_button = self._workspace_buttons[workspace_index]
+            except (IndexError, TypeError):
+                continue
+            for hwnd in hwnds:
+                workspace_button.update_icon_by_hwnd(hwnd)
 
     def _get_workspace_new_status(self, workspace) -> WorkspaceStatus:
         if self._curr_workspace_index == workspace["index"]:
