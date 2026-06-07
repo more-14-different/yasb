@@ -498,10 +498,6 @@ class WorkspaceLayoutPreview(QFrame):
         if canvas_size.width() <= 0 or canvas_size.height() <= 0:
             return False
 
-        self._current_canvas_size = canvas_size
-        self.setFixedSize(canvas_size.width(), 1)
-        self.setMinimumSize(canvas_size.width(), 1)
-        self._overlay.setFixedSize(canvas_size)
         canvas = QRect(0, 0, canvas_size.width(), canvas_size.height())
 
         normalized_rects: list[QRect] = []
@@ -532,6 +528,15 @@ class WorkspaceLayoutPreview(QFrame):
                 return False
             normalized_rects.append(tile_rect)
 
+        normalized_rects, content_size = self._shrink_to_tile_bounds(normalized_rects)
+        if content_size.width() <= 0 or content_size.height() <= 0:
+            return False
+
+        self._current_canvas_size = content_size
+        self.setFixedSize(content_size.width(), 1)
+        self.setMinimumSize(content_size.width(), 1)
+        self._overlay.setFixedSize(content_size)
+
         while len(self._tiles) < len(self._entries):
             self._tiles.append(WorkspacePreviewTile(self.workspace_index, self.parent_widget, self))
             self._tiles[-1].setParent(self._overlay)
@@ -549,9 +554,19 @@ class WorkspaceLayoutPreview(QFrame):
             tile.update_entry(icon_entry, tile_class)
             tile.show()
 
-        self.setProperty("class", "layout-preview")
+        self.setProperty("class", "layout-preview-anchor")
         refresh_widget_style(self)
         return True
+
+    def _shrink_to_tile_bounds(self, rects: list[QRect]) -> tuple[list[QRect], QSize]:
+        if not rects:
+            return [], QSize()
+        left = min(rect.x() for rect in rects)
+        top = min(rect.y() for rect in rects)
+        right = max(rect.x() + rect.width() for rect in rects)
+        bottom = max(rect.y() + rect.height() for rect in rects)
+        translated_rects = [rect.translated(-left, -top) for rect in rects]
+        return translated_rects, QSize(max(1, right - left), max(1, bottom - top))
 
     def _compute_canvas_size(self, bounds: tuple[int, int, int, int]) -> QSize:
         cfg = self.parent_widget.config.app_icons
@@ -581,7 +596,12 @@ class WorkspaceLayoutPreview(QFrame):
     def _sync_overlay_geometry(self) -> None:
         if self._current_canvas_size.isEmpty() or not self.isVisible():
             return
-        center_global = self.mapToGlobal(QPoint(max(0, self.width() // 2), max(0, self.height() // 2)))
+        center_global = self.mapToGlobal(QPoint(max(0, self.width() // 2), 0))
+        try:
+            bar_center_y = self.window().mapToGlobal(QPoint(0, max(0, self.window().height() // 2))).y()
+            center_global.setY(bar_center_y)
+        except Exception:
+            center_global.setY(self.mapToGlobal(QPoint(0, max(0, self.height() // 2))).y())
         x = center_global.x() - int(self._current_canvas_size.width() / 2)
         y = center_global.y() - int(self._current_canvas_size.height() / 2)
         self._overlay.setGeometry(x, y, self._current_canvas_size.width(), self._current_canvas_size.height())
@@ -618,6 +638,7 @@ class WorkspaceWidget(BaseWidget):
     k_signal_update = pyqtSignal(dict, dict)
     k_signal_disconnect = pyqtSignal()
     k_signal_workspace_pending = pyqtSignal(object, object)
+    k_signal_layout_command = pyqtSignal(dict)
     validation_schema = KomorebiWorkspacesConfig
     event_listener = KomorebiEventListener
     _pending_clear_delay_ms = 120
@@ -728,10 +749,12 @@ class WorkspaceWidget(BaseWidget):
         self.k_signal_update.connect(self._on_komorebi_update_event)
         self.k_signal_disconnect.connect(self._on_komorebi_disconnect_event)
         self.k_signal_workspace_pending.connect(self._on_workspace_pending_event)
+        self.k_signal_layout_command.connect(self._on_layout_command_event)
         self._event_service.register_event(KomorebiEvent.KomorebiConnect, self.k_signal_connect)
         self._event_service.register_event(KomorebiEvent.KomorebiDisconnect, self.k_signal_disconnect)
         self._event_service.register_event(KomorebiEvent.KomorebiUpdate, self.k_signal_update)
         self._event_service.register_event("komorebi_workspace_pending", self.k_signal_workspace_pending)
+        self._event_service.register_event("komorebi_layout_command", self.k_signal_layout_command)
         try:
             self.destroyed.connect(self._on_destroyed)  # type: ignore[attr-defined]
         except Exception:
@@ -743,6 +766,7 @@ class WorkspaceWidget(BaseWidget):
             self._event_service.unregister_event(KomorebiEvent.KomorebiDisconnect, self.k_signal_disconnect)
             self._event_service.unregister_event(KomorebiEvent.KomorebiUpdate, self.k_signal_update)
             self._event_service.unregister_event("komorebi_workspace_pending", self.k_signal_workspace_pending)
+            self._event_service.unregister_event("komorebi_layout_command", self.k_signal_layout_command)
         except Exception:
             pass
 
@@ -804,6 +828,19 @@ class WorkspaceWidget(BaseWidget):
         if workspace_index is None:
             return
         self.set_pending_workspace(workspace_index)
+
+    def _on_layout_command_event(self, payload: dict) -> None:
+        if not self._workspace_app_icons_enabled:
+            return
+        if not self._komorebi_screen:
+            return
+        monitor_index = payload.get("monitor_index") if isinstance(payload, dict) else None
+        if monitor_index is not None and monitor_index != self._komorebi_screen.get("index"):
+            return
+        self._refresh_layout_preview_from_current_state()
+        QTimer.singleShot(60, self._refresh_layout_preview_from_current_state)
+        QTimer.singleShot(150, self._refresh_layout_preview_from_current_state)
+        QTimer.singleShot(300, self._refresh_layout_preview_from_current_state)
 
     def _on_komorebi_update_event(self, event: dict, state: dict) -> None:
         if self._update_komorebi_state(state):
@@ -1537,6 +1574,18 @@ class WorkspaceWidget(BaseWidget):
                 workspace_button.update_icons()
         except Exception:
             logging.exception("Failed to refresh workspace icons")
+
+    def _refresh_layout_preview_from_current_state(self) -> None:
+        if not self._workspace_app_icons_enabled:
+            return
+        try:
+            state = self._komorebic.query_state()
+            if not state:
+                return
+            if self._update_komorebi_state(state):
+                self._refresh_all_workspace_icons()
+        except Exception:
+            logging.exception("Failed to refresh layout preview from komorebi state")
 
     def wheelEvent(self, event):
         """Handle mouse wheel events to switch workspaces."""

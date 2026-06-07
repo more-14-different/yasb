@@ -180,7 +180,13 @@ class ActiveLayoutWidget(BaseWidget):
         self._layouts = deque([x.replace("_", "-") for x in self.config.layouts])
 
     def change_layout(self, layout: str):
-        self._komorebic.change_layout(self._komorebi_screen["index"], self._focused_workspace["index"], layout)
+        monitor_index = self._komorebi_screen["index"]
+        workspace_index = self._focused_workspace["index"]
+        self._komorebic.change_layout(monitor_index, workspace_index, layout)
+        self._event_service.emit_event(
+            "komorebi_layout_command",
+            {"monitor_index": monitor_index, "workspace_index": workspace_index, "layout": layout},
+        )
 
     def _first_layout(self):
         if self._is_shift_layout_allowed():
