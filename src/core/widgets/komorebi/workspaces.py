@@ -3,7 +3,7 @@ from contextlib import suppress
 from typing import Literal
 
 from PIL import Image
-from PyQt6.QtCore import QTimer, Qt, pyqtSignal
+from PyQt6.QtCore import QPoint, QRect, QSize, QTimer, Qt, pyqtSignal
 from PyQt6.QtGui import QImage, QMouseEvent, QPixmap
 from PyQt6.QtWidgets import QApplication, QFrame, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QWidget
 
@@ -27,6 +27,8 @@ WorkspaceStatus = Literal["EMPTY", "POPULATED", "ACTIVE"]
 WORKSPACE_STATUS_EMPTY: WorkspaceStatus = "EMPTY"
 WORKSPACE_STATUS_POPULATED: WorkspaceStatus = "POPULATED"
 WORKSPACE_STATUS_ACTIVE: WorkspaceStatus = "ACTIVE"
+APP_ICON_DISPLAY_MODE_ROW = "row"
+APP_ICON_DISPLAY_MODE_LAYOUT_PREVIEW = "layout_preview"
 
 
 def _log_workspace_diag(message: str, *args) -> None:
@@ -134,11 +136,15 @@ class WorkspaceButtonWithIcons(QFrame):
         self.button_layout = QHBoxLayout(self)
         self.button_layout.setContentsMargins(0, 0, 0, 0)
         self.button_layout.setSpacing(0)
+        self.button_layout.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
 
         self.text_label = QLabel(self.default_label)
         self.text_label.setProperty("class", "label")
         self.text_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.button_layout.addWidget(self.text_label)
+
+        self.preview_widget = WorkspaceLayoutPreview(workspace_index, self, parent_widget)
+        self.button_layout.addWidget(self.preview_widget)
 
         self.icons = []
         self.icon_labels = []
@@ -148,6 +154,10 @@ class WorkspaceButtonWithIcons(QFrame):
 
     def mousePressEvent(self, event: QMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton:
+            if self.preview_widget.isVisible() and self.preview_widget.geometry().contains(event.pos()):
+                self.activate_workspace()
+                event.accept()
+                return
             icon_label = self._icon_label_at_position(event.pos())
             if icon_label:
                 self.parent_widget.focus_workspace_window(self.workspace_index, icon_label.target_hwnd, icon_label.app_key)
@@ -185,6 +195,8 @@ class WorkspaceButtonWithIcons(QFrame):
         else:
             self.text_label.setText(self.default_label)
         refresh_widget_style(self)
+        if self.preview_widget.isVisible():
+            self.preview_widget.refresh_preview_styles()
 
     def update_icons(self, icons: dict[int, QPixmap] = None):
         if icons:
@@ -210,21 +222,17 @@ class WorkspaceButtonWithIcons(QFrame):
             if self.config.app_icons.max_icons > 0:
                 icons_list = icons_list[: self.config.app_icons.max_icons]
 
-        # Remove extra icon widgets if there are more than needed.
-        for extra_label in self.icon_labels[len(icons_list) :]:
-            self.button_layout.removeWidget(extra_label)
-            extra_label.setParent(None)
-        self.icon_labels = self.icon_labels[: len(icons_list)]
-
-        # Keep icon widgets aligned with the workspace window ordering.
-        for index, icon_entry in enumerate(icons_list):
-            if index < len(self.icon_labels):
-                self.icon_labels[index].update_icon(icon_entry)
+        use_preview = self._should_use_layout_preview(icons_list)
+        if use_preview and self.preview_widget.update_preview(icons_list):
+            self._hide_row_icons()
+            if self.config.app_icons.hide_label and icons_list:
+                self.text_label.hide()
             else:
-                icon_label = WorkspaceAppIconLabel(self.workspace_index, self.parent_widget)
-                icon_label.update_icon(icon_entry)
-                self.button_layout.addWidget(icon_label)
-                self.icon_labels.append(icon_label)
+                self.text_label.show()
+            return
+
+        self.preview_widget.clear_preview()
+        self._show_row_icons(icons_list)
 
         if self.config.app_icons.hide_label and len(self.icon_labels) > 0:
             self.text_label.hide()
@@ -236,6 +244,43 @@ class WorkspaceButtonWithIcons(QFrame):
             pixmap = self.parent_widget._get_app_icon(hwnd, self.workspace_index, ignore_cache=True)
             if pixmap:
                 self.update_icons(icons={hwnd: pixmap})
+
+    def _hide_row_icons(self) -> None:
+        for icon_label in self.icon_labels:
+            icon_label.hide()
+
+    def _show_row_icons(self, icons_list: list[dict]) -> None:
+        for extra_label in self.icon_labels[len(icons_list) :]:
+            self.button_layout.removeWidget(extra_label)
+            extra_label.setParent(None)
+        self.icon_labels = self.icon_labels[: len(icons_list)]
+
+        for index, icon_entry in enumerate(icons_list):
+            if index < len(self.icon_labels):
+                self.icon_labels[index].update_icon(icon_entry)
+                self.icon_labels[index].show()
+            else:
+                icon_label = WorkspaceAppIconLabel(self.workspace_index, self.parent_widget)
+                icon_label.update_icon(icon_entry)
+                self.button_layout.addWidget(icon_label)
+                self.icon_labels.append(icon_label)
+
+    def _should_use_layout_preview(self, icons_list: list[dict]) -> bool:
+        if self.config.app_icons.display_mode != APP_ICON_DISPLAY_MODE_LAYOUT_PREVIEW:
+            return False
+        if self.config.app_icons.hide_duplicates or not self.config.app_icons.hide_floating:
+            return False
+        if not icons_list:
+            return False
+        if self.config.app_icons.max_icons > 0 and len(icons_list) > self.config.app_icons.max_icons:
+            return False
+        workspace = self.parent_widget._komorebic.get_workspace_by_index(
+            self.parent_widget._komorebi_screen,
+            self.workspace_index,
+        )
+        if not workspace or workspace.get("layer") != "Tiling":
+            return False
+        return all(icon_entry.get("window_rect") for icon_entry in icons_list)
 
     def activate_workspace(self):
         try:
@@ -276,6 +321,296 @@ class WorkspaceAppIconLabel(QLabel):
             event.accept()
             return
         super().mousePressEvent(event)
+
+
+class WorkspacePreviewTile(QFrame):
+    def __init__(self, workspace_index: int, parent_widget: "WorkspaceWidget", owner: "WorkspaceLayoutPreview"):
+        super().__init__(owner)
+        self.workspace_index = workspace_index
+        self.parent_widget = parent_widget
+        self.owner = owner
+        self.target_hwnd = None
+        self.app_key = None
+        self.icon_label = QLabel(self)
+        self.icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.icon_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self._icon_size = QSize()
+        self.setProperty("class", "layout-preview-tile")
+
+    def update_entry(self, icon_entry: dict, tile_class: str) -> None:
+        self.target_hwnd = icon_entry["hwnd"]
+        self.app_key = icon_entry["app_key"]
+        self.setProperty("class", tile_class)
+        pixmap = icon_entry["pixmap"]
+        if pixmap is not None:
+            self.icon_label.setProperty("class", "layout-preview-icon")
+            self.icon_label.setPixmap(pixmap)
+            try:
+                di_size = pixmap.deviceIndependentSize().toSize()
+                self._icon_size = QSize(max(1, di_size.width()), max(1, di_size.height()))
+            except Exception:
+                dpr = pixmap.devicePixelRatio() or 1.0
+                self._icon_size = QSize(
+                    max(1, int(round(pixmap.width() / dpr))),
+                    max(1, int(round(pixmap.height() / dpr))),
+                )
+            self.icon_label.show()
+            refresh_widget_style(self.icon_label)
+        else:
+            self.icon_label.clear()
+            self._icon_size = QSize()
+            self.icon_label.hide()
+        self._reposition_icon()
+        refresh_widget_style(self)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._reposition_icon()
+
+    def _reposition_icon(self) -> None:
+        if self._icon_size.isEmpty():
+            self.icon_label.hide()
+            return
+        width = min(self.width(), self._icon_size.width())
+        height = min(self.height(), self._icon_size.height())
+        x = max(0, int((self.width() - width) / 2))
+        y = max(0, int((self.height() - height) / 2))
+        self.icon_label.setGeometry(x, y, width, height)
+
+    def mousePressEvent(self, event: QMouseEvent):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.owner.handle_tile_click(self.target_hwnd, self.app_key)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+
+class WorkspaceLayoutPreview(QFrame):
+    def __init__(self, workspace_index: int, parent_button: "WorkspaceButtonWithIcons", parent_widget: "WorkspaceWidget"):
+        super().__init__(parent_button)
+        self.workspace_index = workspace_index
+        self.parent_button = parent_button
+        self.parent_widget = parent_widget
+        self._tiles: list[WorkspacePreviewTile] = []
+        self._entries: list[dict] = []
+        self._active = False
+        self._preview_failed = False
+        self._current_canvas_size = QSize()
+        self._overlay = QFrame()
+        self._overlay.setProperty("class", "layout-preview")
+        self._overlay.setWindowFlag(Qt.WindowType.Tool)
+        self._overlay.setWindowFlag(Qt.WindowType.FramelessWindowHint)
+        self._overlay.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
+        self._overlay.setWindowFlag(Qt.WindowType.NoDropShadowWindowHint)
+        self._overlay.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self._overlay.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self.setProperty("class", "layout-preview-anchor")
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self.hide()
+
+    def sizeHint(self) -> QSize:
+        if not self._current_canvas_size.isEmpty():
+            return QSize(self._current_canvas_size.width(), 1)
+        cfg = self.parent_widget.config.app_icons
+        height = max(cfg.size + 8, cfg.preview_height)
+        width = max(int(height * max(1.2, cfg.preview_aspect_ratio)), cfg.size * 2)
+        return QSize(width, 1)
+
+    def minimumSizeHint(self) -> QSize:
+        return self.sizeHint()
+
+    def mousePressEvent(self, event: QMouseEvent):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.parent_button.activate_workspace()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._sync_overlay_geometry()
+
+    def moveEvent(self, event):
+        super().moveEvent(event)
+        self._sync_overlay_geometry()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self._entries:
+            self._overlay.show()
+            self._sync_overlay_geometry()
+
+    def hideEvent(self, event):
+        self._overlay.hide()
+        super().hideEvent(event)
+
+    def handle_tile_click(self, target_hwnd: int | None, app_key: str | None) -> None:
+        action = self.parent_widget.config.app_icons.click_action
+        if action == "activate_workspace":
+            self.parent_button.activate_workspace()
+            return
+        self.parent_widget.focus_workspace_window(self.workspace_index, target_hwnd, app_key)
+
+    def clear_preview(self) -> None:
+        self._entries = []
+        self._preview_failed = False
+        self._current_canvas_size = QSize()
+        self.setMinimumSize(0, 0)
+        self.setFixedSize(0, 1)
+        for tile in self._tiles:
+            tile.hide()
+        self._overlay.hide()
+        self.hide()
+
+    def refresh_preview_styles(self) -> None:
+        refresh_widget_style(self._overlay)
+        for tile in self._tiles:
+            if tile.isVisible():
+                refresh_widget_style(tile, tile.icon_label)
+
+    def update_preview(self, icon_entries: list[dict]) -> bool:
+        self._entries = list(icon_entries)
+        self._preview_failed = False
+        if not self._entries:
+            self.clear_preview()
+            return False
+        if not self._apply_layout():
+            self.clear_preview()
+            self._preview_failed = True
+            return False
+        self._overlay.show()
+        self._sync_overlay_geometry()
+        self.show()
+        return True
+
+    def _apply_layout(self) -> bool:
+        bounds = self._compute_bounds(self._entries)
+        if not bounds:
+            return False
+
+        cfg = self.parent_widget.config.app_icons
+        padding = max(0, cfg.preview_padding)
+        icon_footprint = max(1, cfg.size + 2 * padding)
+        left, top, right, bottom = bounds
+        source_width = max(1, right - left)
+        source_height = max(1, bottom - top)
+        canvas_size = self._compute_canvas_size(bounds)
+        if canvas_size.width() <= 0 or canvas_size.height() <= 0:
+            return False
+
+        self._current_canvas_size = canvas_size
+        self.setFixedSize(canvas_size.width(), 1)
+        self.setMinimumSize(canvas_size.width(), 1)
+        self._overlay.setFixedSize(canvas_size)
+        canvas = QRect(0, 0, canvas_size.width(), canvas_size.height())
+
+        normalized_rects: list[QRect] = []
+        for icon_entry in self._entries:
+            rect = self._rect_to_geometry(icon_entry.get("window_rect"))
+            if not rect:
+                return False
+
+            rel_left = (rect[0] - left) / source_width
+            rel_top = (rect[1] - top) / source_height
+            rel_width = rect[2] / source_width
+            rel_height = rect[3] / source_height
+
+            tile_left = canvas.x() + int(round(rel_left * canvas.width()))
+            tile_top = canvas.y() + int(round(rel_top * canvas.height()))
+            cell_width = max(1, int(round(rel_width * canvas.width())))
+            cell_height = max(1, int(round(rel_height * canvas.height())))
+
+            tile_width = min(cell_width, icon_footprint)
+            tile_height = min(cell_height, icon_footprint)
+            tile_rect = QRect(
+                tile_left + max(0, int((cell_width - tile_width) / 2)),
+                tile_top + max(0, int((cell_height - tile_height) / 2)),
+                tile_width,
+                tile_height,
+            )
+            if tile_rect.width() <= 0 or tile_rect.height() <= 0:
+                return False
+            normalized_rects.append(tile_rect)
+
+        while len(self._tiles) < len(self._entries):
+            self._tiles.append(WorkspacePreviewTile(self.workspace_index, self.parent_widget, self))
+            self._tiles[-1].setParent(self._overlay)
+
+        for extra_tile in self._tiles[len(self._entries) :]:
+            extra_tile.hide()
+
+        for index, icon_entry in enumerate(self._entries):
+            tile = self._tiles[index]
+            tile_rect = normalized_rects[index]
+            tile.setGeometry(tile_rect)
+            tile_class = "layout-preview-tile"
+            if icon_entry.get("focused") and cfg.preview_show_focus:
+                tile_class += " focused"
+            tile.update_entry(icon_entry, tile_class)
+            tile.show()
+
+        self.setProperty("class", "layout-preview")
+        refresh_widget_style(self)
+        return True
+
+    def _compute_canvas_size(self, bounds: tuple[int, int, int, int]) -> QSize:
+        cfg = self.parent_widget.config.app_icons
+        padding = max(0, cfg.preview_padding)
+        left, top, right, bottom = bounds
+        source_width = max(1, right - left)
+        source_height = max(1, bottom - top)
+
+        min_source_dimension = None
+        for icon_entry in self._entries:
+            rect = self._rect_to_geometry(icon_entry.get("window_rect"))
+            if not rect:
+                continue
+            rect_min = max(1, min(rect[2], rect[3]))
+            if min_source_dimension is None or rect_min < min_source_dimension:
+                min_source_dimension = rect_min
+
+        if not min_source_dimension:
+            return QSize()
+
+        icon_footprint = max(1, cfg.size + 2 * padding)
+        scale = icon_footprint / float(min_source_dimension)
+        width = max(icon_footprint, int(round(source_width * scale)))
+        height = max(icon_footprint, int(round(source_height * scale)))
+        return QSize(width, height)
+
+    def _sync_overlay_geometry(self) -> None:
+        if self._current_canvas_size.isEmpty() or not self.isVisible():
+            return
+        center_global = self.mapToGlobal(QPoint(max(0, self.width() // 2), max(0, self.height() // 2)))
+        x = center_global.x() - int(self._current_canvas_size.width() / 2)
+        y = center_global.y() - int(self._current_canvas_size.height() / 2)
+        self._overlay.setGeometry(x, y, self._current_canvas_size.width(), self._current_canvas_size.height())
+
+    def _compute_bounds(self, icon_entries: list[dict]) -> tuple[int, int, int, int] | None:
+        bounds = [self._rect_to_geometry(icon_entry.get("window_rect")) for icon_entry in icon_entries]
+        valid_bounds = [rect for rect in bounds if rect]
+        if not valid_bounds:
+            return None
+        left = min(rect[0] for rect in valid_bounds)
+        top = min(rect[1] for rect in valid_bounds)
+        right = max(rect[0] + rect[2] for rect in valid_bounds)
+        bottom = max(rect[1] + rect[3] for rect in valid_bounds)
+        return left, top, right, bottom
+
+    @staticmethod
+    def _rect_to_geometry(rect: dict | None) -> tuple[int, int, int, int] | None:
+        if not isinstance(rect, dict):
+            return None
+        try:
+            left = int(rect.get("left", 0))
+            top = int(rect.get("top", 0))
+            width = int(rect.get("right", 0))
+            height = int(rect.get("bottom", 0))
+        except Exception:
+            return None
+        if width <= 0 or height <= 0:
+            return None
+        return left, top, width, height
 
 
 class WorkspaceWidget(BaseWidget):
@@ -344,6 +679,16 @@ class WorkspaceWidget(BaseWidget):
             KomorebiEvent.WorkspaceName.value,
             KomorebiEvent.Cloak.value,
         ]
+        self._workspace_icon_refresh_events = {
+            KomorebiEvent.ChangeLayout.value,
+            KomorebiEvent.ToggleTiling.value,
+            KomorebiEvent.ToggleMonocle.value,
+            KomorebiEvent.ToggleMaximize.value,
+            KomorebiEvent.StackWindow.value,
+            KomorebiEvent.UnstackWindow.value,
+            KomorebiEvent.CycleStack.value,
+            KomorebiEvent.FocusStackWindow.value,
+        }
         if self.config.hide_if_offline:
             self.hide()
         # Status text shown when komorebi state can't be retrieved
@@ -536,6 +881,13 @@ class WorkspaceWidget(BaseWidget):
                 try:
                     if event["type"] in ["ToggleFloat"]:
                         self._workspace_buttons[self._curr_workspace_index].update_icons()
+                    if event["type"] == KomorebiEvent.FocusChange.value and self._curr_workspace_index is not None:
+                        self._workspace_buttons[self._curr_workspace_index].update_icons()
+                    if event["type"] in self._workspace_icon_refresh_events:
+                        target_indexes = range(len(self._komorebi_workspaces))
+                        for i in target_indexes:
+                            self._workspace_buttons[i].update_icons()
+                        QTimer.singleShot(90, self._refresh_all_workspace_icons)
                     if active_workspace_changed:
                         self._workspace_buttons[self._prev_workspace_index].update_icons()
                         self._workspace_buttons[self._curr_workspace_index].update_icons()
@@ -1177,6 +1529,15 @@ class WorkspaceWidget(BaseWidget):
         if self.config.toggle_workspace_layer.enabled:
             self.workspace_layer_label.show()
 
+    def _refresh_all_workspace_icons(self) -> None:
+        if not self._workspace_app_icons_enabled:
+            return
+        try:
+            for workspace_button in self._workspace_buttons:
+                workspace_button.update_icons()
+        except Exception:
+            logging.exception("Failed to refresh workspace icons")
+
     def wheelEvent(self, event):
         """Handle mouse wheel events to switch workspaces."""
         if not self.config.enable_scroll_switching or not self._komorebi_screen:
@@ -1216,6 +1577,7 @@ class WorkspaceWidget(BaseWidget):
         windows_in_workspace = self._get_all_windows_in_workspace(workspace_index)
         self._unique_app_keys = set()
         icon_entries = []
+        focused_hwnd = self._get_workspace_focused_hwnd(workspace_index)
         for index, window in enumerate(windows_in_workspace):
             hwnd = window["hwnd"]
             pixmap = self._get_app_icon(hwnd, workspace_index)
@@ -1227,6 +1589,8 @@ class WorkspaceWidget(BaseWidget):
                     "app_key": self._get_app_key(hwnd),
                     "pixmap": pixmap,
                     "class_name": f"icon icon-{index + 1}",
+                    "window_rect": window.get("rect"),
+                    "focused": hwnd == focused_hwnd,
                 }
             )
         return icon_entries

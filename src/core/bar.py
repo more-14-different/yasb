@@ -260,7 +260,7 @@ class Bar(QWidget):
                     widget.parent_layout_type = layout_type
                     widget.bar_id = self.bar_id
                     widget.monitor_hwnd = self.monitor_hwnd
-                    layout.addWidget(widget, 0)
+                    layout.addWidget(widget, 0, Qt.AlignmentFlag.AlignVCenter)
 
             if config["alignment"] == "left" and config["stretch"]:
                 layout.addStretch(1)
