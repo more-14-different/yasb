@@ -302,7 +302,8 @@ class WorkspaceWidget(BaseWidget):
         self._komorebi_workspaces = []
         self._prev_workspace_index = None
         self._curr_workspace_index = None
-        self._pending_workspace_index = None
+        self._pending_workspace_indexes: set[int] = set()
+        self._pending_workspace_tokens: dict[int, int] = {}
         self._pending_switch_token = 0
         self._prev_num_windows_in_workspaces = []
         self._curr_num_windows_in_workspaces = []
@@ -406,7 +407,8 @@ class WorkspaceWidget(BaseWidget):
         self._komorebi_workspaces = []
         self._curr_workspace_index = None
         self._prev_workspace_index = None
-        self._pending_workspace_index = None
+        self._pending_workspace_indexes = set()
+        self._pending_workspace_tokens = {}
         self._pending_switch_token += 1
         self._workspace_last_active_hwnd = {}
         self._workspace_app_last_active_hwnd = {}
@@ -463,14 +465,14 @@ class WorkspaceWidget(BaseWidget):
             active_workspace_changed = self._has_active_workspace_index_changed()
             event_type = event.get("type")
             pending_workspace_confirmed = (
-                self._pending_workspace_index is not None
+                self._curr_workspace_index is not None
                 and active_workspace_changed
-                and self._curr_workspace_index == self._pending_workspace_index
+                and self._curr_workspace_index in self._pending_workspace_indexes
             )
             if (
                 event_type == KomorebiEvent.FocusChange.value
                 or active_workspace_changed
-                or self._pending_workspace_index is not None
+                or self._pending_workspace_indexes
             ):
                 _log_workspace_diag(
                     "komorebi event: type=%s monitor=%s prev_ws=%s curr_ws=%s active_changed=%s pending_ws=%s "
@@ -480,12 +482,12 @@ class WorkspaceWidget(BaseWidget):
                     self._prev_workspace_index,
                     self._curr_workspace_index,
                     active_workspace_changed,
-                    self._pending_workspace_index,
+                    sorted(self._pending_workspace_indexes),
                     self._pending_switch_token,
                     self._get_current_focused_hwnd_for_log(),
                 )
             if (
-                self._pending_workspace_index is not None
+                self._pending_workspace_indexes
                 and active_workspace_changed
                 and not pending_workspace_confirmed
             ):
@@ -493,11 +495,12 @@ class WorkspaceWidget(BaseWidget):
                     "workspace switch did not match pending target yet: prev_ws=%s curr_ws=%s pending_ws=%s token=%s",
                     self._prev_workspace_index,
                     self._curr_workspace_index,
-                    self._pending_workspace_index,
+                    sorted(self._pending_workspace_indexes),
                     self._pending_switch_token,
                 )
 
             if pending_workspace_confirmed:
+                confirmed_workspace_index = self._curr_workspace_index
                 try:
                     prev_workspace_button = self._workspace_buttons[self._prev_workspace_index]
                     self._update_button(prev_workspace_button)
@@ -506,20 +509,24 @@ class WorkspaceWidget(BaseWidget):
 
                 self._focus_pending_workspace_window_if_ready()
 
-                pending_token = self._pending_switch_token
+                pending_token = self._pending_workspace_tokens.get(confirmed_workspace_index)
                 _log_workspace_diag(
                     "workspace switch confirmed by event: prev_ws=%s curr_ws=%s pending_ws=%s "
                     "clear_delay_ms=%s token=%s",
                     self._prev_workspace_index,
                     self._curr_workspace_index,
-                    self._pending_workspace_index,
+                    confirmed_workspace_index,
                     self._pending_clear_delay_ms,
                     pending_token,
                 )
-                QTimer.singleShot(
-                    self._pending_clear_delay_ms,
-                    lambda token=pending_token: self.clear_pending_workspace(token),
-                )
+                if pending_token is not None:
+                    QTimer.singleShot(
+                        self._pending_clear_delay_ms,
+                        lambda workspace_index=confirmed_workspace_index, token=pending_token: self.clear_pending_workspace(
+                            workspace_index=workspace_index,
+                            token=token,
+                        ),
+                    )
 
             if event["type"] == KomorebiEvent.FocusChange.value:
                 self._remember_active_window()
@@ -558,8 +565,7 @@ class WorkspaceWidget(BaseWidget):
                     prev_workspace_button = self._workspace_buttons[self._prev_workspace_index]
                     self._update_button(prev_workspace_button)
                     if (
-                        self._pending_workspace_index is None
-                        or self._curr_workspace_index != self._pending_workspace_index
+                        self._curr_workspace_index not in self._pending_workspace_indexes
                     ):
                         new_workspace_button = self._workspace_buttons[self._curr_workspace_index]
                         self._update_button(new_workspace_button)
@@ -762,7 +768,7 @@ class WorkspaceWidget(BaseWidget):
         active_reason = self._active_icon_focus_reason
         had_pending_focus = self._pending_focus_hwnd or self._pending_focus_workspace_index is not None
         had_pending_cursor = self._pending_cursor_hwnd or self._pending_cursor_workspace_index is not None
-        had_pending_workspace = self._pending_workspace_index is not None
+        had_pending_workspace = bool(self._pending_workspace_indexes)
 
         if (
             active_request_id is None
@@ -944,72 +950,81 @@ class WorkspaceWidget(BaseWidget):
             )
             return
 
-        self._pending_workspace_index = workspace_index
+        affected_workspace_indexes = {self._curr_workspace_index, workspace_index}
         self._pending_switch_token += 1
+        self._pending_workspace_indexes.add(workspace_index)
+        self._pending_workspace_tokens[workspace_index] = self._pending_switch_token
         _log_workspace_diag(
-            "pending set: monitor=%s current_ws=%s target_ws=%s token=%s",
+            "pending set: monitor=%s current_ws=%s target_ws=%s pending_ws=%s token=%s",
             self._komorebi_screen.get("index"),
             self._curr_workspace_index,
             workspace_index,
+            sorted(self._pending_workspace_indexes),
             self._pending_switch_token,
         )
-        self._redraw_pending_workspace_buttons()
+        self._redraw_pending_workspace_buttons(affected_workspace_indexes)
         QApplication.processEvents()
 
         token = self._pending_switch_token
-        QTimer.singleShot(2000, lambda: self.clear_pending_workspace(token))
+        QTimer.singleShot(
+            2000,
+            lambda workspace_index=workspace_index, pending_token=token: self.clear_pending_workspace(
+                workspace_index=workspace_index,
+                token=pending_token,
+            ),
+        )
 
-    def clear_pending_workspace(self, token: int | None = None) -> None:
-        if token is not None and token != self._pending_switch_token:
-            _log_workspace_diag(
-                "pending clear ignored: reason=stale_token token=%s current_token=%s pending_ws=%s",
-                token,
-                self._pending_switch_token,
-                self._pending_workspace_index,
-            )
-            return
-        if self._pending_workspace_index is None:
-            return
+    def clear_pending_workspace(self, workspace_index: int | None = None, token: int | None = None) -> None:
+        if workspace_index is None:
+            if not self._pending_workspace_indexes:
+                return
+            cleared_workspace_indexes = set(self._pending_workspace_indexes)
+            self._pending_workspace_indexes.clear()
+            self._pending_workspace_tokens.clear()
+        else:
+            current_token = self._pending_workspace_tokens.get(workspace_index)
+            if current_token is None:
+                return
+            if token is not None and token != current_token:
+                _log_workspace_diag(
+                    "pending clear ignored: reason=stale_token workspace=%s token=%s current_token=%s pending_ws=%s",
+                    workspace_index,
+                    token,
+                    current_token,
+                    sorted(self._pending_workspace_indexes),
+                )
+                return
+            cleared_workspace_indexes = {workspace_index}
+            self._pending_workspace_indexes.discard(workspace_index)
+            self._pending_workspace_tokens.pop(workspace_index, None)
 
-        pending_workspace_index = self._pending_workspace_index
-        self._pending_workspace_index = None
-        if self._pending_focus_token == self._pending_switch_token:
+        if self._pending_focus_workspace_index in cleared_workspace_indexes:
             self._clear_pending_workspace_focus("pending_cleared")
+
         _log_workspace_diag(
-            "pending cleared: monitor=%s current_ws=%s cleared_ws=%s token=%s",
+            "pending cleared: monitor=%s current_ws=%s cleared_ws=%s remaining_pending_ws=%s token=%s",
             self._komorebi_screen.get("index") if self._komorebi_screen else None,
             self._curr_workspace_index,
-            pending_workspace_index,
+            sorted(cleared_workspace_indexes),
+            sorted(self._pending_workspace_indexes),
             self._pending_switch_token,
         )
 
-        for workspace_index in {pending_workspace_index, self._curr_workspace_index}:
+        self._redraw_pending_workspace_buttons(cleared_workspace_indexes | {self._curr_workspace_index})
+
+    def _redraw_pending_workspace_buttons(self, workspace_indexes: set[int | None] | None = None) -> None:
+        pending_workspace_indexes = self._pending_workspace_indexes
+        if workspace_indexes is None:
+            workspace_indexes = set(pending_workspace_indexes)
+            workspace_indexes.add(self._curr_workspace_index)
+
+        for workspace_index in workspace_indexes:
             if workspace_index is None:
                 continue
             try:
-                self._update_button(self._workspace_buttons[workspace_index])
+                self._sync_workspace_button_state(self._workspace_buttons[workspace_index], update_layer=False)
             except (IndexError, TypeError):
-                pass
-
-    def _redraw_pending_workspace_buttons(self) -> None:
-        pending_workspace_index = self._pending_workspace_index
-        if pending_workspace_index is None:
-            return
-
-        for workspace_index in {self._curr_workspace_index, pending_workspace_index}:
-            if workspace_index is None:
                 continue
-            try:
-                button = self._workspace_buttons[workspace_index]
-            except IndexError:
-                continue
-
-            _set_workspace_button_class(
-                button,
-                self._get_workspace_non_active_status(workspace_index),
-                pending=workspace_index == pending_workspace_index,
-            )
-            refresh_widget_style(button)
 
     def _get_workspace_layer(self, workspace_index: int) -> None:
         """
@@ -1034,12 +1049,13 @@ class WorkspaceWidget(BaseWidget):
                 self.workspace_layer_label.setText("")
                 refresh_widget_style(self.workspace_layer_label)
 
-    def _update_button(self, workspace_btn: WorkspaceButton) -> None:
+    def _sync_workspace_button_state(self, workspace_btn: WorkspaceButton, update_layer: bool = True) -> None:
         self._refresh_button_labels(workspace_btn)
         workspace_index = workspace_btn.workspace_index
         workspace = self._komorebic.get_workspace_by_index(self._komorebi_screen, workspace_index)
         workspace_status = self._get_workspace_new_status(workspace)
-        if self.config.hide_empty_workspaces and workspace_status == WORKSPACE_STATUS_EMPTY:
+        is_pending = workspace_index in self._pending_workspace_indexes
+        if self.config.hide_empty_workspaces and workspace_status == WORKSPACE_STATUS_EMPTY and not is_pending:
             workspace_btn.hide()
         else:
             current_classes = str(workspace_btn.property("class") or "").split()
@@ -1049,9 +1065,20 @@ class WorkspaceWidget(BaseWidget):
                 or workspace_status.lower() not in current_classes
             ):
                 workspace_btn.update_and_redraw(workspace_status)
+            if is_pending:
+                _set_workspace_button_class(
+                    workspace_btn,
+                    self._get_workspace_non_active_status(workspace_index),
+                    pending=True,
+                )
+                refresh_widget_style(workspace_btn)
             workspace_btn.show()
             workspace_btn.update_visible_buttons()
-        self._get_workspace_layer(workspace_index)
+        if update_layer:
+            self._get_workspace_layer(workspace_index)
+
+    def _update_button(self, workspace_btn: WorkspaceButton) -> None:
+        self._sync_workspace_button_state(workspace_btn, update_layer=True)
 
     def _refresh_button_labels(self, workspace_btn: WorkspaceButton) -> None:
         # Workspace names can change dynamically (e.g. via `komorebic workspace-name`).
