@@ -495,44 +495,14 @@ class WorkspaceLayoutPreview(QFrame):
         cfg = self.parent_widget.config.app_icons
         padding = max(0, cfg.preview_padding)
         icon_footprint = max(1, cfg.size + 2 * padding)
-        left, top, right, bottom = bounds
-        source_width = max(1, right - left)
-        source_height = max(1, bottom - top)
-        canvas_size = self._compute_canvas_size(bounds)
-        if canvas_size.width() <= 0 or canvas_size.height() <= 0:
-            return False
-
-        canvas = QRect(0, 0, canvas_size.width(), canvas_size.height())
-
-        normalized_rects: list[QRect] = []
+        rects: list[tuple[int, int, int, int]] = []
         for icon_entry in self._entries:
             rect = self._rect_to_geometry(icon_entry.get("window_rect"))
             if not rect:
                 return False
+            rects.append(rect)
 
-            rel_left = (rect[0] - left) / source_width
-            rel_top = (rect[1] - top) / source_height
-            rel_width = rect[2] / source_width
-            rel_height = rect[3] / source_height
-
-            tile_left = canvas.x() + int(round(rel_left * canvas.width()))
-            tile_top = canvas.y() + int(round(rel_top * canvas.height()))
-            cell_width = max(1, int(round(rel_width * canvas.width())))
-            cell_height = max(1, int(round(rel_height * canvas.height())))
-
-            tile_width = icon_footprint
-            tile_height = icon_footprint
-            tile_rect = QRect(
-                tile_left + max(0, int((cell_width - tile_width) / 2)),
-                tile_top + max(0, int((cell_height - tile_height) / 2)),
-                tile_width,
-                tile_height,
-            )
-            if tile_rect.width() <= 0 or tile_rect.height() <= 0:
-                return False
-            normalized_rects.append(tile_rect)
-
-        normalized_rects, content_size = self._shrink_to_tile_bounds(normalized_rects)
+        normalized_rects, content_size = self._compact_layout_rects(rects, icon_footprint)
         if content_size.width() <= 0 or content_size.height() <= 0:
             return False
 
@@ -566,40 +536,41 @@ class WorkspaceLayoutPreview(QFrame):
         refresh_widget_style(self)
         return True
 
-    def _shrink_to_tile_bounds(self, rects: list[QRect]) -> tuple[list[QRect], QSize]:
+    def _compact_layout_rects(self, rects: list[tuple[int, int, int, int]], icon_footprint: int) -> tuple[list[QRect], QSize]:
         if not rects:
             return [], QSize()
-        left = min(rect.x() for rect in rects)
-        top = min(rect.y() for rect in rects)
-        right = max(rect.x() + rect.width() for rect in rects)
-        bottom = max(rect.y() + rect.height() for rect in rects)
-        translated_rects = [rect.translated(-left, -top) for rect in rects]
+        x_clusters = self._cluster_axis([rect[0] + rect[2] / 2 for rect in rects], icon_footprint)
+        y_clusters = self._cluster_axis([rect[1] + rect[3] / 2 for rect in rects], icon_footprint)
+        normalized_rects: list[QRect] = []
+        for rect in rects:
+            center_x = rect[0] + rect[2] / 2
+            center_y = rect[1] + rect[3] / 2
+            col = self._cluster_key(center_x, x_clusters)
+            row = self._cluster_key(center_y, y_clusters)
+            normalized_rects.append(QRect(int(col * icon_footprint), int(row * icon_footprint), icon_footprint, icon_footprint))
+        left = min(rect.x() for rect in normalized_rects)
+        top = min(rect.y() for rect in normalized_rects)
+        right = max(rect.x() + rect.width() for rect in normalized_rects)
+        bottom = max(rect.y() + rect.height() for rect in normalized_rects)
+        translated_rects = [rect.translated(-left, -top) for rect in normalized_rects]
         return translated_rects, QSize(max(1, right - left), max(1, bottom - top))
 
-    def _compute_canvas_size(self, bounds: tuple[int, int, int, int]) -> QSize:
-        cfg = self.parent_widget.config.app_icons
-        padding = max(0, cfg.preview_padding)
-        left, top, right, bottom = bounds
-        source_width = max(1, right - left)
-        source_height = max(1, bottom - top)
+    def _cluster_axis(self, centers: list[float], icon_footprint: int) -> list[float]:
+        if not centers:
+            return []
+        threshold = max(4, int(round(icon_footprint * 0.6)))
+        sorted_centers = sorted(centers)
+        clusters = [sorted_centers[0]]
+        for center in sorted_centers[1:]:
+            if abs(center - clusters[-1]) > threshold:
+                clusters.append(center)
+            else:
+                clusters[-1] = (clusters[-1] + center) / 2
+        return clusters
 
-        min_source_dimension = None
-        for icon_entry in self._entries:
-            rect = self._rect_to_geometry(icon_entry.get("window_rect"))
-            if not rect:
-                continue
-            rect_min = max(1, min(rect[2], rect[3]))
-            if min_source_dimension is None or rect_min < min_source_dimension:
-                min_source_dimension = rect_min
-
-        if not min_source_dimension:
-            return QSize()
-
-        icon_footprint = max(1, cfg.size + 2 * padding)
-        scale = icon_footprint / float(min_source_dimension)
-        width = max(icon_footprint, int(round(source_width * scale)))
-        height = max(icon_footprint, int(round(source_height * scale)))
-        return QSize(width, height)
+    @staticmethod
+    def _cluster_key(center: float, clusters: list[float]) -> int:
+        return min(range(len(clusters)), key=lambda idx: abs(clusters[idx] - center))
 
     def _sync_overlay_geometry(self) -> None:
         if self._current_canvas_size.isEmpty() or not self.isVisible():
