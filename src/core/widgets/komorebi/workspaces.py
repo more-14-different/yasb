@@ -464,13 +464,65 @@ class WorkspaceLayoutPreview(QFrame):
         QTimer.singleShot(0, self._raise_overlay)
         return True
 
+    def _get_row_icon_padding_horizontal(self) -> int:
+        try:
+            from core.bar_helper import ThemeState
+            stylesheet = ThemeState.stylesheet()
+            if not stylesheet:
+                return 4
+
+            import re
+            blocks = re.findall(r'([^{]+)\{([^}]+)\}', stylesheet)
+
+            best_padding = None
+            for selector, rules in blocks:
+                selector = selector.strip()
+                if '.icon' in selector:
+                    padding_match = re.search(r'\bpadding\s*:\s*([^;]+)', rules)
+                    padding_left_match = re.search(r'\bpadding-left\s*:\s*([^;]+)', rules)
+                    padding_right_match = re.search(r'\bpadding-right\s*:\s*([^;]+)', rules)
+
+                    if padding_left_match or padding_right_match:
+                        val_left = 0
+                        val_right = 0
+                        if padding_left_match:
+                            m = re.search(r'(\d+)\s*px', padding_left_match.group(1))
+                            if m:
+                                val_left = int(m.group(1))
+                        if padding_right_match:
+                            m = re.search(r'(\d+)\s*px', padding_right_match.group(1))
+                            if m:
+                                val_right = int(m.group(1))
+                        if val_left > 0 or val_right > 0:
+                            best_padding = max(val_left, val_right)
+                    elif padding_match:
+                        padding_val = padding_match.group(1).strip()
+                        parts = re.findall(r'(\d+)\s*(?:px)?', padding_val)
+                        if parts:
+                            if len(parts) == 1:
+                                best_padding = int(parts[0])
+                            elif len(parts) == 2:
+                                best_padding = int(parts[1])
+                            elif len(parts) == 3:
+                                best_padding = int(parts[1])
+                            elif len(parts) == 4:
+                                best_padding = int(parts[3])
+
+                    if '.komorebi-workspaces' in selector and best_padding is not None:
+                        return best_padding
+            if best_padding is not None:
+                return best_padding
+        except Exception as e:
+            logging.exception("Failed to parse icon padding from stylesheet: %s", e)
+        return 4
+
     def _apply_layout(self) -> bool:
         bounds = self._compute_bounds(self._entries)
         if not bounds:
             return False
 
         cfg = self.parent_widget.config.app_icons
-        padding = max(0, cfg.preview_padding)
+        padding = self._get_row_icon_padding_horizontal()
         icon_footprint = max(1, cfg.size + 2 * padding)
         rects: list[tuple[int, int, int, int]] = []
         for icon_entry in self._entries:

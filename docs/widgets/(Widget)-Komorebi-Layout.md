@@ -30,7 +30,7 @@ komorebi_active_layout:
   type: "komorebi.active_layout.ActiveLayoutWidget"
   options:
     hide_if_offline: true
-    label: "{icon} {layout_name}"
+    label: "{icon}&nbsp;&nbsp;{layout_name}"
     layouts: ['bsp', 'columns', 'rows', 'grid', 'scrolling', 'vertical_stack', 'horizontal_stack', 'ultrawide_vertical_stack','right_main_vertical_stack']
     layout_icons:
       bsp: "\uebeb"
