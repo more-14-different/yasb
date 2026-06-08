@@ -368,7 +368,7 @@ KOMOREBI_WIDGET_STYLE: str = """\
 /* Komorebi Workspace */
 .komorebi-workspaces .ws-btn {
     color: var(--yasb-fg);
-    border: none;
+    border: 2px solid transparent;
     margin: 0 2px;
     padding: 2px 8px;
     outline: none;
@@ -382,13 +382,17 @@ KOMOREBI_WIDGET_STYLE: str = """\
 .komorebi-workspaces .ws-btn.active {
     color: var(--yasb-accent-fg);
     background-color: var(--yasb-accent);
+    border: 2px solid orange;
+}
+.komorebi-workspaces .ws-btn.pending {
+    border: 2px solid orange;
 }"""
 
 GLAZEWM_WIDGET_STYLE: str = """\
 /* Glaze Workspace */
 .glazewm-workspaces .ws-btn {
     color: var(--yasb-fg);
-    border: none;
+    border: 2px solid transparent;
     margin: 0 2px;
     padding: 2px 8px;
     outline: none;
@@ -399,16 +403,20 @@ GLAZEWM_WIDGET_STYLE: str = """\
 .glazewm-workspaces .ws-btn.active_populated {
     color: var(--yasb-accent-fg);
     background-color: var(--yasb-accent);
+    border: 2px solid orange;
 }
 .glazewm-workspaces .ws-btn.populated {
     background-color: var(--yasb-surface-alt);
+}
+.glazewm-workspaces .ws-btn.pending {
+    border: 2px solid orange;
 }"""
 
 WINDOWS_DESKTOPS_WIDGET_STYLE: str = """\
 /* Windows desktops */
 .windows-desktops .ws-btn {
     color: var(--yasb-fg);
-    border: none;
+    border: 2px solid transparent;
     margin: 0px 2px;
     padding: 2px 8px;
     outline: none;
@@ -419,6 +427,10 @@ WINDOWS_DESKTOPS_WIDGET_STYLE: str = """\
 .windows-desktops .ws-btn.active {
     color: var(--yasb-accent-fg);
     background-color: var(--yasb-accent);
+    border: 2px solid orange;
+}
+.windows-desktops .ws-btn.pending {
+    border: 2px solid orange;
 }
 .windows-desktops-popup.rename {
     min-width: 320px;
