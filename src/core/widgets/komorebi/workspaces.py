@@ -5,7 +5,7 @@ from typing import Literal
 
 from PIL import Image
 from PyQt6.QtCore import QPoint, QRect, QSize, QTimer, Qt, pyqtSignal
-from PyQt6.QtGui import QImage, QMouseEvent, QPixmap
+from PyQt6.QtGui import QColor, QImage, QMouseEvent, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QWidget
 from win32con import HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE
 
@@ -262,19 +262,54 @@ class WorkspaceButtonWithIcons(WorkspaceButtonMixin, QFrame):
 
 
 class WorkspaceAppIconLabel(QLabel):
+    _focus_frame_color = QColor(246, 193, 119, 245)
+    _focus_frame_padding = 2
+
     def __init__(self, workspace_index: int, parent_widget: "WorkspaceWidget"):
         super().__init__()
         self.workspace_index = workspace_index
         self.parent_widget = parent_widget
         self.target_hwnd = None
         self.app_key = None
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
     def update_icon(self, icon_entry: dict):
         self.target_hwnd = icon_entry["hwnd"]
         self.app_key = icon_entry["app_key"]
         self.setProperty("class", icon_entry["class_name"])
         self.setPixmap(icon_entry["pixmap"])
+        self._sync_icon_frame_size(icon_entry["pixmap"])
         refresh_widget_style(self)
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        classes = str(self.property("class") or "").split()
+        if "focused" not in classes:
+            return
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        pen = QPen(self._focus_frame_color)
+        pen.setWidth(1)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        frame_rect = self.rect().adjusted(1, 1, -2, -2)
+        painter.drawRect(frame_rect)
+
+    def _sync_icon_frame_size(self, pixmap: QPixmap | None) -> None:
+        if pixmap is None:
+            self.setFixedSize(0, 0)
+            return
+        try:
+            icon_size = pixmap.deviceIndependentSize().toSize()
+            width = icon_size.width()
+            height = icon_size.height()
+        except Exception:
+            dpr = pixmap.devicePixelRatio() or 1.0
+            width = int(round(pixmap.width() / dpr))
+            height = int(round(pixmap.height() / dpr))
+        frame_padding = self._focus_frame_padding * 2
+        self.setFixedSize(max(1, width + frame_padding), max(1, height + frame_padding))
 
     def mousePressEvent(self, event: QMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton:
