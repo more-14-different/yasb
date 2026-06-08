@@ -55,11 +55,12 @@ class WorkspaceButtonMixin:
     def update_visible_buttons(self):
         visible_buttons = [btn for btn in self.parent_widget._workspace_buttons if not btn.isHidden()]
         for index, button in enumerate(visible_buttons):
-            current_class = button.property("class")
+            target_widget = button.widget_to_style
+            current_class = str(target_widget.property("class") or "")
             new_class = " ".join([cls for cls in current_class.split() if not cls.startswith("button-")])
             new_class = f"{new_class} button-{index + 1}"
-            button.setProperty("class", new_class)
-            refresh_widget_style(button)
+            target_widget.setProperty("class", new_class)
+            refresh_widget_style(target_widget)
 
     def activate_workspace(self):
         try:
@@ -80,6 +81,10 @@ class WorkspaceButtonMixin:
 
 
 class WorkspaceButton(WorkspaceButtonMixin, QPushButton):
+    @property
+    def widget_to_style(self):
+        return self
+
     def __init__(
         self,
         workspace_index: int,
@@ -96,9 +101,9 @@ class WorkspaceButton(WorkspaceButtonMixin, QPushButton):
         self.config = config
         self.status = WORKSPACE_STATUS_EMPTY
         self.setProperty("class", "ws-btn")
-        self.default_label = label if label else str(workspace_index + 1)
-        self.active_label = active_label if active_label else self.default_label
-        self.populated_label = populated_label if populated_label else self.default_label
+        self.default_label = label if label and label.strip() else str(workspace_index + 1)
+        self.active_label = active_label if active_label and active_label.strip() else self.default_label
+        self.populated_label = populated_label if populated_label and populated_label.strip() else self.default_label
         self.setText(self.default_label)
         self.clicked.connect(self.activate_workspace)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, self.sizePolicy().verticalPolicy())
@@ -107,17 +112,21 @@ class WorkspaceButton(WorkspaceButtonMixin, QPushButton):
 
     def update_and_redraw(self, status: WorkspaceStatus):
         self.status = status
-        _set_workspace_button_class(self, status)
+        _set_workspace_button_class(self.widget_to_style, status)
         if status == WORKSPACE_STATUS_ACTIVE:
             self.setText(self.active_label)
         elif status == WORKSPACE_STATUS_POPULATED:
             self.setText(self.populated_label)
         else:
             self.setText(self.default_label)
-        refresh_widget_style(self)
+        refresh_widget_style(self.widget_to_style)
 
 
 class WorkspaceButtonWithIcons(WorkspaceButtonMixin, QFrame):
+    @property
+    def widget_to_style(self):
+        return self.text_label
+
     def __init__(
         self,
         workspace_index: int,
@@ -133,10 +142,10 @@ class WorkspaceButtonWithIcons(WorkspaceButtonMixin, QFrame):
         self.parent_widget = parent_widget
         self.config = config
         self.status = WORKSPACE_STATUS_EMPTY
-        self.setProperty("class", "ws-btn")
-        self.default_label = label if label else str(workspace_index + 1)
-        self.active_label = active_label if active_label else self.default_label
-        self.populated_label = populated_label if populated_label else self.default_label
+        self.setProperty("class", "ws-btn-container")
+        self.default_label = label if label and label.strip() else str(workspace_index + 1)
+        self.active_label = active_label if active_label and active_label.strip() else self.default_label
+        self.populated_label = populated_label if populated_label and populated_label.strip() else self.default_label
 
         self.setSizePolicy(QSizePolicy.Policy.Fixed, self.sizePolicy().verticalPolicy())
 
@@ -146,7 +155,7 @@ class WorkspaceButtonWithIcons(WorkspaceButtonMixin, QFrame):
         self.button_layout.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
 
         self.text_label = QLabel(self.default_label)
-        self.text_label.setProperty("class", "label")
+        self.text_label.setProperty("class", "ws-btn")
         self.text_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.button_layout.addWidget(self.text_label)
 
@@ -168,14 +177,18 @@ class WorkspaceButtonWithIcons(WorkspaceButtonMixin, QFrame):
 
     def update_and_redraw(self, status: WorkspaceStatus):
         self.status = status
-        _set_workspace_button_class(self, status)
+        _set_workspace_button_class(self.widget_to_style, status)
         if status == WORKSPACE_STATUS_ACTIVE:
             self.text_label.setText(self.active_label)
         elif status == WORKSPACE_STATUS_POPULATED:
             self.text_label.setText(self.populated_label)
         else:
             self.text_label.setText(self.default_label)
-        refresh_widget_style(self)
+        refresh_widget_style(self.widget_to_style)
+        
+        
+        logging.info(f"[DEBUG YASB] Workspace {self.workspace_index} text_label: status={status}, repr(text)={repr(self.text_label.text())}, isVisible={self.text_label.isVisible()}, isHidden={self.text_label.isHidden()}")
+
         if self.preview_widget.isVisible():
             self.preview_widget.refresh_preview_styles()
 
@@ -206,19 +219,12 @@ class WorkspaceButtonWithIcons(WorkspaceButtonMixin, QFrame):
         use_preview = self._should_use_layout_preview(icons_list)
         if use_preview and self.preview_widget.update_preview(icons_list):
             self._hide_row_icons()
-            if self.config.app_icons.hide_label and icons_list:
-                self.text_label.hide()
-            else:
-                self.text_label.show()
+            self.text_label.show()
             return
 
         self.preview_widget.clear_preview()
         self._show_row_icons(icons_list)
-
-        if self.config.app_icons.hide_label and len(self.icon_labels) > 0:
-            self.text_label.hide()
-        else:
-            self.text_label.show()
+        self.text_label.show()
 
     def update_icon_by_hwnd(self, hwnd: int):
         if any(icon_entry["hwnd"] == hwnd for icon_entry in self.icons):
@@ -1687,7 +1693,8 @@ class WorkspaceWidget(BaseWidget):
         if self.config.hide_empty_workspaces and workspace_status == WORKSPACE_STATUS_EMPTY and not is_pending:
             workspace_btn.hide()
         else:
-            current_classes = str(workspace_btn.property("class") or "").split()
+            target_widget = workspace_btn.widget_to_style
+            current_classes = str(target_widget.property("class") or "").split()
             if (
                 workspace_btn.status != workspace_status
                 or "pending" in current_classes
@@ -1696,11 +1703,11 @@ class WorkspaceWidget(BaseWidget):
                 workspace_btn.update_and_redraw(workspace_status)
             if is_pending:
                 _set_workspace_button_class(
-                    workspace_btn,
+                    target_widget,
                     self._get_workspace_non_active_status(workspace_index),
                     pending=True,
                 )
-                refresh_widget_style(workspace_btn)
+                refresh_widget_style(target_widget)
             workspace_btn.show()
             workspace_btn.update_visible_buttons()
         if update_layer:
@@ -1772,6 +1779,11 @@ class WorkspaceWidget(BaseWidget):
         populated_label = self.config.label_workspace_populated_btn.format(
             name=ws_name, index=ws_index, monitor_index=ws_monitor_index
         )
+        
+        default_label = default_label if default_label and default_label.strip() else ws_name
+        active_label = active_label if active_label and active_label.strip() else default_label
+        populated_label = populated_label if populated_label and populated_label.strip() else default_label
+        
         return default_label, active_label, populated_label
 
     def _try_add_workspace_button(self, workspace_index: int) -> WorkspaceButton:
