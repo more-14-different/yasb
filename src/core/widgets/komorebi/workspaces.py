@@ -4,9 +4,9 @@ from contextlib import suppress
 from typing import Literal
 
 from PIL import Image
-from PyQt6.QtCore import QPoint, QRect, QSize, QTimer, Qt, pyqtSignal
-from PyQt6.QtGui import QImage, QMouseEvent, QPixmap
-from PyQt6.QtWidgets import QApplication, QFrame, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QWidget
+from PyQt6.QtCore import QPoint, QRect, QSize, QTimer, Qt, pyqtSignal, QPropertyAnimation, QEasingCurve
+from PyQt6.QtGui import QImage, QMouseEvent, QPixmap, QColor
+from PyQt6.QtWidgets import QApplication, QFrame, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QWidget, QGraphicsDropShadowEffect
 from win32con import HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE
 
 from core.events.komorebi import KomorebiEvent
@@ -190,7 +190,12 @@ class WorkspaceButtonWithIcons(QFrame):
 
     def update_and_redraw(self, status: WorkspaceStatus):
         self.status = status
-        _set_workspace_button_class(self, status)
+        use_preview = self.preview_widget.isVisible()
+        if use_preview:
+            self.setProperty("class", "ws-btn-anchor")
+        else:
+            _set_workspace_button_class(self, status)
+
         if status == WORKSPACE_STATUS_ACTIVE:
             self.text_label.setText(self.active_label)
         elif status == WORKSPACE_STATUS_POPULATED:
@@ -198,7 +203,7 @@ class WorkspaceButtonWithIcons(QFrame):
         else:
             self.text_label.setText(self.default_label)
         refresh_widget_style(self)
-        if self.preview_widget.isVisible():
+        if use_preview:
             self.preview_widget.refresh_preview_styles()
 
     def update_icons(self, icons: dict[int, QPixmap] = None):
@@ -228,10 +233,9 @@ class WorkspaceButtonWithIcons(QFrame):
         use_preview = self._should_use_layout_preview(icons_list)
         if use_preview and self.preview_widget.update_preview(icons_list):
             self._hide_row_icons()
-            if self.config.app_icons.hide_label and icons_list:
-                self.text_label.hide()
-            else:
-                self.text_label.show()
+            self.text_label.hide()
+            self.setProperty("class", "ws-btn-anchor")
+            refresh_widget_style(self)
             return
 
         self.preview_widget.clear_preview()
@@ -339,11 +343,23 @@ class WorkspacePreviewTile(QFrame):
         self.icon_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self._icon_size = QSize()
         self.setProperty("class", "layout-preview-tile")
+        
+        self.anim = QPropertyAnimation(self, b"geometry")
+        self.anim.setDuration(120)
+        self.anim.setEasingCurve(QEasingCurve.Type.OutExpo)
+        
+        self.shadow = QGraphicsDropShadowEffect()
+        self.shadow.setBlurRadius(8)
+        self.shadow.setColor(QColor(0, 0, 0, 150))
+        self.shadow.setOffset(0, 2)
+        self.shadow.setEnabled(False)
+        self.setGraphicsEffect(self.shadow)
 
-    def update_entry(self, icon_entry: dict, tile_class: str) -> None:
+    def update_entry(self, icon_entry: dict, tile_class: str, is_focused: bool = False) -> None:
         self.target_hwnd = icon_entry["hwnd"]
         self.app_key = icon_entry["app_key"]
         self.setProperty("class", tile_class)
+        self.shadow.setEnabled(is_focused)
         pixmap = icon_entry["pixmap"]
         if pixmap is not None:
             self.icon_label.setProperty("class", "layout-preview-icon")
@@ -407,6 +423,22 @@ class WorkspaceLayoutPreview(QFrame):
         self._overlay.setWindowFlag(Qt.WindowType.NoDropShadowWindowHint)
         self._overlay.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self._overlay.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        
+        self._overlay_layout = QHBoxLayout(self._overlay)
+        self._overlay_layout.setContentsMargins(0, 0, 0, 0)
+        self._overlay_layout.setSpacing(4)
+        self._overlay_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        self._overlay_label = QLabel(parent_button.default_label)
+        self._overlay_label.setProperty("class", "label")
+        self._overlay_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._overlay_layout.addWidget(self._overlay_label)
+
+        self._tiles_container = QFrame()
+        self._overlay_layout.addWidget(self._tiles_container)
+        
+        self._overlay.mousePressEvent = self._on_overlay_mouse_press
+        
         self.setProperty("class", "layout-preview-anchor")
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.hide()
@@ -428,6 +460,12 @@ class WorkspaceLayoutPreview(QFrame):
             event.accept()
             return
         super().mousePressEvent(event)
+
+    def _on_overlay_mouse_press(self, event: QMouseEvent):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.parent_button.activate_workspace()
+            event.accept()
+            return
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -513,15 +551,21 @@ class WorkspaceLayoutPreview(QFrame):
 
         previous_size = QSize(self._current_canvas_size)
         self._current_canvas_size = content_size
-        self.setFixedSize(content_size.width(), content_size.height())
-        self.setMinimumSize(content_size.width(), content_size.height())
-        self._overlay.setFixedSize(content_size)
-        if previous_size != content_size:
+        self._tiles_container.setFixedSize(content_size)
+        self._tiles_container.setMinimumSize(content_size)
+        
+        self._overlay.adjustSize()
+        overlay_size = self._overlay.size()
+        self.setFixedSize(overlay_size.width(), 1)
+        self.setMinimumSize(overlay_size.width(), 1)
+        
+        if previous_size != overlay_size:
+            self._current_canvas_size = overlay_size
             self._request_parent_layout_update()
 
         while len(self._tiles) < len(self._entries):
             self._tiles.append(WorkspacePreviewTile(self.workspace_index, self.parent_widget, self))
-            self._tiles[-1].setParent(self._overlay)
+            self._tiles[-1].setParent(self._tiles_container)
 
         for extra_tile in self._tiles[len(self._entries) :]:
             extra_tile.hide()
@@ -529,11 +573,19 @@ class WorkspaceLayoutPreview(QFrame):
         for index, icon_entry in enumerate(self._entries):
             tile = self._tiles[index]
             tile_rect = normalized_rects[index]
-            tile.setGeometry(tile_rect)
+            
+            if tile.isVisible() and tile.geometry() != tile_rect and tile.geometry().isValid() and not tile.geometry().isEmpty():
+                tile.anim.stop()
+                tile.anim.setEndValue(tile_rect)
+                tile.anim.start()
+            else:
+                tile.setGeometry(tile_rect)
+
             tile_class = "layout-preview-tile"
-            if icon_entry.get("focused") and cfg.preview_show_focus:
+            is_focused = bool(icon_entry.get("focused") and cfg.preview_show_focus)
+            if is_focused:
                 tile_class += " focused"
-            tile.update_entry(icon_entry, tile_class)
+            tile.update_entry(icon_entry, tile_class, is_focused)
             tile.show()
             tile.raise_()
 
@@ -545,7 +597,14 @@ class WorkspaceLayoutPreview(QFrame):
     def _sync_overlay_class(self) -> None:
         status = str(getattr(self.parent_button, "status", "") or "").lower()
         status_class = f" {status}" if status else ""
-        self._overlay.setProperty("class", f"layout-preview{status_class}")
+        self._overlay.setProperty("class", f"ws-btn{status_class}")
+        if status == WORKSPACE_STATUS_ACTIVE:
+            self._overlay_label.setText(self.parent_button.active_label)
+        elif status == WORKSPACE_STATUS_POPULATED:
+            self._overlay_label.setText(self.parent_button.populated_label)
+        else:
+            self._overlay_label.setText(self.parent_button.default_label)
+        refresh_widget_style(self._overlay_label)
 
     def _compact_layout_rects(self, rects: list[tuple[int, int, int, int]], icon_footprint: int) -> tuple[list[QRect], QSize]:
         if not rects:
