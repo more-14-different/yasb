@@ -73,6 +73,9 @@ class WorkspaceButtonMixin:
                 self.workspace_index,
             )
             self.parent_widget.set_pending_workspace(self.workspace_index)
+            target_hwnd = self.parent_widget._resolve_workspace_target_hwnd(self.workspace_index, None, None)
+            if target_hwnd:
+                self.parent_widget._apply_instant_icon_focus(self.workspace_index, target_hwnd)
             self.komorebic.activate_workspace(self.parent_widget._komorebi_screen["index"], self.workspace_index)
         except Exception:
             self.parent_widget.clear_pending_workspace()
@@ -278,43 +281,12 @@ class WorkspaceAppIconLabel(QLabel):
 
     def mousePressEvent(self, event: QMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton:
+            if self.target_hwnd:
+                self.parent_widget._apply_instant_icon_focus(self.workspace_index, self.target_hwnd)
             self.parent_widget.focus_workspace_window(self.workspace_index, self.target_hwnd, self.app_key)
-            self._apply_instant_focus()
             event.accept()
             return
         super().mousePressEvent(event)
-
-    def _apply_instant_focus(self):
-        try:
-            button = self.parent_widget._workspace_buttons[self.workspace_index]
-            
-            # 1. Update icon label styles instantly
-            for icon in button.icon_labels:
-                old_class = str(icon.property("class") or "")
-                if " focused" in old_class:
-                    icon.setProperty("class", old_class.replace(" focused", ""))
-                    refresh_widget_style(icon)
-            
-            new_class = str(self.property("class") or "")
-            if " focused" not in new_class:
-                self.setProperty("class", new_class + " focused")
-                refresh_widget_style(self)
-
-            # 2. Update layout preview tile styles instantly
-            if button.preview_widget:
-                for tile in button.preview_widget._tiles:
-                    tile_class = str(tile.property("class") or "")
-                    if " focused" in tile_class:
-                        tile.setProperty("class", tile_class.replace(" focused", ""))
-                        refresh_widget_style(tile)
-                    if getattr(tile, "target_hwnd", None) == self.target_hwnd:
-                        new_tile_class = str(tile.property("class") or "")
-                        if " focused" not in new_tile_class:
-                            tile.setProperty("class", new_tile_class + " focused")
-                            refresh_widget_style(tile)
-                            self.parent_widget._set_workspace_focused_tile(self.workspace_index, tile)
-        except Exception:
-            pass
 
 
 class WorkspacePreviewTile(QFrame):
@@ -365,14 +337,19 @@ class WorkspacePreviewTile(QFrame):
         if self._icon_size.isEmpty():
             self.icon_label.hide()
             return
-        width = min(self.width(), self._icon_size.width())
-        height = min(self.height(), self._icon_size.height())
-        x = max(0, int((self.width() - width) / 2))
-        y = max(0, int((self.height() - height) / 2))
+        margin = 2
+        avail_width = max(0, self.width() - 2 * margin)
+        avail_height = max(0, self.height() - 2 * margin)
+        width = min(avail_width, self._icon_size.width())
+        height = min(avail_height, self._icon_size.height())
+        x = max(margin, int((self.width() - width) / 2))
+        y = max(margin, int((self.height() - height) / 2))
         self.icon_label.setGeometry(x, y, width, height)
 
     def mousePressEvent(self, event: QMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton:
+            if self.target_hwnd:
+                self.parent_widget._apply_instant_icon_focus(self.workspace_index, self.target_hwnd)
             self.owner.handle_tile_click(self.target_hwnd, self.app_key)
             event.accept()
             return
@@ -1006,6 +983,37 @@ class WorkspaceWidget(BaseWidget):
             except Exception:
                 pass
         self._workspace_focused_tiles[workspace_index] = new_tile
+
+    def _apply_instant_icon_focus(self, workspace_index: int, target_hwnd: int) -> None:
+        try:
+            for i, btn in enumerate(self._workspace_buttons):
+                # 1. Update icon label styles instantly
+                for icon in btn.icon_labels:
+                    old_class = str(icon.property("class") or "")
+                    if i == workspace_index and icon.target_hwnd == target_hwnd:
+                        if " focused" not in old_class:
+                            icon.setProperty("class", old_class + " focused")
+                            refresh_widget_style(icon)
+                    else:
+                        if " focused" in old_class:
+                            icon.setProperty("class", old_class.replace(" focused", ""))
+                            refresh_widget_style(icon)
+
+                # 2. Update layout preview tile styles instantly
+                if btn.preview_widget:
+                    for tile in btn.preview_widget._tiles:
+                        tile_class = str(tile.property("class") or "")
+                        if i == workspace_index and tile.target_hwnd == target_hwnd:
+                            if " focused" not in tile_class:
+                                tile.setProperty("class", tile_class + " focused")
+                                refresh_widget_style(tile)
+                                self._set_workspace_focused_tile(workspace_index, tile)
+                        else:
+                            if " focused" in tile_class:
+                                tile.setProperty("class", tile_class.replace(" focused", ""))
+                                refresh_widget_style(tile)
+        except Exception:
+            pass
 
     def _on_komorebi_connect_event(self, state: dict) -> None:
         self._reset()
@@ -2303,6 +2311,8 @@ class WorkspaceWidget(BaseWidget):
                 return
 
             resolved_hwnd = self._resolve_workspace_target_hwnd(workspace_index, target_hwnd, app_key)
+            if resolved_hwnd:
+                self._apply_instant_icon_focus(workspace_index, resolved_hwnd)
             _log_workspace_diag(
                 "icon click: monitor=%s current_ws=%s target_ws=%s target_hwnd=%s app_key=%s resolved_hwnd=%s",
                 self._komorebi_screen.get("index"),
