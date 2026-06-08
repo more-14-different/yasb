@@ -1,5 +1,6 @@
 import json
 import re
+import shlex
 import subprocess
 import threading
 
@@ -70,7 +71,7 @@ class CustomWidget(BaseWidget):
         super().__init__(config.exec_options.run_interval, class_name=f"custom-widget {config.class_name}")
         self.config = config
         self._exec_data: dict | str | None = None
-        self._exec_cmd = self.config.exec_options.run_cmd.split(" ") if self.config.exec_options.run_cmd else None
+        self._exec_cmd = self._build_exec_cmd(self.config.exec_options.run_cmd, self.config.exec_options.use_shell)
         self._show_alt_label = False
         self._worker = None  # Keep reference to worker for cleanup
 
@@ -91,6 +92,16 @@ class CustomWidget(BaseWidget):
             self._exec_callback()
         else:
             self.start_timer()
+
+    @staticmethod
+    def _build_exec_cmd(run_cmd: str | None, use_shell: bool) -> str | list[str] | None:
+        if not run_cmd:
+            return None
+
+        if use_shell:
+            return run_cmd
+
+        return shlex.split(run_cmd, posix=False)
 
     def _toggle_label(self):
         self._show_alt_label = not self._show_alt_label
