@@ -161,27 +161,10 @@ class WorkspaceButtonWithIcons(WorkspaceButtonMixin, QFrame):
 
     def mousePressEvent(self, event: QMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton:
-            if self.preview_widget.isVisible() and self.preview_widget.geometry().contains(event.pos()):
-                self.activate_workspace()
-                event.accept()
-                return
-            icon_label = self._icon_label_at_position(event.pos())
-            if icon_label:
-                self.parent_widget.focus_workspace_window(self.workspace_index, icon_label.target_hwnd, icon_label.app_key)
-                event.accept()
-                return
             self.activate_workspace()
             event.accept()
             return
         super().mousePressEvent(event)
-
-    def _icon_label_at_position(self, position) -> "WorkspaceAppIconLabel | None":
-        # Give icon clicks a small hit slop so padding/gaps do not fall through to workspace activation.
-        padding = max(4, int(self.config.app_icons.size / 3))
-        for icon_label in self.icon_labels:
-            if icon_label.geometry().adjusted(-padding, -padding, padding, padding).contains(position):
-                return icon_label
-        return None
 
     def update_and_redraw(self, status: WorkspaceStatus):
         self.status = status
@@ -560,11 +543,16 @@ class WorkspaceLayoutPreview(QFrame):
             tile_rect = normalized_rects[index]
             tile.setGeometry(tile_rect)
             tile_class = "layout-preview-tile"
-            if icon_entry.get("focused") and cfg.preview_show_focus:
+            is_focused = icon_entry.get("focused") and cfg.preview_show_focus
+            if is_focused:
                 tile_class += " focused"
             elif icon_entry.get("last_focused"):
                 tile_class += " last-focused"
             tile.update_entry(icon_entry, tile_class)
+            
+            if is_focused:
+                self.parent_widget._set_workspace_focused_tile(self.workspace_index, tile)
+            
             tile.show()
             tile.raise_()
 
@@ -808,7 +796,7 @@ class WorkspaceWidget(BaseWidget):
     event_listener = KomorebiEventListener
     _pending_clear_delay_ms = 0
     _focus_diag_sample_delays_ms = (0, 50, 150, 300)
-    _title_update_icon_refresh_delay_ms = 75
+    _title_update_icon_refresh_delay_ms = 30
     def __init__(self, config: KomorebiWorkspacesConfig):
         super().__init__(class_name="komorebi-workspaces")
         self.config = config
@@ -876,6 +864,10 @@ class WorkspaceWidget(BaseWidget):
             KomorebiEvent.UnstackWindow.value,
             KomorebiEvent.CycleStack.value,
             KomorebiEvent.FocusStackWindow.value,
+            KomorebiEvent.Unmanage.value,
+            "Destroy",
+            "Hide",
+            "CloseWindow"
         ])
         if self.config.hide_if_offline:
             self.hide()
@@ -967,7 +959,20 @@ class WorkspaceWidget(BaseWidget):
         self._prev_workspace_layout_signatures = []
         self._curr_workspace_layout_signatures = []
         self._workspace_buttons = []
+        self._workspace_focused_tiles = {}
         self._clear_container_layout()
+
+    def _set_workspace_focused_tile(self, workspace_index: int, new_tile) -> None:
+        old_tile = self._workspace_focused_tiles.get(workspace_index)
+        if old_tile is not None and old_tile != new_tile:
+            try:
+                old_class = str(old_tile.property("class") or "")
+                if " focused" in old_class:
+                    old_tile.setProperty("class", old_class.replace(" focused", ""))
+                    refresh_widget_style(old_tile)
+            except Exception:
+                pass
+        self._workspace_focused_tiles[workspace_index] = new_tile
 
     def _on_komorebi_connect_event(self, state: dict) -> None:
         self._reset()
@@ -1096,7 +1101,7 @@ class WorkspaceWidget(BaseWidget):
                         target_indexes = range(len(self._komorebi_workspaces))
                         for i in target_indexes:
                             self._workspace_buttons[i].update_icons()
-                        QTimer.singleShot(90, self._refresh_all_workspace_icons)
+                        QTimer.singleShot(30, self._refresh_all_workspace_icons)
                     if active_workspace_changed:
                         self._workspace_buttons[self._prev_workspace_index].update_icons()
                         self._workspace_buttons[self._curr_workspace_index].update_icons()
