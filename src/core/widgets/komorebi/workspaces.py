@@ -279,9 +279,42 @@ class WorkspaceAppIconLabel(QLabel):
     def mousePressEvent(self, event: QMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton:
             self.parent_widget.focus_workspace_window(self.workspace_index, self.target_hwnd, self.app_key)
+            self._apply_instant_focus()
             event.accept()
             return
         super().mousePressEvent(event)
+
+    def _apply_instant_focus(self):
+        try:
+            button = self.parent_widget._workspace_buttons[self.workspace_index]
+            
+            # 1. Update icon label styles instantly
+            for icon in button.icon_labels:
+                old_class = str(icon.property("class") or "")
+                if " focused" in old_class:
+                    icon.setProperty("class", old_class.replace(" focused", ""))
+                    refresh_widget_style(icon)
+            
+            new_class = str(self.property("class") or "")
+            if " focused" not in new_class:
+                self.setProperty("class", new_class + " focused")
+                refresh_widget_style(self)
+
+            # 2. Update layout preview tile styles instantly
+            if button.preview_widget:
+                for tile in button.preview_widget._tiles:
+                    tile_class = str(tile.property("class") or "")
+                    if " focused" in tile_class:
+                        tile.setProperty("class", tile_class.replace(" focused", ""))
+                        refresh_widget_style(tile)
+                    if getattr(tile, "target_hwnd", None) == self.target_hwnd:
+                        new_tile_class = str(tile.property("class") or "")
+                        if " focused" not in new_tile_class:
+                            tile.setProperty("class", new_tile_class + " focused")
+                            refresh_widget_style(tile)
+                            self.parent_widget._set_workspace_focused_tile(self.workspace_index, tile)
+        except Exception:
+            pass
 
 
 class WorkspacePreviewTile(QFrame):
