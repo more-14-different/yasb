@@ -163,19 +163,17 @@ class ActiveWindowWidget(BaseWidget):
         self._event_service.clear()
 
     def _on_focus_change_workspaces(self, event: str) -> None:
-        # Temporary fix for MoveWindow event from Komorebi: MoveWindow event is not sending enough data to know on which monitor the window is being moved also animation is a problem and because of that we are using singleShot to try catch the window after the animation is done and this will run only on MoveWindow event
         if event in ["Hide", "Destroy"]:
             self.hide()
             return
+        self._update_active_window_from_foreground()
+        for delay in (50, 150, 300):
+            QTimer.singleShot(delay, self._update_active_window_from_foreground)
+
+    def _update_active_window_from_foreground(self) -> None:
         hwnd = win32gui.GetForegroundWindow()
         if hwnd != 0:
             self._on_focus_change_event(hwnd, WinEvent.WinEventOutOfContext)
-            if self._update_retry_count < 3 and event in ["MoveWindow"]:
-                self._update_retry_count += 1
-                QTimer.singleShot(200, lambda: self._on_focus_change_event(hwnd, WinEvent.WinEventOutOfContext))
-                return
-            else:
-                self._update_retry_count = 0
         else:
             self._set_no_window_or_hide()
 
@@ -215,6 +213,8 @@ class ActiveWindowWidget(BaseWidget):
         self._update_text()
 
     def _on_focus_change_event(self, hwnd: int, event: WinEvent) -> None:
+        if hwnd == self._tracked_hwnd:
+            return
         win_info = get_hwnd_info(hwnd)
         if (
             not win_info

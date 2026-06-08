@@ -55,11 +55,12 @@ class WorkspaceButtonMixin:
     def update_visible_buttons(self):
         visible_buttons = [btn for btn in self.parent_widget._workspace_buttons if not btn.isHidden()]
         for index, button in enumerate(visible_buttons):
-            current_class = button.property("class")
+            current_class = str(button.property("class") or "")
             new_class = " ".join([cls for cls in current_class.split() if not cls.startswith("button-")])
             new_class = f"{new_class} button-{index + 1}"
-            button.setProperty("class", new_class)
-            refresh_widget_style(button)
+            if current_class != new_class:
+                button.setProperty("class", new_class)
+                refresh_widget_style(button)
 
     def activate_workspace(self):
         try:
@@ -876,6 +877,15 @@ class WorkspaceWidget(BaseWidget):
             KomorebiEvent.UnstackWindow.value,
             KomorebiEvent.CycleStack.value,
             KomorebiEvent.FocusStackWindow.value,
+            KomorebiEvent.Manage.value,
+            KomorebiEvent.Unmanage.value,
+            KomorebiEvent.Cloak.value,
+            KomorebiEvent.Uncloak.value,
+            KomorebiEvent.MoveContainerToWorkspaceNumber.value,
+            KomorebiEvent.SendContainerToWorkspaceNumber.value,
+            KomorebiEvent.SendContainerToMonitorNumber.value,
+            KomorebiEvent.MoveContainerToMonitorNumber.value,
+            KomorebiEvent.MoveWorkspaceToMonitorNumber.value,
         ])
         if self.config.hide_if_offline:
             self.hide()

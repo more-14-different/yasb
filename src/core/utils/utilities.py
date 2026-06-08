@@ -57,6 +57,7 @@ def refresh_widget_style(*widgets: QWidget) -> None:
         try:
             style.unpolish(widget)
             style.polish(widget)
+            widget.update()
         except Exception:
             pass
 

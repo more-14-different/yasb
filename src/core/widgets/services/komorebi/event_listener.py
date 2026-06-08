@@ -70,13 +70,7 @@ class KomorebiEventListener(QThread):
 
                 while self._app_running:
                     try:
-                        buffer, bytes_to_read, result = win32pipe.PeekNamedPipe(self.pipe, 1)
-                        if not bytes_to_read:
-                            if self._stop_event.wait(0.05):
-                                break
-                            continue
-
-                        result, data = win32file.ReadFile(self.pipe, bytes_to_read, None)
+                        result, data = win32file.ReadFile(self.pipe, self.buffer_size, None)
 
                         if not data.strip():
                             continue
@@ -88,15 +82,17 @@ class KomorebiEventListener(QThread):
 
                             if event and state:
                                 self._emit_event(event, state)
-                        except KeyError, ValueError:
+                        except (KeyError, ValueError):
                             logging.exception("Failed to parse komorebi state. Received data: %s", data)
                     except pywintypes.error as e:
+                        if not self._app_running:
+                            break
                         if e.winerror == 109:  # ERROR_BROKEN_PIPE
                             logging.warning("Pipe has been ended: %s", e)
                             break
                         else:
                             logging.exception("Unexpected error occurred: %s", e)
-            except BaseException, Exception:
+            except (BaseException, Exception):
                 logging.exception("Komorebi has disconnected from the named pipe %s", self.pipe_name)
             finally:
                 self._close_pipe()

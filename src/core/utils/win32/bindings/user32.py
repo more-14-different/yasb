@@ -69,6 +69,12 @@ user32.UnhookWinEvent.restype = BOOL
 user32.GetMessageW.argtypes = [POINTER(MSG), HWND, UINT, UINT]
 user32.GetMessageW.restype = INT
 
+user32.TranslateMessage.argtypes = [POINTER(MSG)]
+user32.TranslateMessage.restype = BOOL
+
+user32.DispatchMessageW.argtypes = [POINTER(MSG)]
+user32.DispatchMessageW.restype = LPARAM
+
 user32.PeekMessageW.argtypes = [POINTER(MSG), HWND, UINT, UINT, UINT]
 user32.PeekMessageW.restype = BOOL
 

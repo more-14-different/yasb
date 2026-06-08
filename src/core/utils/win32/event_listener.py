@@ -66,7 +66,9 @@ class SystemEventListener(QThread):
 
             self._emit_foreground_window_event()
 
-            user32.GetMessageW(ctypes.byref(msg), 0, 0, 0)
+            while user32.GetMessageW(ctypes.byref(msg), 0, 0, 0) > 0:
+                user32.TranslateMessage(ctypes.byref(msg))
+                user32.DispatchMessageW(ctypes.byref(msg))
         finally:
             ole32.CoUninitialize()
 
