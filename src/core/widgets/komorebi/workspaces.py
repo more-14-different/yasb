@@ -568,21 +568,7 @@ class WorkspaceLayoutPreview(QFrame):
             )
             return normalized_rects, content_size
 
-        x_positions = self._compact_axis_positions(rects, axis="x")
-        y_positions = self._compact_axis_positions(rects, axis="y")
-        normalized_rects: list[QRect] = []
-        for index, _rect in enumerate(rects):
-            col = x_positions[index]
-            row = y_positions[index]
-            normalized_rects.append(
-                QRect(int(col * icon_footprint), int(row * icon_footprint), icon_footprint, icon_footprint)
-            )
-        left = min(rect.x() for rect in normalized_rects)
-        top = min(rect.y() for rect in normalized_rects)
-        right = max(rect.x() + rect.width() for rect in normalized_rects)
-        bottom = max(rect.y() + rect.height() for rect in normalized_rects)
-        translated_rects = [rect.translated(-left, -top) for rect in normalized_rects]
-        return translated_rects, QSize(max(1, right - left), max(1, bottom - top))
+        return [], QSize()
 
     def _build_compact_tree_layout(
         self,
@@ -1793,7 +1779,18 @@ class WorkspaceWidget(BaseWidget):
 
     def _get_all_windows_in_workspace(self, workspace_index: int) -> list[dict] | None:
         workspace = self._komorebi_workspaces[workspace_index]
-        containers = self._komorebic.get_containers(workspace, get_monocle=True)
+        monocle_container = self._komorebic.get_monocle_container(workspace)
+        if monocle_container:
+            focused_monocle_window = self._komorebic.get_focused_window(monocle_container)
+            if focused_monocle_window:
+                return [focused_monocle_window]
+            return self._komorebic.get_windows(monocle_container)[:1]
+
+        maximized_window = workspace.get("maximized_window")
+        if isinstance(maximized_window, dict):
+            return [maximized_window]
+
+        containers = self._komorebic.get_containers(workspace, get_monocle=False)
         windows_in_workspace = []
         for container in containers:
             windows = self._komorebic.get_windows(container)
