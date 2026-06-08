@@ -281,7 +281,7 @@ class WorkspaceButtonWithIcons(QFrame):
             self.parent_widget._komorebi_screen,
             self.workspace_index,
         )
-        if not workspace or workspace.get("layer") != "Tiling":
+        if not workspace:
             return False
         return all(icon_entry.get("window_rect") for icon_entry in icons_list)
 
