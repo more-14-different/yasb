@@ -365,18 +365,42 @@ class WorkspacePreviewTile(QFrame):
         if self._icon_size.isEmpty():
             self.icon_label.hide()
             return
-        width = min(self.width(), self._icon_size.width())
-        height = min(self.height(), self._icon_size.height())
-        x = max(0, int((self.width() - width) / 2))
-        y = max(0, int((self.height() - height) / 2))
+        # Inset by 2px on all sides so the parent's border is not covered by the icon image
+        border_width = 2
+        avail_width = max(0, self.width() - border_width * 2)
+        avail_height = max(0, self.height() - border_width * 2)
+        width = min(avail_width, self._icon_size.width())
+        height = min(avail_height, self._icon_size.height())
+        x = border_width + max(0, int((avail_width - width) / 2))
+        y = border_width + max(0, int((avail_height - height) / 2))
         self.icon_label.setGeometry(x, y, width, height)
 
     def mousePressEvent(self, event: QMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton:
             self.owner.handle_tile_click(self.target_hwnd, self.app_key)
+            self._apply_instant_focus()
             event.accept()
             return
         super().mousePressEvent(event)
+
+    def _apply_instant_focus(self):
+        try:
+            # 1. Clear "focused" class from all tiles in all layout previews
+            for btn in self.parent_widget._workspace_buttons.values():
+                if hasattr(btn, "preview_widget") and btn.preview_widget:
+                    for tile in btn.preview_widget._tiles:
+                        old_class = str(tile.property("class") or "")
+                        if " focused" in old_class:
+                            tile.setProperty("class", old_class.replace(" focused", ""))
+                            refresh_widget_style(tile)
+            
+            # 2. Add "focused" to the clicked tile
+            new_class = str(self.property("class") or "")
+            if " focused" not in new_class:
+                self.setProperty("class", new_class + " focused")
+                refresh_widget_style(self)
+        except Exception as e:
+            logging.error("Failed to apply instant focus to tile: %s", e)
 
 
 class WorkspaceLayoutPreview(QFrame):
