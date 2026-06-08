@@ -522,7 +522,7 @@ class WorkspaceLayoutPreview(QFrame):
             return False
 
         cfg = self.parent_widget.config.app_icons
-        padding = self._get_row_icon_padding_horizontal()
+        padding = max(0, self._get_row_icon_padding_horizontal() // 2)
         icon_footprint = max(1, cfg.size + 2 * padding)
         rects: list[tuple[int, int, int, int]] = []
         for icon_entry in self._entries:
