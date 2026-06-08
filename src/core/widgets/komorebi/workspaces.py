@@ -598,15 +598,26 @@ class WorkspaceLayoutPreview(QFrame):
         indexed_rects: list[tuple[int, tuple[int, int, int, int]]],
         axis: str,
     ) -> list[list[tuple[int, tuple[int, int, int, int]]]]:
+        sorted_items = sorted(indexed_rects, key=lambda item: self._axis_interval(item[1], axis)[0])
         groups: list[list[tuple[int, tuple[int, int, int, int]]]] = []
-        for item in sorted(indexed_rects, key=lambda item: self._axis_center(item[1], axis)):
-            item_interval = self._axis_interval(item[1], axis)
-            for group in groups:
-                if any(self._intervals_overlap(item_interval, self._axis_interval(rect, axis)) for _idx, rect in group):
-                    group.append(item)
-                    break
+        if not sorted_items:
+            return groups
+
+        current_group = [sorted_items[0]]
+        current_max_end = self._axis_interval(sorted_items[0][1], axis)[1]
+
+        for item in sorted_items[1:]:
+            interval = self._axis_interval(item[1], axis)
+            if interval[0] < current_max_end:
+                current_group.append(item)
+                current_max_end = max(current_max_end, interval[1])
             else:
-                groups.append([item])
+                groups.append(current_group)
+                current_group = [item]
+                current_max_end = interval[1]
+                
+        if current_group:
+            groups.append(current_group)
 
         groups.sort(key=lambda group: min(self._axis_center(rect, axis) for _idx, rect in group))
         return groups
