@@ -764,7 +764,7 @@ class WorkspaceWidget(BaseWidget):
     k_signal_layout_command = pyqtSignal(dict)
     validation_schema = KomorebiWorkspacesConfig
     event_listener = KomorebiEventListener
-    _pending_clear_delay_ms = 120
+    _pending_clear_delay_ms = 0
     _focus_diag_sample_delays_ms = (0, 50, 150, 300)
     _title_update_icon_refresh_delay_ms = 75
     def __init__(self, config: KomorebiWorkspacesConfig):

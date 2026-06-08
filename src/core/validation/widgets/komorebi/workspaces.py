@@ -17,12 +17,12 @@ class AppIconsConfig(CustomBaseModel):
     hide_label: bool = False
     hide_duplicates: bool = False
     hide_floating: bool = False
-    display_mode: Literal["row", "layout_preview"] = "row"
+    display_mode: Literal["row", "layout_preview"] = "layout_preview"
     click_action: Literal["focus_window", "activate_workspace"] = "focus_window"
     preview_max_windows: int = 6
     preview_compact_threshold: int = 14
     preview_tiny_threshold: int = 9
-    preview_padding: int = 2
+    preview_padding: int = 1
     preview_height: int = 36
     preview_aspect_ratio: float = 2.0
     preview_show_focus: bool = True
