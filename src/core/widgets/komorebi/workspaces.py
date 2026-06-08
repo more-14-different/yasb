@@ -275,6 +275,15 @@ class WorkspaceAppIconLabel(QLabel):
         self.target_hwnd = None
         self.app_key = None
 
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if "focused" in str(self.property("class") or ""):
+            from PyQt6.QtGui import QPainter, QColor, QPen
+            painter = QPainter(self)
+            painter.setPen(QPen(QColor(246, 193, 119, 245), 2))
+            painter.drawLine(0, self.height() - 1, self.width(), self.height() - 1)
+            painter.end()
+
     def update_icon(self, icon_entry: dict):
         self.target_hwnd = icon_entry["hwnd"]
         self.app_key = icon_entry["app_key"]
