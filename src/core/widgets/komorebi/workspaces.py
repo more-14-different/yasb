@@ -248,20 +248,17 @@ class WorkspaceButtonWithIcons(WorkspaceButtonMixin, QFrame):
             icon_label.hide()
 
     def _show_row_icons(self, icons_list: list[dict]) -> None:
-        for extra_label in self.icon_labels[len(icons_list) :]:
-            self.button_layout.removeWidget(extra_label)
-            extra_label.setParent(None)
-        self.icon_labels = self.icon_labels[: len(icons_list)]
+        for label in self.icon_labels:
+            self.button_layout.removeWidget(label)
+            label.setParent(None)
+            label.deleteLater()
+        self.icon_labels = []
 
         for index, icon_entry in enumerate(icons_list):
-            if index < len(self.icon_labels):
-                self.icon_labels[index].update_icon(icon_entry)
-                self.icon_labels[index].show()
-            else:
-                icon_label = WorkspaceAppIconLabel(self.workspace_index, self.parent_widget)
-                icon_label.update_icon(icon_entry)
-                self.button_layout.addWidget(icon_label)
-                self.icon_labels.append(icon_label)
+            icon_label = WorkspaceAppIconLabel(self.workspace_index, self.parent_widget)
+            icon_label.update_icon(icon_entry)
+            self.button_layout.addWidget(icon_label)
+            self.icon_labels.append(icon_label)
 
     def _should_use_layout_preview(self, icons_list: list[dict]) -> bool:
         if self.config.app_icons.display_mode != APP_ICON_DISPLAY_MODE_LAYOUT_PREVIEW:
@@ -497,12 +494,14 @@ class WorkspaceLayoutPreview(QFrame):
         if previous_size != content_size:
             self._request_parent_layout_update()
 
-        while len(self._tiles) < len(self._entries):
+        for tile in self._tiles:
+            tile.setParent(None)
+            tile.deleteLater()
+        self._tiles = []
+
+        for _ in range(len(self._entries)):
             self._tiles.append(WorkspacePreviewTile(self.workspace_index, self.parent_widget, self))
             self._tiles[-1].setParent(self._overlay)
-
-        for extra_tile in self._tiles[len(self._entries) :]:
-            extra_tile.hide()
 
         for index, icon_entry in enumerate(self._entries):
             tile = self._tiles[index]
@@ -706,6 +705,7 @@ class WorkspaceLayoutPreview(QFrame):
                 layout.invalidate()
                 layout.activate()
         self.parent_widget._workspace_container.updateGeometry()
+        self.parent_widget.updateGeometry()
         QTimer.singleShot(0, self.parent_widget._sync_all_layout_preview_overlays)
 
     def _compute_bounds(self, icon_entries: list[dict]) -> tuple[int, int, int, int] | None:
@@ -1792,12 +1792,18 @@ class WorkspaceWidget(BaseWidget):
             pixmap = self._get_app_icon(hwnd, workspace_index, unique_app_keys=unique_app_keys)
             if pixmap is None:
                 continue
+            class_name = f"icon icon-{index + 1}"
+            if hwnd == focused_hwnd:
+                class_name += " focused"
+            elif hwnd == last_active_hwnd and hwnd != focused_hwnd:
+                class_name += " last-focused"
+                
             icon_entries.append(
                 {
                     "hwnd": hwnd,
                     "app_key": self._get_app_key(hwnd),
                     "pixmap": pixmap,
-                    "class_name": f"icon icon-{index + 1}",
+                    "class_name": class_name,
                     "window_rect": window.get("rect"),
                     "focused": hwnd == focused_hwnd,
                     "last_focused": hwnd == last_active_hwnd and hwnd != focused_hwnd,
