@@ -1,4 +1,5 @@
 import logging
+import math
 from contextlib import suppress
 from typing import Literal
 
@@ -465,6 +466,7 @@ class WorkspaceLayoutPreview(QFrame):
         self.hide()
 
     def refresh_preview_styles(self) -> None:
+        self._sync_overlay_class()
         refresh_widget_style(self._overlay)
         for tile in self._tiles:
             if tile.isVisible():
@@ -505,6 +507,9 @@ class WorkspaceLayoutPreview(QFrame):
         normalized_rects, content_size = self._compact_layout_rects(rects, icon_footprint)
         if content_size.width() <= 0 or content_size.height() <= 0:
             return False
+        frame_padding = max(3, padding + 2)
+        normalized_rects = [rect.translated(frame_padding, frame_padding) for rect in normalized_rects]
+        content_size = QSize(content_size.width() + frame_padding * 2, content_size.height() + frame_padding * 2)
 
         previous_size = QSize(self._current_canvas_size)
         self._current_canvas_size = content_size
@@ -533,21 +538,45 @@ class WorkspaceLayoutPreview(QFrame):
             tile.raise_()
 
         self.setProperty("class", "layout-preview-anchor")
+        self._sync_overlay_class()
         refresh_widget_style(self)
         return True
+
+    def _sync_overlay_class(self) -> None:
+        status = str(getattr(self.parent_button, "status", "") or "").lower()
+        status_class = f" {status}" if status else ""
+        self._overlay.setProperty("class", f"layout-preview{status_class}")
 
     def _compact_layout_rects(self, rects: list[tuple[int, int, int, int]], icon_footprint: int) -> tuple[list[QRect], QSize]:
         if not rects:
             return [], QSize()
-        x_clusters = self._cluster_axis([rect[0] + rect[2] / 2 for rect in rects], icon_footprint)
-        y_clusters = self._cluster_axis([rect[1] + rect[3] / 2 for rect in rects], icon_footprint)
+
+        layout_items = self._build_compact_tree_layout(list(enumerate(rects)))
+        if layout_items:
+            positions, width_units, height_units = layout_items
+            normalized_rects = [QRect() for _ in rects]
+            for index, x_units, y_units in positions:
+                normalized_rects[index] = QRect(
+                    int(round(x_units * icon_footprint)),
+                    int(round(y_units * icon_footprint)),
+                    icon_footprint,
+                    icon_footprint,
+                )
+            content_size = QSize(
+                max(1, int(math.ceil(width_units * icon_footprint))),
+                max(1, int(math.ceil(height_units * icon_footprint))),
+            )
+            return normalized_rects, content_size
+
+        x_positions = self._compact_axis_positions(rects, axis="x")
+        y_positions = self._compact_axis_positions(rects, axis="y")
         normalized_rects: list[QRect] = []
-        for rect in rects:
-            center_x = rect[0] + rect[2] / 2
-            center_y = rect[1] + rect[3] / 2
-            col = self._cluster_key(center_x, x_clusters)
-            row = self._cluster_key(center_y, y_clusters)
-            normalized_rects.append(QRect(int(col * icon_footprint), int(row * icon_footprint), icon_footprint, icon_footprint))
+        for index, _rect in enumerate(rects):
+            col = x_positions[index]
+            row = y_positions[index]
+            normalized_rects.append(
+                QRect(int(col * icon_footprint), int(row * icon_footprint), icon_footprint, icon_footprint)
+            )
         left = min(rect.x() for rect in normalized_rects)
         top = min(rect.y() for rect in normalized_rects)
         right = max(rect.x() + rect.width() for rect in normalized_rects)
@@ -555,22 +584,118 @@ class WorkspaceLayoutPreview(QFrame):
         translated_rects = [rect.translated(-left, -top) for rect in normalized_rects]
         return translated_rects, QSize(max(1, right - left), max(1, bottom - top))
 
-    def _cluster_axis(self, centers: list[float], icon_footprint: int) -> list[float]:
-        if not centers:
-            return []
-        threshold = max(4, int(round(icon_footprint * 0.6)))
-        sorted_centers = sorted(centers)
-        clusters = [sorted_centers[0]]
-        for center in sorted_centers[1:]:
-            if abs(center - clusters[-1]) > threshold:
-                clusters.append(center)
+    def _build_compact_tree_layout(
+        self,
+        indexed_rects: list[tuple[int, tuple[int, int, int, int]]],
+    ) -> tuple[list[tuple[int, float, float]], float, float] | None:
+        if len(indexed_rects) == 1:
+            return [(indexed_rects[0][0], 0.0, 0.0)], 1.0, 1.0
+
+        axis_groups = self._find_split_groups(indexed_rects, "x")
+        if len(axis_groups) <= 1:
+            axis_groups = self._find_split_groups(indexed_rects, "y")
+            axis = "y"
+        else:
+            y_groups = self._find_split_groups(indexed_rects, "y")
+            axis = "x" if len(y_groups) <= 1 or len(axis_groups) <= len(y_groups) else "y"
+            if axis == "y":
+                axis_groups = y_groups
+
+        if len(axis_groups) <= 1:
+            return None
+
+        child_layouts = [self._build_compact_tree_layout(group) for group in axis_groups]
+        if any(child_layout is None for child_layout in child_layouts):
+            return None
+
+        positions: list[tuple[int, float, float]] = []
+        if axis == "x":
+            total_width = sum(child_layout[1] for child_layout in child_layouts if child_layout)
+            total_height = max(child_layout[2] for child_layout in child_layouts if child_layout)
+            cursor_x = 0.0
+            for child_positions, child_width, child_height in child_layouts:
+                offset_y = (total_height - child_height) / 2
+                positions.extend((index, x + cursor_x, y + offset_y) for index, x, y in child_positions)
+                cursor_x += child_width
+            return positions, total_width, total_height
+
+        total_width = max(child_layout[1] for child_layout in child_layouts if child_layout)
+        total_height = sum(child_layout[2] for child_layout in child_layouts if child_layout)
+        cursor_y = 0.0
+        for child_positions, child_width, child_height in child_layouts:
+            offset_x = (total_width - child_width) / 2
+            positions.extend((index, x + offset_x, y + cursor_y) for index, x, y in child_positions)
+            cursor_y += child_height
+        return positions, total_width, total_height
+
+    def _find_split_groups(
+        self,
+        indexed_rects: list[tuple[int, tuple[int, int, int, int]]],
+        axis: str,
+    ) -> list[list[tuple[int, tuple[int, int, int, int]]]]:
+        groups: list[list[tuple[int, tuple[int, int, int, int]]]] = []
+        for item in sorted(indexed_rects, key=lambda item: self._axis_center(item[1], axis)):
+            item_interval = self._axis_interval(item[1], axis)
+            for group in groups:
+                if any(self._intervals_overlap(item_interval, self._axis_interval(rect, axis)) for _idx, rect in group):
+                    group.append(item)
+                    break
             else:
-                clusters[-1] = (clusters[-1] + center) / 2
-        return clusters
+                groups.append([item])
+
+        groups.sort(key=lambda group: min(self._axis_center(rect, axis) for _idx, rect in group))
+        return groups
+
+    def _compact_axis_positions(self, rects: list[tuple[int, int, int, int]], axis: str) -> list[int]:
+        constraints: list[tuple[int, int]] = []
+        for left_index, left_rect in enumerate(rects):
+            for right_index, right_rect in enumerate(rects):
+                if left_index == right_index:
+                    continue
+                if axis == "x":
+                    if self._axis_center(left_rect, "x") < self._axis_center(right_rect, "x") and self._intervals_overlap(
+                        self._axis_interval(left_rect, "y"),
+                        self._axis_interval(right_rect, "y"),
+                    ):
+                        constraints.append((left_index, right_index))
+                elif self._axis_center(left_rect, "y") < self._axis_center(right_rect, "y") and (
+                    self._intervals_overlap(self._axis_interval(left_rect, "x"), self._axis_interval(right_rect, "x"))
+                    or not self._rects_overlap_on_any_axis(left_rect, right_rect)
+                ):
+                    constraints.append((left_index, right_index))
+
+        positions = [0] * len(rects)
+        for _ in range(len(rects)):
+            changed = False
+            for before_index, after_index in constraints:
+                next_position = positions[before_index] + 1
+                if positions[after_index] < next_position:
+                    positions[after_index] = next_position
+                    changed = True
+            if not changed:
+                break
+        minimum = min(positions) if positions else 0
+        return [position - minimum for position in positions]
 
     @staticmethod
-    def _cluster_key(center: float, clusters: list[float]) -> int:
-        return min(range(len(clusters)), key=lambda idx: abs(clusters[idx] - center))
+    def _axis_center(rect: tuple[int, int, int, int], axis: str) -> float:
+        return rect[0] + rect[2] / 2 if axis == "x" else rect[1] + rect[3] / 2
+
+    @staticmethod
+    def _axis_interval(rect: tuple[int, int, int, int], axis: str) -> tuple[int, int]:
+        start = rect[0] if axis == "x" else rect[1]
+        size = rect[2] if axis == "x" else rect[3]
+        return start, start + size
+
+    @staticmethod
+    def _intervals_overlap(first: tuple[int, int], second: tuple[int, int]) -> bool:
+        return min(first[1], second[1]) > max(first[0], second[0])
+
+    def _rects_overlap_on_any_axis(self, first: tuple[int, int, int, int], second: tuple[int, int, int, int]) -> bool:
+        return self._intervals_overlap(self._axis_interval(first, "x"), self._axis_interval(second, "x")) or self._intervals_overlap(
+            self._axis_interval(first, "y"),
+            self._axis_interval(second, "y"),
+        )
 
     def _sync_overlay_geometry(self) -> None:
         if self._current_canvas_size.isEmpty() or not self.isVisible():
