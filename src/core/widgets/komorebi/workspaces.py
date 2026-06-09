@@ -122,6 +122,32 @@ class WorkspaceButton(WorkspaceButtonMixin, QPushButton):
         refresh_widget_style(self.widget_to_style)
 
 
+class _WorkspaceNumberLabel(QLabel):
+    """
+    QLabel subclass for workspace number text inside WorkspaceButtonWithIcons.
+
+    Qt's QLabel.sizeHint() does NOT include CSS padding or border width, so the
+    parent QFrame (the real clickable area) collapses to the raw text size when the
+    workspace is empty or populated but visually transparent.  This subclass adds the
+    padding+border amounts from .ws-btn (padding: 4px 8px; border: 2px) to sizeHint()
+    so that the layout always reserves a comfortably large hit area, regardless of
+    whether a background is currently drawn.
+
+    Horizontal extra: (8px padding + 2px border) * 2 = 20 px
+    Vertical   extra: (4px padding + 2px border) * 2 = 12 px
+    """
+    _EXTRA_W: int = 20
+    _EXTRA_H: int = 12
+
+    def sizeHint(self) -> QSize:
+        base = super().sizeHint()
+        return QSize(base.width() + self._EXTRA_W, base.height() + self._EXTRA_H)
+
+    def minimumSizeHint(self) -> QSize:
+        base = super().minimumSizeHint()
+        return QSize(base.width() + self._EXTRA_W, base.height() + self._EXTRA_H)
+
+
 class WorkspaceButtonWithIcons(WorkspaceButtonMixin, QFrame):
     @property
     def widget_to_style(self):
@@ -154,7 +180,7 @@ class WorkspaceButtonWithIcons(WorkspaceButtonMixin, QFrame):
         self.button_layout.setSpacing(0)
         self.button_layout.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
 
-        self.text_label = QLabel(self.default_label)
+        self.text_label = _WorkspaceNumberLabel(self.default_label)
         self.text_label.setProperty("class", "ws-btn")
         self.text_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.button_layout.addWidget(self.text_label)
