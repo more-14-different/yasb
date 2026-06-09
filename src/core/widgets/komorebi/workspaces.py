@@ -122,6 +122,36 @@ class WorkspaceButton(WorkspaceButtonMixin, QPushButton):
         refresh_widget_style(self.widget_to_style)
 
 
+class WorkspaceButtonWithIcons(WorkspaceButtonMixin, QFrame):
+    @property
+    def widget_to_style(self):
+        return self.text_label
+
+    def __init__(
+        self,
+        workspace_index: int,
+        parent_widget: WorkspaceWidget,
+        config: KomorebiWorkspacesConfig,
+        label: str = None,
+        active_label: str = None,
+        populated_label: str = None,
+    ):
+        super().__init__(parent_widget._workspace_container)
+        self.komorebic = KomorebiClient()
+        self.workspace_index = workspace_index
+        self.parent_widget = parent_widget
+        self.config = config
+        self.status = WORKSPACE_STATUS_EMPTY
+        self.setProperty("class", "ws-btn-container")
+        self.default_label = label if label and label.strip() else str(workspace_index + 1)
+        self.active_label = active_label if active_label and active_label.strip() else self.default_label
+        self.populated_label = populated_label if populated_label and populated_label.strip() else self.default_label
+
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, self.sizePolicy().verticalPolicy())
+
+        self.button_layout = QHBoxLayout(self)
+        self.button_layout.setContentsMargins(0, 0, 0, 0)
+        self.button_layout.setSpacing(0)
         self.button_layout.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
 
         self.text_label = QLabel(self.default_label)
@@ -263,17 +293,20 @@ class WorkspaceAppIconLabel(QLabel):
         from PyQt6.QtCore import Qt
         painter = QPainter(self)
         
-        is_focused = "focused" in str(self.property("class") or "")
-        is_last_focused = "last-focused" in str(self.property("class") or "")
+        classes = str(self.property("class") or "").split()
+        is_focused = "focused" in classes
+        is_last_focused = "last-focused" in classes
         
+        is_active_workspace = self.workspace_index == self.parent_widget._curr_workspace_index
+
         if self._is_pending_jump:
             painter.fillRect(self.rect(), QColor(200, 200, 200, 76))
             painter.setPen(QPen(QColor(156, 207, 216, 255), 1, Qt.PenStyle.SolidLine))
             painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
-        elif is_focused:
+        elif is_focused and is_active_workspace:
             painter.setPen(QPen(QColor(246, 193, 119, 255), 1, Qt.PenStyle.SolidLine))
             painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
-        elif is_last_focused:
+        elif (is_focused and not is_active_workspace) or is_last_focused:
             painter.setPen(QPen(QColor(141, 163, 184, 255), 1, Qt.PenStyle.SolidLine))
             painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
         elif self._is_hovered:
@@ -366,17 +399,20 @@ class WorkspacePreviewTile(QFrame):
         from PyQt6.QtCore import Qt
         painter = QPainter(self)
         
-        is_focused = "focused" in str(self.property("class") or "")
-        is_last_focused = "last-focused" in str(self.property("class") or "")
+        classes = str(self.property("class") or "").split()
+        is_focused = "focused" in classes
+        is_last_focused = "last-focused" in classes
         
+        is_active_workspace = self.workspace_index == self.parent_widget._curr_workspace_index
+
         if self._is_pending_jump:
             painter.fillRect(self.rect(), QColor(200, 200, 200, 76))
             painter.setPen(QPen(QColor(156, 207, 216, 255), 1, Qt.PenStyle.SolidLine))
             painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
-        elif is_focused:
+        elif is_focused and is_active_workspace:
             painter.setPen(QPen(QColor(246, 193, 119, 255), 1, Qt.PenStyle.SolidLine))
             painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
-        elif is_last_focused:
+        elif (is_focused and not is_active_workspace) or is_last_focused:
             painter.setPen(QPen(QColor(141, 163, 184, 255), 1, Qt.PenStyle.SolidLine))
             painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
         elif self._is_hovered:
