@@ -4,7 +4,7 @@ from contextlib import suppress
 from typing import Literal
 
 from PIL import Image
-from PyQt6.QtCore import QPoint, QRect, QSize, QTimer, Qt, pyqtSignal
+from PyQt6.QtCore import QPoint, QRect, QSize, QTimer, Qt, pyqtSignal, QObject, QRunnable, pyqtSlot, QThreadPool
 from PyQt6.QtGui import QImage, QMouseEvent, QPixmap
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QWidget
 from win32con import HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE
@@ -36,6 +36,62 @@ APP_ICON_DISPLAY_MODE_LAYOUT_PREVIEW = "layout_preview"
 
 def _log_workspace_diag(message: str, *args) -> None:
     logging.info("[komorebi-workspaces] " + message, *args)
+
+
+class IconFetchSignals(QObject):
+    result = pyqtSignal(int, list)
+
+
+class IconFetchWorker(QRunnable):
+    def __init__(self, workspace_index, windows_in_workspace, dpi, config, focused_hwnd, last_active_hwnd, parent_widget):
+        super().__init__()
+        self.workspace_index = workspace_index
+        self.windows_in_workspace = windows_in_workspace
+        self.dpi = dpi
+        self.config = config
+        self.focused_hwnd = focused_hwnd
+        self.last_active_hwnd = last_active_hwnd
+        self.parent_widget = parent_widget
+        self.signals = IconFetchSignals()
+
+    @pyqtSlot()
+    def run(self):
+        try:
+            unique_app_keys = set()
+            icon_entries = []
+            for index, window in enumerate(self.windows_in_workspace):
+                hwnd = window["hwnd"]
+                
+                qimage = self.parent_widget._get_app_icon_image(
+                    hwnd,
+                    self.dpi,
+                    unique_app_keys=unique_app_keys
+                )
+                
+                if qimage is None:
+                    continue
+                    
+                class_name = f"icon icon-{index + 1}"
+                if hwnd == self.focused_hwnd:
+                    class_name += " focused"
+                elif hwnd == self.last_active_hwnd and hwnd != self.focused_hwnd:
+                    class_name += " last-focused"
+                    
+                icon_entries.append(
+                    {
+                        "hwnd": hwnd,
+                        "app_key": self.parent_widget._get_app_key(hwnd),
+                        "qimage": qimage,
+                        "class_name": class_name,
+                        "window_rect": window.get("rect"),
+                        "focused": hwnd == self.focused_hwnd,
+                        "last_focused": hwnd == self.last_active_hwnd and hwnd != self.focused_hwnd,
+                    }
+                )
+            self.signals.result.emit(self.workspace_index, icon_entries)
+        except Exception:
+            logging.exception(f"Failed to fetch icons for workspace {self.workspace_index}")
+            self.signals.result.emit(self.workspace_index, [])
 
 
 def _set_workspace_button_class(widget: QWidget, status: WorkspaceStatus, pending: bool = False) -> None:
@@ -198,9 +254,43 @@ class WorkspaceButtonWithIcons(WorkspaceButtonMixin, QFrame):
                 hwnd = icon_entry["hwnd"]
                 if hwnd in icons:
                     icon_entry["pixmap"] = icons[hwnd]
+            self._render_icons()
         else:
-            self.icons = self.parent_widget._get_all_icons_in_workspace(self.workspace_index)
+            windows = self.parent_widget._get_all_windows_in_workspace(self.workspace_index)
+            focused_hwnd = self.parent_widget._get_workspace_focused_hwnd(self.workspace_index)
+            last_active_hwnd = self.parent_widget._workspace_last_active_hwnd.get(self.workspace_index)
+            dpi = self.parent_widget.screen().devicePixelRatio()
+            
+            worker = IconFetchWorker(
+                self.workspace_index,
+                windows,
+                dpi,
+                self.config,
+                focused_hwnd,
+                last_active_hwnd,
+                self.parent_widget
+            )
+            worker.signals.result.connect(self._on_icons_fetched)
+            QThreadPool.globalInstance().start(worker)
 
+    def _on_icons_fetched(self, workspace_index: int, icon_entries: list[dict]):
+        if self.workspace_index != workspace_index:
+            return
+            
+        dpi = self.parent_widget.screen().devicePixelRatio()
+        for entry in icon_entries:
+            qimage = entry.pop("qimage", None)
+            if qimage:
+                pixmap = QPixmap.fromImage(qimage)
+                pixmap.setDevicePixelRatio(dpi)
+                entry["pixmap"] = pixmap
+            else:
+                entry["pixmap"] = None
+                
+        self.icons = icon_entries
+        self._render_icons()
+
+    def _render_icons(self):
         if (
             not self.config.app_icons.enabled_active
             and self.workspace_index == self.parent_widget._curr_workspace_index
@@ -212,7 +302,7 @@ class WorkspaceButtonWithIcons(WorkspaceButtonMixin, QFrame):
         ):
             icons_list = []
         else:
-            icons_list = [icon_entry for icon_entry in self.icons if icon_entry["pixmap"] is not None]
+            icons_list = [icon_entry for icon_entry in self.icons if icon_entry.get("pixmap") is not None]
             if self.config.app_icons.max_icons > 0:
                 icons_list = icons_list[: self.config.app_icons.max_icons]
 
@@ -882,6 +972,7 @@ class WorkspaceWidget(BaseWidget):
         self._pending_title_update_icon_hwnds: dict[int, set[int]] = {}
         self._title_update_icon_flush_token = 0
         self._workspace_buttons: list[WorkspaceButton] = []
+        self._icon_cache_lock = __import__("threading").Lock()
         self._workspace_focus_events = frozenset([
             KomorebiEvent.CycleFocusWorkspace.value,
             KomorebiEvent.CycleFocusMonitor.value,
@@ -1897,37 +1988,7 @@ class WorkspaceWidget(BaseWidget):
             windows_in_workspace.extend(floating_windows)
         return windows_in_workspace
 
-    def _get_all_icons_in_workspace(self, workspace_index: int) -> list[dict] | None:
-        windows_in_workspace = self._get_all_windows_in_workspace(workspace_index)
-        unique_app_keys: set = set()
-        icon_entries = []
-        focused_hwnd = self._get_workspace_focused_hwnd(workspace_index)
-        last_active_hwnd = self._workspace_last_active_hwnd.get(workspace_index)
-        for index, window in enumerate(windows_in_workspace):
-            hwnd = window["hwnd"]
-            pixmap = self._get_app_icon(hwnd, workspace_index, unique_app_keys=unique_app_keys)
-            if pixmap is None:
-                continue
-            class_name = f"icon icon-{index + 1}"
-            if hwnd == focused_hwnd:
-                class_name += " focused"
-            elif hwnd == last_active_hwnd and hwnd != focused_hwnd:
-                class_name += " last-focused"
-                
-            icon_entries.append(
-                {
-                    "hwnd": hwnd,
-                    "app_key": self._get_app_key(hwnd),
-                    "pixmap": pixmap,
-                    "class_name": class_name,
-                    "window_rect": window.get("rect"),
-                    "focused": hwnd == focused_hwnd,
-                    "last_focused": hwnd == last_active_hwnd and hwnd != focused_hwnd,
-                }
-            )
-        return icon_entries
-
-    def _get_app_icon(self, hwnd: int, workspace_index: int, ignore_cache: bool = False, unique_app_keys: set | None = None) -> QPixmap | None:
+    def _get_app_icon_image(self, hwnd: int, dpi: float, ignore_cache: bool = False, unique_app_keys: set | None = None) -> QImage | None:
         try:
             if self.config.app_icons.hide_duplicates and unique_app_keys is not None:
                 app_key = self._get_app_key(hwnd)
@@ -1943,32 +2004,44 @@ class WorkspaceWidget(BaseWidget):
                     else:
                         return None
 
-            self.dpi = self.screen().devicePixelRatio()
-            cache_key = (hwnd, self.dpi)
+            cache_key = (hwnd, dpi)
 
-            if cache_key in self._icon_cache and not ignore_cache:
-                icon_img = self._icon_cache[cache_key]
+            with self._icon_cache_lock:
+                has_cache = cache_key in self._icon_cache
+
+            if has_cache and not ignore_cache:
+                with self._icon_cache_lock:
+                    icon_img = self._icon_cache[cache_key]
             else:
                 icon_img = get_window_icon(hwnd)
 
             if icon_img:
-                icon_img = icon_img.resize(
-                    (
-                        int(self.config.app_icons.size * self.dpi),
-                        int(self.config.app_icons.size * self.dpi),
-                    ),
-                    Image.LANCZOS,
-                ).convert("RGBA")
-                self._icon_cache[cache_key] = icon_img
+                if not has_cache or ignore_cache:
+                    icon_img = icon_img.resize(
+                        (
+                            int(self.config.app_icons.size * dpi),
+                            int(self.config.app_icons.size * dpi),
+                        ),
+                        Image.LANCZOS,
+                    ).convert("RGBA")
+                    with self._icon_cache_lock:
+                        self._icon_cache[cache_key] = icon_img
                 qimage = QImage(icon_img.tobytes(), icon_img.width, icon_img.height, QImage.Format.Format_RGBA8888)
-                pixmap = QPixmap.fromImage(qimage)
-                pixmap.setDevicePixelRatio(self.dpi)
-                return pixmap
+                return qimage
             else:
                 return None
         except Exception:
             logging.debug("Failed to get icons for window with HWND %s", hwnd, exc_info=True)
             return None
+
+    def _get_app_icon(self, hwnd: int, workspace_index: int, ignore_cache: bool = False, unique_app_keys: set | None = None) -> QPixmap | None:
+        dpi = self.screen().devicePixelRatio()
+        qimage = self._get_app_icon_image(hwnd, dpi, ignore_cache, unique_app_keys)
+        if qimage:
+            pixmap = QPixmap.fromImage(qimage)
+            pixmap.setDevicePixelRatio(dpi)
+            return pixmap
+        return None
 
     def _get_app_key(self, hwnd: int) -> str | None:
         try:
