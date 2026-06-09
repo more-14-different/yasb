@@ -363,8 +363,10 @@ class WorkspaceAppIconLabel(QLabel):
         is_workspace_pending = False
         if hasattr(button, "text_label") and button.text_label:
             is_workspace_hovered = button.text_label.underMouse()
-            btn_classes = str(button.property("class") or "").split() + str(button.text_label.property("class") or "").split()
-            is_workspace_pending = "pending" in btn_classes or "pseudo-pending" in btn_classes
+            btn_label_classes = str(button.text_label.property("class") or "").split()
+            # Only 'pending' (digit-click / keyboard switch) spreads cyan to sibling icons.
+            # 'pseudo-pending' (icon-click) must NOT spread cyan beyond the clicked icon.
+            is_workspace_pending = "pending" in btn_label_classes
 
         is_focused_or_last = is_focused or is_last_focused
 
@@ -496,8 +498,10 @@ class WorkspacePreviewTile(QFrame):
         is_workspace_pending = False
         if hasattr(button, "text_label") and button.text_label:
             is_workspace_hovered = button.text_label.underMouse()
-            btn_classes = str(button.property("class") or "").split() + str(button.text_label.property("class") or "").split()
-            is_workspace_pending = "pending" in btn_classes or "pseudo-pending" in btn_classes
+            btn_label_classes = str(button.text_label.property("class") or "").split()
+            # Only 'pending' (digit-click / keyboard switch) spreads cyan to sibling tiles.
+            # 'pseudo-pending' (icon-click) must NOT spread cyan beyond the clicked tile.
+            is_workspace_pending = "pending" in btn_label_classes
 
         is_focused_or_last = is_focused or is_last_focused
 
