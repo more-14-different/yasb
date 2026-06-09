@@ -242,6 +242,7 @@ class WorkspaceButtonWithIcons(WorkspaceButtonMixin, QFrame):
 
         if self.preview_widget.isVisible():
             self.preview_widget.refresh_preview_styles()
+        self._update_icons_paint()
 
     def update_icons(self, icons: dict[int, QPixmap] = None):
         if icons:
@@ -362,7 +363,7 @@ class WorkspaceAppIconLabel(QLabel):
         is_workspace_pending = False
         if hasattr(button, "text_label") and button.text_label:
             is_workspace_hovered = button.text_label.underMouse()
-            btn_classes = str(button.text_label.property("class") or "").split()
+            btn_classes = str(button.property("class") or "").split() + str(button.text_label.property("class") or "").split()
             is_workspace_pending = "pending" in btn_classes or "pseudo-pending" in btn_classes
 
         is_focused_or_last = is_focused or is_last_focused
@@ -373,14 +374,14 @@ class WorkspaceAppIconLabel(QLabel):
             pen.setDashPattern([2, 2])
             painter.setPen(pen)
             painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
-        elif is_focused and is_active_workspace:
-            painter.setPen(QPen(QColor(246, 193, 119, 255), 1, Qt.PenStyle.SolidLine))
-            painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
         elif self._is_hovered or (is_workspace_hovered and is_focused_or_last):
             painter.fillRect(self.rect(), QColor(246, 193, 119, 51))
             pen = QPen(QColor(246, 193, 119, 255), 1, Qt.PenStyle.CustomDashLine)
             pen.setDashPattern([2, 2])
             painter.setPen(pen)
+            painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
+        elif is_focused and is_active_workspace:
+            painter.setPen(QPen(QColor(246, 193, 119, 255), 1, Qt.PenStyle.SolidLine))
             painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
         elif (is_focused and not is_active_workspace) or is_last_focused:
             painter.setPen(QPen(QColor(141, 163, 184, 255), 1, Qt.PenStyle.SolidLine))
@@ -495,7 +496,7 @@ class WorkspacePreviewTile(QFrame):
         is_workspace_pending = False
         if hasattr(button, "text_label") and button.text_label:
             is_workspace_hovered = button.text_label.underMouse()
-            btn_classes = str(button.text_label.property("class") or "").split()
+            btn_classes = str(button.property("class") or "").split() + str(button.text_label.property("class") or "").split()
             is_workspace_pending = "pending" in btn_classes or "pseudo-pending" in btn_classes
 
         is_focused_or_last = is_focused or is_last_focused
@@ -506,14 +507,14 @@ class WorkspacePreviewTile(QFrame):
             pen.setDashPattern([2, 2])
             painter.setPen(pen)
             painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
-        elif is_focused and is_active_workspace:
-            painter.setPen(QPen(QColor(246, 193, 119, 255), 1, Qt.PenStyle.SolidLine))
-            painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
         elif self._is_hovered or (is_workspace_hovered and is_focused_or_last):
             painter.fillRect(self.rect(), QColor(246, 193, 119, 51))
             pen = QPen(QColor(246, 193, 119, 255), 1, Qt.PenStyle.CustomDashLine)
             pen.setDashPattern([2, 2])
             painter.setPen(pen)
+            painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
+        elif is_focused and is_active_workspace:
+            painter.setPen(QPen(QColor(246, 193, 119, 255), 1, Qt.PenStyle.SolidLine))
             painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
         elif (is_focused and not is_active_workspace) or is_last_focused:
             painter.setPen(QPen(QColor(141, 163, 184, 255), 1, Qt.PenStyle.SolidLine))
@@ -1903,6 +1904,8 @@ class WorkspaceWidget(BaseWidget):
                 refresh_widget_style(target_widget)
             workspace_btn.show()
             workspace_btn.update_visible_buttons()
+            if hasattr(workspace_btn, "_update_icons_paint"):
+                workspace_btn._update_icons_paint()
         if update_layer:
             self._get_workspace_layer(workspace_index)
 
