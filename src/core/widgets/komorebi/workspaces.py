@@ -62,8 +62,50 @@ class WorkspaceButtonMixin:
             target_widget.setProperty("class", new_class)
             refresh_widget_style(target_widget)
 
+    def _preview_workspace(self):
+        if self.workspace_index == self.parent_widget._curr_workspace_index:
+            return
+        if hasattr(self.parent_widget, "_preview_revert_timer"):
+            self.parent_widget._preview_revert_timer.stop()
+        if not getattr(self.parent_widget, "_preview_active", False):
+            self.parent_widget._preview_original_workspace = self.parent_widget._curr_workspace_index
+            self.parent_widget._preview_active = True
+        if not getattr(self.parent_widget, "_preview_mff_was_enabled", False):
+            mff = self.parent_widget._komorebi_state.get("mouse_follows_focus", False) if getattr(self.parent_widget, "_komorebi_state", None) else False
+            if mff:
+                self.parent_widget._preview_mff_was_enabled = True
+                self.komorebic.set_mouse_follows_focus(False, wait=True)
+        self.komorebic.activate_workspace(self.parent_widget._komorebi_screen["index"], self.workspace_index, wait=False)
+
+    def _revert_preview(self):
+        if not getattr(self.parent_widget, "_preview_active", False):
+            return
+        if not hasattr(self.parent_widget, "_preview_revert_timer"):
+            self.parent_widget._preview_revert_timer = QTimer()
+            self.parent_widget._preview_revert_timer.setSingleShot(True)
+            self.parent_widget._preview_revert_timer.timeout.connect(self._do_revert_preview)
+        self.parent_widget._preview_revert_timer.start(10)
+
+    def _do_revert_preview(self):
+        target = getattr(self.parent_widget, "_preview_original_workspace", None)
+        if target is not None and target != getattr(self.parent_widget, "_curr_workspace_index", None):
+            self.komorebic.activate_workspace(self.parent_widget._komorebi_screen["index"], target, wait=False)
+        if getattr(self.parent_widget, "_preview_mff_was_enabled", False):
+            self.komorebic.set_mouse_follows_focus(True, wait=False)
+            self.parent_widget._preview_mff_was_enabled = False
+        self.parent_widget._preview_active = False
+        self.parent_widget._preview_original_workspace = None
+
     def activate_workspace(self):
         try:
+            if hasattr(self.parent_widget, "_preview_revert_timer"):
+                self.parent_widget._preview_revert_timer.stop()
+            self.parent_widget._preview_active = False
+            self.parent_widget._preview_original_workspace = None
+            if getattr(self.parent_widget, "_preview_mff_was_enabled", False):
+                self.komorebic.set_mouse_follows_focus(True, wait=False)
+                self.parent_widget._preview_mff_was_enabled = False
+                
             screen_index = (
                 self.parent_widget._komorebi_screen.get("index") if self.parent_widget._komorebi_screen else None
             )
@@ -110,6 +152,14 @@ class WorkspaceButton(WorkspaceButtonMixin, QPushButton):
         self.hide()
         self.update_and_redraw(self.status)
 
+    def enterEvent(self, event):
+        self._preview_workspace()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._revert_preview()
+        super().leaveEvent(event)
+
     def update_and_redraw(self, status: WorkspaceStatus):
         self.status = status
         _set_workspace_button_class(self.widget_to_style, status)
@@ -120,6 +170,29 @@ class WorkspaceButton(WorkspaceButtonMixin, QPushButton):
         else:
             self.setText(self.default_label)
         refresh_widget_style(self.widget_to_style)
+
+
+class WorkspaceDigitLabel(QLabel):
+    def __init__(self, workspace_index: int, parent_button: "WorkspaceButtonWithIcons", parent_widget: "WorkspaceWidget", text: str):
+        super().__init__(text)
+        self.workspace_index = workspace_index
+        self.parent_button = parent_button
+        self.parent_widget = parent_widget
+
+    def enterEvent(self, event):
+        self.parent_button._preview_workspace()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self.parent_button._revert_preview()
+        super().leaveEvent(event)
+        
+    def mousePressEvent(self, event: QMouseEvent):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.parent_button.activate_workspace()
+            event.accept()
+            return
+        super().mousePressEvent(event)
 
 
 class WorkspaceButtonWithIcons(WorkspaceButtonMixin, QFrame):
@@ -154,7 +227,7 @@ class WorkspaceButtonWithIcons(WorkspaceButtonMixin, QFrame):
         self.button_layout.setSpacing(0)
         self.button_layout.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
 
-        self.text_label = QLabel(self.default_label)
+        self.text_label = WorkspaceDigitLabel(workspace_index, self, parent_widget, self.default_label)
         self.text_label.setProperty("class", "ws-btn")
         self.text_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.button_layout.addWidget(self.text_label)
