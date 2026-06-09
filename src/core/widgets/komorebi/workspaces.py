@@ -1071,6 +1071,11 @@ class WorkspaceWidget(BaseWidget):
         if self._update_komorebi_state(state):
             active_workspace_changed = self._has_active_workspace_index_changed()
             event_type = event.get("type")
+
+            # send workspace_update event to active_window widgets as early as possible
+            if event_type in self._workspace_focus_events or active_workspace_changed or event_type in ["MoveWindow", "Show", "Hide", "Destroy"]:
+                self._event_service.emit_event("workspace_update", event_type)
+
             pending_workspace_confirmed = (
                 self._curr_workspace_index is not None
                 and active_workspace_changed
@@ -1169,7 +1174,6 @@ class WorkspaceWidget(BaseWidget):
                             self._queue_title_update_icon_refresh(i, hwnd)
                 except (IndexError, TypeError):
                     pass
-                QTimer.singleShot(0, self._refresh_all_workspace_icons)
 
             if event["type"] == KomorebiEvent.MoveWorkspaceToMonitorNumber.value:
                 if event["content"] != self._komorebi_screen["index"]:
@@ -1182,8 +1186,6 @@ class WorkspaceWidget(BaseWidget):
                             self._try_remove_workspace_button(workspace_index)
                 self._add_or_update_buttons()
             elif event["type"] in self._workspace_focus_events or active_workspace_changed:
-                # send workspace_update event to active_window widgets
-                self._event_service.emit_event("workspace_update", event["type"])
                 try:
                     prev_workspace_button = self._workspace_buttons[self._prev_workspace_index]
                     self._update_button(prev_workspace_button)
@@ -1224,10 +1226,6 @@ class WorkspaceWidget(BaseWidget):
                 self.float_override_label.show()
             else:
                 self.float_override_label.hide()
-
-        # send workspace_update event to active_window widgets
-        if event["type"] in ["MoveWindow", "Show", "Hide", "Destroy"]:
-            self._event_service.emit_event("workspace_update", event["type"])
 
     def _clear_container_layout(self):
         for i in reversed(range(self._workspace_container_layout.count())):
@@ -1849,11 +1847,7 @@ class WorkspaceWidget(BaseWidget):
         if not self._workspace_app_icons_enabled:
             return
         try:
-            state = self._komorebic.query_state()
-            if not state:
-                return
-            if self._update_komorebi_state(state):
-                self._refresh_all_workspace_icons()
+            self._refresh_all_workspace_icons()
         except Exception:
             logging.exception("Failed to refresh layout preview from komorebi state")
 
