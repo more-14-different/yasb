@@ -122,6 +122,20 @@ class WorkspaceButton(WorkspaceButtonMixin, QPushButton):
         refresh_widget_style(self.widget_to_style)
 
 
+class WorkspaceTextLabel(QLabel):
+    def __init__(self, text: str, parent_button: "WorkspaceButtonWithIcons"):
+        super().__init__(text)
+        self.parent_button = parent_button
+
+    def enterEvent(self, event):
+        super().enterEvent(event)
+        self.parent_button._on_text_label_enter()
+
+    def leaveEvent(self, event):
+        super().leaveEvent(event)
+        self.parent_button._on_text_label_leave()
+
+
 class WorkspaceButtonWithIcons(WorkspaceButtonMixin, QFrame):
     @property
     def widget_to_style(self):
@@ -154,7 +168,7 @@ class WorkspaceButtonWithIcons(WorkspaceButtonMixin, QFrame):
         self.button_layout.setSpacing(0)
         self.button_layout.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
 
-        self.text_label = QLabel(self.default_label)
+        self.text_label = WorkspaceTextLabel(self.default_label, self)
         self.text_label.setProperty("class", "ws-btn")
         self.text_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.button_layout.addWidget(self.text_label)
@@ -174,6 +188,43 @@ class WorkspaceButtonWithIcons(WorkspaceButtonMixin, QFrame):
             event.accept()
             return
         super().mousePressEvent(event)
+
+    def set_pseudo_hover(self, hovered: bool):
+        current_class = str(self.text_label.property("class") or "")
+        classes = set(current_class.split())
+        if hovered:
+            classes.add("pseudo-hover")
+        else:
+            classes.discard("pseudo-hover")
+        new_class = " ".join(classes)
+        if new_class != current_class:
+            self.text_label.setProperty("class", new_class)
+            refresh_widget_style(self.text_label)
+
+    def set_pseudo_pending(self, pending: bool):
+        current_class = str(self.text_label.property("class") or "")
+        classes = set(current_class.split())
+        if pending:
+            classes.add("pseudo-pending")
+        else:
+            classes.discard("pseudo-pending")
+        new_class = " ".join(classes)
+        if new_class != current_class:
+            self.text_label.setProperty("class", new_class)
+            refresh_widget_style(self.text_label)
+
+    def _on_text_label_enter(self):
+        self._update_icons_paint()
+
+    def _on_text_label_leave(self):
+        self._update_icons_paint()
+
+    def _update_icons_paint(self):
+        for icon in self.icon_labels:
+            icon.update()
+        if hasattr(self, "preview_widget") and self.preview_widget:
+            for tile in self.preview_widget._tiles:
+                tile.update()
 
     def update_and_redraw(self, status: WorkspaceStatus):
         self.status = status
@@ -244,7 +295,7 @@ class WorkspaceButtonWithIcons(WorkspaceButtonMixin, QFrame):
         self.icon_labels = []
 
         for index, icon_entry in enumerate(icons_list):
-            icon_label = WorkspaceAppIconLabel(self.workspace_index, self.parent_widget)
+            icon_label = WorkspaceAppIconLabel(self.workspace_index, self.parent_widget, self)
             icon_label.update_icon(icon_entry)
             self.button_layout.addWidget(icon_label)
             self.icon_labels.append(icon_label)
@@ -268,10 +319,11 @@ class WorkspaceButtonWithIcons(WorkspaceButtonMixin, QFrame):
 
 
 class WorkspaceAppIconLabel(QLabel):
-    def __init__(self, workspace_index: int, parent_widget: "WorkspaceWidget"):
+    def __init__(self, workspace_index: int, parent_widget: "WorkspaceWidget", parent_button: "WorkspaceButtonWithIcons" = None):
         super().__init__()
         self.workspace_index = workspace_index
         self.parent_widget = parent_widget
+        self.parent_button = parent_button
         self.target_hwnd = None
         self.app_key = None
         self._is_hovered = False
@@ -280,11 +332,17 @@ class WorkspaceAppIconLabel(QLabel):
     def enterEvent(self, event):
         self._is_hovered = True
         self.update()
+        button = self.parent_button
+        if hasattr(button, "set_pseudo_hover"):
+            button.set_pseudo_hover(True)
         super().enterEvent(event)
 
     def leaveEvent(self, event):
         self._is_hovered = False
         self.update()
+        button = self.parent_button
+        if hasattr(button, "set_pseudo_hover"):
+            button.set_pseudo_hover(False)
         super().leaveEvent(event)
 
     def paintEvent(self, event):
@@ -299,25 +357,42 @@ class WorkspaceAppIconLabel(QLabel):
         
         is_active_workspace = self.workspace_index == self.parent_widget._curr_workspace_index
 
-        if self._is_pending_jump:
-            painter.fillRect(self.rect(), QColor(200, 200, 200, 76))
-            painter.setPen(QPen(QColor(156, 207, 216, 255), 1, Qt.PenStyle.SolidLine))
+        button = self.parent_button
+        is_workspace_hovered = False
+        is_workspace_pending = False
+        if hasattr(button, "text_label") and button.text_label:
+            is_workspace_hovered = button.text_label.underMouse()
+            btn_classes = str(button.text_label.property("class") or "").split()
+            is_workspace_pending = "pending" in btn_classes or "pseudo-pending" in btn_classes
+
+        is_focused_or_last = is_focused or is_last_focused
+
+        if self._is_pending_jump or (is_workspace_pending and is_focused_or_last):
+            painter.fillRect(self.rect(), QColor(156, 207, 216, 51))
+            pen = QPen(QColor(156, 207, 216, 255), 1, Qt.PenStyle.CustomDashLine)
+            pen.setDashPattern([2, 2])
+            painter.setPen(pen)
             painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
         elif is_focused and is_active_workspace:
             painter.setPen(QPen(QColor(246, 193, 119, 255), 1, Qt.PenStyle.SolidLine))
             painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
+        elif self._is_hovered or (is_workspace_hovered and is_focused_or_last):
+            painter.fillRect(self.rect(), QColor(246, 193, 119, 51))
+            pen = QPen(QColor(246, 193, 119, 255), 1, Qt.PenStyle.CustomDashLine)
+            pen.setDashPattern([2, 2])
+            painter.setPen(pen)
+            painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
         elif (is_focused and not is_active_workspace) or is_last_focused:
             painter.setPen(QPen(QColor(141, 163, 184, 255), 1, Qt.PenStyle.SolidLine))
-            painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
-        elif self._is_hovered:
-            painter.fillRect(self.rect(), QColor(246, 193, 119, 51))
-            painter.setPen(QPen(QColor(246, 193, 119, 255), 1, Qt.PenStyle.DashLine))
             painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
             
         painter.end()
 
     def update_icon(self, icon_entry: dict):
         self._is_pending_jump = False
+        button = self.parent_button
+        if hasattr(button, "set_pseudo_pending"):
+            button.set_pseudo_pending(False)
         self.target_hwnd = icon_entry["hwnd"]
         self.app_key = icon_entry["app_key"]
         self.setProperty("class", icon_entry["class_name"])
@@ -328,6 +403,9 @@ class WorkspaceAppIconLabel(QLabel):
         if event.button() == Qt.MouseButton.LeftButton:
             self._is_pending_jump = True
             self.update()
+            button = self.parent_button
+            if hasattr(button, "set_pseudo_pending"):
+                button.set_pseudo_pending(True)
             self.parent_widget.focus_workspace_window(self.workspace_index, self.target_hwnd, self.app_key)
             self._apply_instant_focus()
             event.accept()
@@ -336,7 +414,7 @@ class WorkspaceAppIconLabel(QLabel):
 
     def _apply_instant_focus(self):
         try:
-            button = self.parent_widget._workspace_buttons[self.workspace_index]
+            button = self.parent_button
             
             # 1. Update icon label styles instantly
             for icon in button.icon_labels:
@@ -373,6 +451,7 @@ class WorkspacePreviewTile(QFrame):
         self.workspace_index = workspace_index
         self.parent_widget = parent_widget
         self.owner = owner
+        self.parent_button = owner.parent_button
         self.target_hwnd = None
         self.app_key = None
         self.icon_label = QLabel(self)
@@ -386,11 +465,17 @@ class WorkspacePreviewTile(QFrame):
     def enterEvent(self, event):
         self._is_hovered = True
         self.update()
+        button = self.parent_button
+        if hasattr(button, "set_pseudo_hover"):
+            button.set_pseudo_hover(True)
         super().enterEvent(event)
 
     def leaveEvent(self, event):
         self._is_hovered = False
         self.update()
+        button = self.parent_button
+        if hasattr(button, "set_pseudo_hover"):
+            button.set_pseudo_hover(False)
         super().leaveEvent(event)
 
     def paintEvent(self, event):
@@ -405,25 +490,42 @@ class WorkspacePreviewTile(QFrame):
         
         is_active_workspace = self.workspace_index == self.parent_widget._curr_workspace_index
 
-        if self._is_pending_jump:
-            painter.fillRect(self.rect(), QColor(200, 200, 200, 76))
-            painter.setPen(QPen(QColor(156, 207, 216, 255), 1, Qt.PenStyle.SolidLine))
+        button = self.parent_button
+        is_workspace_hovered = False
+        is_workspace_pending = False
+        if hasattr(button, "text_label") and button.text_label:
+            is_workspace_hovered = button.text_label.underMouse()
+            btn_classes = str(button.text_label.property("class") or "").split()
+            is_workspace_pending = "pending" in btn_classes or "pseudo-pending" in btn_classes
+
+        is_focused_or_last = is_focused or is_last_focused
+
+        if self._is_pending_jump or (is_workspace_pending and is_focused_or_last):
+            painter.fillRect(self.rect(), QColor(156, 207, 216, 51))
+            pen = QPen(QColor(156, 207, 216, 255), 1, Qt.PenStyle.CustomDashLine)
+            pen.setDashPattern([2, 2])
+            painter.setPen(pen)
             painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
         elif is_focused and is_active_workspace:
             painter.setPen(QPen(QColor(246, 193, 119, 255), 1, Qt.PenStyle.SolidLine))
             painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
+        elif self._is_hovered or (is_workspace_hovered and is_focused_or_last):
+            painter.fillRect(self.rect(), QColor(246, 193, 119, 51))
+            pen = QPen(QColor(246, 193, 119, 255), 1, Qt.PenStyle.CustomDashLine)
+            pen.setDashPattern([2, 2])
+            painter.setPen(pen)
+            painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
         elif (is_focused and not is_active_workspace) or is_last_focused:
             painter.setPen(QPen(QColor(141, 163, 184, 255), 1, Qt.PenStyle.SolidLine))
-            painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
-        elif self._is_hovered:
-            painter.fillRect(self.rect(), QColor(246, 193, 119, 51))
-            painter.setPen(QPen(QColor(246, 193, 119, 255), 1, Qt.PenStyle.DashLine))
             painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
             
         painter.end()
 
     def update_entry(self, icon_entry: dict, tile_class: str) -> None:
         self._is_pending_jump = False
+        button = self.parent_button
+        if hasattr(button, "set_pseudo_pending"):
+            button.set_pseudo_pending(False)
         self.target_hwnd = icon_entry["hwnd"]
         self.app_key = icon_entry["app_key"]
         self.setProperty("class", tile_class)
@@ -467,6 +569,9 @@ class WorkspacePreviewTile(QFrame):
         if event.button() == Qt.MouseButton.LeftButton:
             self._is_pending_jump = True
             self.update()
+            button = self.parent_button
+            if hasattr(button, "set_pseudo_pending"):
+                button.set_pseudo_pending(True)
             self.owner.handle_tile_click(self.target_hwnd, self.app_key)
             event.accept()
             return
