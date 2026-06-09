@@ -274,24 +274,43 @@ class WorkspaceAppIconLabel(QLabel):
         self.parent_widget = parent_widget
         self.target_hwnd = None
         self.app_key = None
+        self._is_hovered = False
+        self._is_pending_jump = False
+
+    def enterEvent(self, event):
+        self._is_hovered = True
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._is_hovered = False
+        self.update()
+        super().leaveEvent(event)
 
     def paintEvent(self, event):
         super().paintEvent(event)
         from PyQt6.QtGui import QPainter, QColor, QPen
+        from PyQt6.QtCore import Qt
         painter = QPainter(self)
         
-        # --- DEBUG CLICKABLE AREA ---
-        painter.fillRect(self.rect(), QColor(255, 0, 0, 64))
-        painter.setPen(QPen(QColor(255, 0, 0, 255), 1))
-        painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
+        is_focused = "focused" in str(self.property("class") or "")
+        is_last_focused = "last-focused" in str(self.property("class") or "")
         
-        if "focused" in str(self.property("class") or ""):
-            painter.setPen(QPen(QColor(246, 193, 119, 245), 2))
-            painter.drawLine(0, self.height() - 1, self.width(), self.height() - 1)
-        
+        if self._is_pending_jump:
+            painter.fillRect(self.rect(), QColor(246, 193, 119, 85))
+            painter.setPen(QPen(QColor(246, 193, 119, 255), 1, Qt.PenStyle.SolidLine))
+            painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
+        elif is_focused or is_last_focused:
+            painter.setPen(QPen(QColor(246, 193, 119, 255), 1, Qt.PenStyle.SolidLine))
+            painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
+        elif self._is_hovered:
+            painter.setPen(QPen(QColor(156, 207, 216, 255), 1, Qt.PenStyle.DashLine))
+            painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
+            
         painter.end()
 
     def update_icon(self, icon_entry: dict):
+        self._is_pending_jump = False
         self.target_hwnd = icon_entry["hwnd"]
         self.app_key = icon_entry["app_key"]
         self.setProperty("class", icon_entry["class_name"])
@@ -300,6 +319,8 @@ class WorkspaceAppIconLabel(QLabel):
 
     def mousePressEvent(self, event: QMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton:
+            self._is_pending_jump = True
+            self.update()
             self.parent_widget.focus_workspace_window(self.workspace_index, self.target_hwnd, self.app_key)
             self._apply_instant_focus()
             event.accept()
@@ -352,17 +373,43 @@ class WorkspacePreviewTile(QFrame):
         self.icon_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self._icon_size = QSize()
         self.setProperty("class", "layout-preview-tile")
+        self._is_hovered = False
+        self._is_pending_jump = False
+
+    def enterEvent(self, event):
+        self._is_hovered = True
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._is_hovered = False
+        self.update()
+        super().leaveEvent(event)
 
     def paintEvent(self, event):
         super().paintEvent(event)
         from PyQt6.QtGui import QPainter, QColor, QPen
+        from PyQt6.QtCore import Qt
         painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor(0, 255, 0, 64))
-        painter.setPen(QPen(QColor(0, 255, 0, 255), 1))
-        painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
+        
+        is_focused = "focused" in str(self.property("class") or "")
+        is_last_focused = "last-focused" in str(self.property("class") or "")
+        
+        if self._is_pending_jump:
+            painter.fillRect(self.rect(), QColor(246, 193, 119, 85))
+            painter.setPen(QPen(QColor(246, 193, 119, 255), 1, Qt.PenStyle.SolidLine))
+            painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
+        elif is_focused or is_last_focused:
+            painter.setPen(QPen(QColor(246, 193, 119, 255), 1, Qt.PenStyle.SolidLine))
+            painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
+        elif self._is_hovered:
+            painter.setPen(QPen(QColor(156, 207, 216, 255), 1, Qt.PenStyle.DashLine))
+            painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
+            
         painter.end()
 
     def update_entry(self, icon_entry: dict, tile_class: str) -> None:
+        self._is_pending_jump = False
         self.target_hwnd = icon_entry["hwnd"]
         self.app_key = icon_entry["app_key"]
         self.setProperty("class", tile_class)
@@ -404,6 +451,8 @@ class WorkspacePreviewTile(QFrame):
 
     def mousePressEvent(self, event: QMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton:
+            self._is_pending_jump = True
+            self.update()
             self.owner.handle_tile_click(self.target_hwnd, self.app_key)
             event.accept()
             return
