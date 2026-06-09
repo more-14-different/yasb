@@ -277,12 +277,19 @@ class WorkspaceAppIconLabel(QLabel):
 
     def paintEvent(self, event):
         super().paintEvent(event)
+        from PyQt6.QtGui import QPainter, QColor, QPen
+        painter = QPainter(self)
+        
+        # --- DEBUG CLICKABLE AREA ---
+        painter.fillRect(self.rect(), QColor(255, 0, 0, 64))
+        painter.setPen(QPen(QColor(255, 0, 0, 255), 1))
+        painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
+        
         if "focused" in str(self.property("class") or ""):
-            from PyQt6.QtGui import QPainter, QColor, QPen
-            painter = QPainter(self)
             painter.setPen(QPen(QColor(246, 193, 119, 245), 2))
             painter.drawLine(0, self.height() - 1, self.width(), self.height() - 1)
-            painter.end()
+        
+        painter.end()
 
     def update_icon(self, icon_entry: dict):
         self.target_hwnd = icon_entry["hwnd"]
@@ -345,6 +352,15 @@ class WorkspacePreviewTile(QFrame):
         self.icon_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self._icon_size = QSize()
         self.setProperty("class", "layout-preview-tile")
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        from PyQt6.QtGui import QPainter, QColor, QPen
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor(0, 255, 0, 64))
+        painter.setPen(QPen(QColor(0, 255, 0, 255), 1))
+        painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
+        painter.end()
 
     def update_entry(self, icon_entry: dict, tile_class: str) -> None:
         self.target_hwnd = icon_entry["hwnd"]
