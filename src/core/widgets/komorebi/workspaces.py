@@ -368,7 +368,11 @@ class WorkspaceAppIconLabel(QLabel):
 
         is_focused_or_last = is_focused or is_last_focused
 
-        if self._is_pending_jump or (is_workspace_pending and is_focused_or_last):
+        has_specific_pending = getattr(button, "_pending_jump_hwnd", None) is not None
+        is_my_pending_jump = self._is_pending_jump or getattr(button, "_pending_jump_hwnd", None) == self.target_hwnd
+        show_pending = is_my_pending_jump or (is_workspace_pending and is_focused_or_last and not has_specific_pending)
+
+        if show_pending:
             painter.fillRect(self.rect(), QColor(156, 207, 216, 51))
             pen = QPen(QColor(156, 207, 216, 255), 1, Qt.PenStyle.CustomDashLine)
             pen.setDashPattern([2, 2])
@@ -403,8 +407,9 @@ class WorkspaceAppIconLabel(QLabel):
     def mousePressEvent(self, event: QMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton:
             self._is_pending_jump = True
-            self.update()
             button = self.parent_button
+            button._pending_jump_hwnd = self.target_hwnd
+            self.update()
             if hasattr(button, "set_pseudo_pending"):
                 button.set_pseudo_pending(True)
             self.parent_widget.focus_workspace_window(self.workspace_index, self.target_hwnd, self.app_key)
@@ -501,7 +506,11 @@ class WorkspacePreviewTile(QFrame):
 
         is_focused_or_last = is_focused or is_last_focused
 
-        if self._is_pending_jump or (is_workspace_pending and is_focused_or_last):
+        has_specific_pending = getattr(button, "_pending_jump_hwnd", None) is not None
+        is_my_pending_jump = self._is_pending_jump or getattr(button, "_pending_jump_hwnd", None) == self.target_hwnd
+        show_pending = is_my_pending_jump or (is_workspace_pending and is_focused_or_last and not has_specific_pending)
+
+        if show_pending:
             painter.fillRect(self.rect(), QColor(156, 207, 216, 51))
             pen = QPen(QColor(156, 207, 216, 255), 1, Qt.PenStyle.CustomDashLine)
             pen.setDashPattern([2, 2])
@@ -569,8 +578,9 @@ class WorkspacePreviewTile(QFrame):
     def mousePressEvent(self, event: QMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton:
             self._is_pending_jump = True
-            self.update()
             button = self.parent_button
+            button._pending_jump_hwnd = self.target_hwnd
+            self.update()
             if hasattr(button, "set_pseudo_pending"):
                 button.set_pseudo_pending(True)
             self.owner.handle_tile_click(self.target_hwnd, self.app_key)
@@ -1826,6 +1836,14 @@ class WorkspaceWidget(BaseWidget):
             cleared_workspace_indexes = {workspace_index}
             self._pending_workspace_indexes.discard(workspace_index)
             self._pending_workspace_tokens.pop(workspace_index, None)
+
+        for idx in cleared_workspace_indexes:
+            if idx in self._workspace_buttons:
+                btn = self._workspace_buttons[idx]
+                if hasattr(btn, "_pending_jump_hwnd"):
+                    btn._pending_jump_hwnd = None
+                if hasattr(btn, "set_pseudo_pending"):
+                    btn.set_pseudo_pending(False)
 
         if self._pending_focus_workspace_index in cleared_workspace_indexes:
             self._clear_pending_workspace_focus("pending_cleared")
