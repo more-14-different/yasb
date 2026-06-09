@@ -370,14 +370,19 @@ class WorkspaceAppIconLabel(QLabel):
         is_last_focused = "last-focused" in str(self.property("class") or "")
         
         if self._is_pending_jump:
-            painter.fillRect(self.rect(), QColor(246, 193, 119, 85))
-            painter.setPen(QPen(QColor(246, 193, 119, 255), 1, Qt.PenStyle.SolidLine))
+            painter.fillRect(self.rect(), QColor(200, 200, 200, 76))
+            painter.setPen(QPen(QColor(156, 207, 216, 255), 1, Qt.PenStyle.SolidLine))
             painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
-        elif is_focused or is_last_focused:
+        elif is_focused:
+            painter.fillRect(self.rect(), QColor(246, 193, 119, 115))
+            painter.setPen(QPen(QColor(246, 193, 119, 255), 2, Qt.PenStyle.SolidLine))
+            painter.drawRect(1, 1, self.width() - 3, self.height() - 3)
+        elif is_last_focused:
             painter.setPen(QPen(QColor(246, 193, 119, 255), 1, Qt.PenStyle.SolidLine))
             painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
         elif self._is_hovered:
-            painter.setPen(QPen(QColor(156, 207, 216, 255), 1, Qt.PenStyle.DashLine))
+            painter.fillRect(self.rect(), QColor(246, 193, 119, 51))
+            painter.setPen(QPen(QColor(246, 193, 119, 255), 1, Qt.PenStyle.DashLine))
             painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
             
         painter.end()
@@ -469,14 +474,19 @@ class WorkspacePreviewTile(QFrame):
         is_last_focused = "last-focused" in str(self.property("class") or "")
         
         if self._is_pending_jump:
-            painter.fillRect(self.rect(), QColor(246, 193, 119, 85))
-            painter.setPen(QPen(QColor(246, 193, 119, 255), 1, Qt.PenStyle.SolidLine))
+            painter.fillRect(self.rect(), QColor(200, 200, 200, 76))
+            painter.setPen(QPen(QColor(156, 207, 216, 255), 1, Qt.PenStyle.SolidLine))
             painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
-        elif is_focused or is_last_focused:
+        elif is_focused:
+            painter.fillRect(self.rect(), QColor(246, 193, 119, 115))
+            painter.setPen(QPen(QColor(246, 193, 119, 255), 2, Qt.PenStyle.SolidLine))
+            painter.drawRect(1, 1, self.width() - 3, self.height() - 3)
+        elif is_last_focused:
             painter.setPen(QPen(QColor(246, 193, 119, 255), 1, Qt.PenStyle.SolidLine))
             painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
         elif self._is_hovered:
-            painter.setPen(QPen(QColor(156, 207, 216, 255), 1, Qt.PenStyle.DashLine))
+            painter.fillRect(self.rect(), QColor(246, 193, 119, 51))
+            painter.setPen(QPen(QColor(246, 193, 119, 255), 1, Qt.PenStyle.DashLine))
             painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
             
         painter.end()
