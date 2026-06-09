@@ -38,7 +38,8 @@ def get_window_icon(hwnd: int):
 
     - WM_GETICON: ICON_BIG, ICON_SMALL, ICON_SMALL2
     - App User Model ID icon (UWP) via AUMID
-    - Class icons: GCLP_HICONSM, GCLP_HICON
+    - Class icons: GCLP_HICON, GCLP_HICONSM
+    - Executable extraction (.exe)
     - OS default application icon (IDI_APPLICATION)
     """
     try:
@@ -112,6 +113,29 @@ def get_window_icon(hwnd: int):
             except Exception:
                 return False
 
+        def _get_exe_icon(hwnd_target: int) -> Image.Image | None:
+            try:
+                _, pid_target = win32process.GetWindowThreadProcessId(hwnd_target)
+                h_process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid_target)
+                if h_process:
+                    try:
+                        size = c_ulong(1024)
+                        buf = create_unicode_buffer(size.value)
+                        if QueryFullProcessImageNameW(h_process, 0, buf, byref(size)):
+                            exe_path = buf.value
+                            extractor = IconExtractor(exe_path)
+                            icon_data = extractor.get_icon()
+                            return Image.open(icon_data)
+                    except Exception as e:
+                        logging.debug("Failed to extract exe icon for %s: %s", exe_path, e)
+                    finally:
+                        CloseHandle(h_process)
+            except Exception as e:
+                logging.debug("Failed to get exe icon: %s", e)
+            return None
+
+        best_window_img = None
+
         # Ask the window for its icons
         for which in (win32con.ICON_BIG, win32con.ICON_SMALL, getattr(win32con, "ICON_SMALL2", 2)):
             try:
@@ -126,7 +150,10 @@ def get_window_icon(hwnd: int):
                 except Exception:
                     pass
                 if img is not None and not _is_fully_transparent(img):
-                    return img
+                    if img.width >= 32 and img.height >= 32:
+                        return img
+                    if best_window_img is None:
+                        best_window_img = img
 
         # AppUserModelID icon for UWP apps
         aumid = get_aumid_for_window(hwnd)
@@ -139,23 +166,36 @@ def get_window_icon(hwnd: int):
         class_hicon = 0
         try:
             if hasattr(win32gui, "GetClassLongPtr"):
-                # Try small icon first, then big
-                class_hicon = win32gui.GetClassLongPtr(hwnd, getattr(win32con, "GCLP_HICONSM", 0)) or 0
+                # Try big icon first, then small
+                class_hicon = win32gui.GetClassLongPtr(hwnd, win32con.GCLP_HICON) or 0
                 if not class_hicon:
-                    class_hicon = win32gui.GetClassLongPtr(hwnd, win32con.GCLP_HICON) or 0
+                    class_hicon = win32gui.GetClassLongPtr(hwnd, getattr(win32con, "GCLP_HICONSM", 0)) or 0
             else:
-                class_hicon = win32gui.GetClassLong(hwnd, getattr(win32con, "GCL_HICONSM", -34)) or 0
+                class_hicon = win32gui.GetClassLong(hwnd, win32con.GCL_HICON) or 0
                 if not class_hicon:
-                    class_hicon = win32gui.GetClassLong(hwnd, win32con.GCL_HICON) or 0
+                    class_hicon = win32gui.GetClassLong(hwnd, win32con.GCL_HICONSM, -34) or 0
         except Exception:
-            class_hicon = 0
-
+            pass
+            
         if class_hicon:
             img = _image_from_hicon(class_hicon)
-            if img is not None:
-                return img
+            if img is not None and not _is_fully_transparent(img):
+                if img.width >= 32 and img.height >= 32:
+                    return img
+                if best_window_img is None:
+                    best_window_img = img
 
-        # OS default application icon
+        # If we have a small icon but didn't find any large ones, 
+        # try to get the large executable icon as a better resolution alternative
+        exe_img = _get_exe_icon(hwnd)
+        if exe_img is not None:
+            return exe_img
+
+        # If executable extraction failed, return the small window/class icon we found
+        if best_window_img is not None:
+            return best_window_img
+
+        # Fallback OS default application icon
         try:
             size = win32api.GetSystemMetrics(win32con.SM_CXICON)
             default_hicon = win32gui.LoadImage(
@@ -166,11 +206,10 @@ def get_window_icon(hwnd: int):
                 size,
                 win32con.LR_SHARED,
             )
-        except Exception:
-            default_hicon = 0
-
-        if default_hicon:
-            return _image_from_hicon(default_hicon)
+            if default_hicon:
+                return _image_from_hicon(default_hicon)
+        except Exception as e:
+            logging.debug("Failed to get default icon: %s", e)
 
         return None
     except Exception as e:
