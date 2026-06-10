@@ -178,6 +178,10 @@ class WorkspaceButtonWithIcons(WorkspaceButtonMixin, QFrame):
 
         self.icons = []
         self.icon_labels = []
+        self._icon_click_pending_hwnd: int | None = None
+        self._pseudo_pending_timer = QTimer()
+        self._pseudo_pending_timer.setSingleShot(True)
+        self._pseudo_pending_timer.timeout.connect(lambda: self.set_pseudo_pending(False))
         self.hide()
         self.update_icons()
         self.update_and_redraw(self.status)
@@ -206,8 +210,13 @@ class WorkspaceButtonWithIcons(WorkspaceButtonMixin, QFrame):
         classes = set(current_class.split())
         if pending:
             classes.add("pseudo-pending")
+            # Auto-clear after 500 ms in case no komorebi event arrives to clean up
+            # (e.g., same-workspace click on already-focused icon skips komorebi commands)
+            self._pseudo_pending_timer.start(500)
         else:
             classes.discard("pseudo-pending")
+            self._pseudo_pending_timer.stop()
+            self._icon_click_pending_hwnd = None
         new_class = " ".join(classes)
         if new_class != current_class:
             self.text_label.setProperty("class", new_class)
@@ -245,6 +254,8 @@ class WorkspaceButtonWithIcons(WorkspaceButtonMixin, QFrame):
         self._update_icons_paint()
 
     def update_icons(self, icons: dict[int, QPixmap] = None):
+        # Clear icon-click pending state when icons are rebuilt after a focus change
+        self._icon_click_pending_hwnd = None
         if icons:
             for icon_entry in self.icons:
                 hwnd = icon_entry["hwnd"]
@@ -366,7 +377,12 @@ class WorkspaceAppIconLabel(QLabel):
             btn_label_classes = str(button.text_label.property("class") or "").split()
             # Only 'pending' (digit-click / keyboard switch) spreads cyan to sibling icons.
             # 'pseudo-pending' (icon-click) must NOT spread cyan beyond the clicked icon.
-            is_workspace_pending = "pending" in btn_label_classes
+            # Additionally, when an icon-click is in progress (_icon_click_pending_hwnd set),
+            # suppress workspace-level pending propagation entirely so only the clicked
+            # icon (via _is_pending_jump) shows cyan.
+            icon_click_hwnd = getattr(button, "_icon_click_pending_hwnd", None)
+            if icon_click_hwnd is None:
+                is_workspace_pending = "pending" in btn_label_classes
 
         is_focused_or_last = is_focused or is_last_focused
 
@@ -407,6 +423,9 @@ class WorkspaceAppIconLabel(QLabel):
             self._is_pending_jump = True
             self.update()
             button = self.parent_button
+            # Track which icon was clicked so sibling icons can suppress their pending paint
+            if hasattr(button, "_icon_click_pending_hwnd"):
+                button._icon_click_pending_hwnd = self.target_hwnd
             if hasattr(button, "set_pseudo_pending"):
                 button.set_pseudo_pending(True)
             self.parent_widget.focus_workspace_window(self.workspace_index, self.target_hwnd, self.app_key)
@@ -501,7 +520,10 @@ class WorkspacePreviewTile(QFrame):
             btn_label_classes = str(button.text_label.property("class") or "").split()
             # Only 'pending' (digit-click / keyboard switch) spreads cyan to sibling tiles.
             # 'pseudo-pending' (icon-click) must NOT spread cyan beyond the clicked tile.
-            is_workspace_pending = "pending" in btn_label_classes
+            # Additionally, suppress workspace-level pending when an icon-click is in progress.
+            icon_click_hwnd = getattr(button, "_icon_click_pending_hwnd", None)
+            if icon_click_hwnd is None:
+                is_workspace_pending = "pending" in btn_label_classes
 
         is_focused_or_last = is_focused or is_last_focused
 
@@ -575,6 +597,9 @@ class WorkspacePreviewTile(QFrame):
             self._is_pending_jump = True
             self.update()
             button = self.parent_button
+            # Track which tile was clicked so sibling tiles can suppress their pending paint
+            if hasattr(button, "_icon_click_pending_hwnd"):
+                button._icon_click_pending_hwnd = self.target_hwnd
             if hasattr(button, "set_pseudo_pending"):
                 button.set_pseudo_pending(True)
             self.owner.handle_tile_click(self.target_hwnd, self.app_key)
@@ -1896,6 +1921,7 @@ class WorkspaceWidget(BaseWidget):
             if (
                 workspace_btn.status != workspace_status
                 or "pending" in current_classes
+                or "pseudo-pending" in current_classes  # clear pseudo-pending on any state sync
                 or workspace_status.lower() not in current_classes
             ):
                 workspace_btn.update_and_redraw(workspace_status)
