@@ -2579,6 +2579,7 @@ class WorkspaceWidget(BaseWidget):
                 self._log_focus_diag("same-workspace-already-focused", resolved_hwnd, workspace_index)
                 self._move_cursor_after_icon_focus(workspace_index, resolved_hwnd, "same_workspace_already_focused")
                 self._complete_icon_focus_request("already_focused")
+                self._komorebic.activate_workspace(self._komorebi_screen["index"], workspace_index)
                 return
 
             self._pending_cursor_hwnd = resolved_hwnd
