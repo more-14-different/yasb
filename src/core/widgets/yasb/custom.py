@@ -4,7 +4,7 @@ import shlex
 import subprocess
 import threading
 
-from PyQt6.QtCore import QObject, Qt, pyqtSignal
+from PyQt6.QtCore import QObject, pyqtSignal
 from PyQt6.QtWidgets import QLabel
 
 from core.utils.tooltip import set_tooltip
@@ -77,6 +77,9 @@ class CustomWidget(BaseWidget):
 
         # Construct container
         self._init_container()
+        self.build_widget_label(
+            self.config.label, self.config.label_alt, label_placeholder=self.config.label_placeholder
+        )
 
         self.register_callback("toggle_label", self._toggle_label)
         self.register_callback("exec_custom", self._exec_callback)
@@ -85,8 +88,6 @@ class CustomWidget(BaseWidget):
         self.callback_right = self.config.callbacks.on_right
         self.callback_middle = self.config.callbacks.on_middle
         self.callback_timer = "exec_custom"
-
-        self._create_dynamically_label(self.config.label, self.config.label_alt)
 
         if self.config.exec_options.run_once:
             self._exec_callback()
@@ -110,38 +111,6 @@ class CustomWidget(BaseWidget):
         for widget in self._widgets_alt:
             widget.setVisible(self._show_alt_label)
         self._update_label()
-
-    def _create_dynamically_label(self, content: str, content_alt: str):
-        def process_content(content, is_alt=False):
-            label_parts = re.split("(<span.*?>.*?</span>)", content)
-            widgets = []
-            for part in label_parts:
-                part = part.strip()
-                if not part:
-                    continue
-                if "<span" in part and "</span>" in part:
-                    class_name = re.search(r'class=(["\'])([^"\']+?)\1', part)
-                    class_result = class_name.group(2) if class_name else "icon"
-                    icon = re.sub(r"<span.*?>|</span>", "", part).strip()
-                    label = QLabel(icon)
-                    label.setProperty("class", class_result)
-                else:
-                    label = QLabel(part)
-                    label.setProperty("class", "label alt" if is_alt else "label")
-                    label.setText(self.config.label_placeholder)
-                label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-                self._widget_container_layout.addWidget(label)
-                widgets.append(label)
-                if is_alt:
-                    label.hide()
-                else:
-                    label.show()
-
-            return widgets
-
-        self._widgets = process_content(content)
-        self._widgets_alt = process_content(content_alt, is_alt=True)
 
     def _truncate_label(self, label):
         if self.config.label_max_length and len(label) > self.config.label_max_length:
