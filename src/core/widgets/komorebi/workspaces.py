@@ -386,13 +386,13 @@ class WorkspaceAppIconLabel(QLabel):
         if self._is_pending_jump or (is_workspace_pending and is_focused_or_last):
             painter.fillRect(self.rect(), QColor(156, 207, 216, 51))
             pen = QPen(QColor(156, 207, 216, 255), 1, Qt.PenStyle.CustomDashLine)
-            pen.setDashPattern([4, 4])
+            pen.setDashPattern([4, 3])
             painter.setPen(pen)
             painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
         elif self._is_hovered or (is_workspace_hovered and is_focused_or_last):
             painter.fillRect(self.rect(), QColor(246, 193, 119, 51))
             pen = QPen(QColor(246, 193, 119, 255), 1, Qt.PenStyle.CustomDashLine)
-            pen.setDashPattern([4, 4])
+            pen.setDashPattern([4, 3])
             painter.setPen(pen)
             painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
         elif is_focused and is_active_workspace:
@@ -539,13 +539,13 @@ class WorkspacePreviewTile(QFrame):
         if self._is_pending_jump or (is_workspace_pending and is_focused_or_last):
             painter.fillRect(self.rect(), QColor(156, 207, 216, 51))
             pen = QPen(QColor(156, 207, 216, 255), 1, Qt.PenStyle.CustomDashLine)
-            pen.setDashPattern([4, 4])
+            pen.setDashPattern([4, 3])
             painter.setPen(pen)
             painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
         elif self._is_hovered or (is_workspace_hovered and is_focused_or_last):
             painter.fillRect(self.rect(), QColor(246, 193, 119, 51))
             pen = QPen(QColor(246, 193, 119, 255), 1, Qt.PenStyle.CustomDashLine)
-            pen.setDashPattern([4, 4])
+            pen.setDashPattern([4, 3])
             painter.setPen(pen)
             painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
         elif is_focused and is_active_workspace:

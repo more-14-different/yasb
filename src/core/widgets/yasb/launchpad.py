@@ -693,7 +693,7 @@ class LaunchpadWidget(BaseWidget):
                 pen.setWidth(1)
                 pen.setColor(QColor(0, 153, 255, 150))
                 pen.setStyle(Qt.PenStyle.CustomDashLine)
-                pen.setDashPattern([8, 8])
+                pen.setDashPattern([8, 6])
                 painter.setPen(pen)
                 painter.setBrush(Qt.BrushStyle.NoBrush)
                 painter.drawRoundedRect(rect.adjusted(1, 1, -1, -1), radius, radius)
