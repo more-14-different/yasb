@@ -483,6 +483,15 @@ class WorkspacePreviewTile(QFrame):
         self.setProperty("class", "layout-preview-tile")
         self._is_hovered = False
         self._is_pending_jump = False
+        
+        # Add drop shadow for stack/deck of cards effect
+        from PyQt6.QtWidgets import QGraphicsDropShadowEffect
+        from PyQt6.QtGui import QColor
+        shadow = QGraphicsDropShadowEffect(self)
+        shadow.setBlurRadius(15)
+        shadow.setColor(QColor(0, 0, 0, 100))
+        shadow.setOffset(2, 2)
+        self.setGraphicsEffect(shadow)
 
     def enterEvent(self, event):
         self._is_hovered = True
@@ -815,7 +824,22 @@ class WorkspaceLayoutPreview(QFrame):
             tile.setParent(self._overlay)
             self._tiles.append(tile)
 
+        # Sort rendering order so focused tiles are raised last (on top of the deck)
+        render_order = []
         for index, icon_entry in enumerate(self._entries):
+            if icon_entry.get("focused"):
+                render_order.append(index)
+            else:
+                render_order.insert(0, index) # Non-focused first
+                
+        # Actually, we want to keep the original order for non-focused to maintain predictable stacking,
+        # but just move focused to the end.
+        non_focused = [i for i, e in enumerate(self._entries) if not e.get("focused")]
+        focused = [i for i, e in enumerate(self._entries) if e.get("focused")]
+        render_order = non_focused + focused
+
+        for index in render_order:
+            icon_entry = self._entries[index]
             tile = self._tiles[index]
             tile_rect = normalized_rects[index]
             tile.setGeometry(tile_rect)
@@ -826,10 +850,10 @@ class WorkspaceLayoutPreview(QFrame):
             elif icon_entry.get("last_focused"):
                 tile_class += " last-focused"
             tile.update_entry(icon_entry, tile_class)
-            
+
             if is_focused:
                 self.parent_widget._set_workspace_focused_tile(self.workspace_index, tile)
-            
+
             tile.show()
             tile.raise_()
 
@@ -847,20 +871,50 @@ class WorkspaceLayoutPreview(QFrame):
         if not rects:
             return [], QSize()
 
-        layout_items = self._build_compact_tree_layout(list(enumerate(rects)))
+        # Step 1: Cluster identical rects (stacks)
+        clusters: dict[tuple[int, int, int, int], list[int]] = {}
+        for i, r in enumerate(rects):
+            clusters.setdefault(r, []).append(i)
+
+        unique_rects = list(clusters.keys())
+        indexed_unique_rects = list(enumerate(unique_rects))
+
+        # Step 2: Compute layout for unique rects
+        layout_items = self._build_compact_tree_layout(indexed_unique_rects)
         if layout_items:
             positions, width_units, height_units = layout_items
             normalized_rects = [QRect() for _ in rects]
-            for index, x_units, y_units in positions:
-                normalized_rects[index] = QRect(
-                    int(round(x_units * icon_footprint)),
-                    int(round(y_units * icon_footprint)),
-                    icon_footprint,
-                    icon_footprint,
-                )
+
+            # Step 3: Apply positions and offsets for stacks
+            STACK_OFFSET_UNITS = 0.15  # 15% of icon_footprint offset per stacked window
+            MAX_STACK_WIDTH_ADD = 0.5  # Max total offset added to width
+
+            max_x = width_units
+            max_y = height_units
+
+            for unique_index, x_units, y_units in positions:
+                rect_key = unique_rects[unique_index]
+                stack_indices = clusters[rect_key]
+
+                for stack_pos, original_index in enumerate(stack_indices):
+                    # Apply offset (capped)
+                    offset = min(stack_pos * STACK_OFFSET_UNITS, MAX_STACK_WIDTH_ADD)
+                    final_x = x_units + offset
+                    final_y = y_units + offset
+
+                    normalized_rects[original_index] = QRect(
+                        int(round(final_x * icon_footprint)),
+                        int(round(final_y * icon_footprint)),
+                        icon_footprint,
+                        icon_footprint,
+                    )
+
+                    max_x = max(max_x, final_x + 1.0)
+                    max_y = max(max_y, final_y + 1.0)
+
             content_size = QSize(
-                max(1, int(math.ceil(width_units * icon_footprint))),
-                max(1, int(math.ceil(height_units * icon_footprint))),
+                max(1, int(math.ceil(max_x * icon_footprint))),
+                max(1, int(math.ceil(max_y * icon_footprint))),
             )
             return normalized_rects, content_size
 
