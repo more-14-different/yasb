@@ -346,6 +346,14 @@ class WorkspaceAppIconLabel(QLabel):
             button.set_pseudo_hover(False)
         super().leaveEvent(event)
 
+    def hideEvent(self, event):
+        if self._is_hovered:
+            self._is_hovered = False
+            button = self.parent_button
+            if hasattr(button, "set_pseudo_hover"):
+                button.set_pseudo_hover(False)
+        super().hideEvent(event)
+
     def paintEvent(self, event):
         super().paintEvent(event)
         from PyQt6.QtGui import QPainter, QColor, QPen
@@ -485,6 +493,14 @@ class WorkspacePreviewTile(QFrame):
         if hasattr(button, "set_pseudo_hover"):
             button.set_pseudo_hover(False)
         super().leaveEvent(event)
+
+    def hideEvent(self, event):
+        if self._is_hovered:
+            self._is_hovered = False
+            button = self.parent_button
+            if hasattr(button, "set_pseudo_hover"):
+                button.set_pseudo_hover(False)
+        super().hideEvent(event)
 
     def paintEvent(self, event):
         super().paintEvent(event)
