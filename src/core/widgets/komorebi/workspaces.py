@@ -2482,9 +2482,36 @@ class WorkspaceWidget(BaseWidget):
         except Exception:
             return None
 
+    def _is_window_stacked(self, hwnd: int) -> bool:
+        if not self._komorebi_screen:
+            return False
+        workspace = self._komorebic.get_workspace_by_index(self._komorebi_screen, self._curr_workspace_index)
+        if not workspace:
+            return False
+            
+        containers = self._komorebic.get_containers(workspace, get_monocle=False)
+        for container in containers:
+            windows = self._komorebic.get_windows(container)
+            if any(w.get("hwnd") == hwnd for w in windows):
+                return len(windows) > 1
+                
+        monocle_container = self._komorebic.get_monocle_container(workspace)
+        if monocle_container:
+            windows = self._komorebic.get_windows(monocle_container)
+            if any(w.get("hwnd") == hwnd for w in windows):
+                return len(windows) > 1
+                
+        return False
+
     def _correct_komorebi_cursor(self, hwnd: int) -> None:
         if not hwnd:
             return
+            
+        # Prevent infinite focus loop caused by komorebi's mouse_follows_focus bug with stacks
+        if self._is_window_stacked(hwnd):
+            _log_workspace_diag("skipping komorebi mouse correction: window is in a stack")
+            return
+
         try:
             from core.utils.win32.utils import get_window_rect
             import win32api
