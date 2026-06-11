@@ -2127,6 +2127,40 @@ class WorkspaceWidget(BaseWidget):
             return [maximized_window]
 
         containers = self._komorebic.get_containers(workspace, get_monocle=False)
+        
+        # Calculate Python layout
+        try:
+            from core.widgets.komorebi.layout_engine import calculate_layout
+            import logging
+            monitor_state = self._komorebi_screen
+            work_area = monitor_state.get("work_area_size")
+            if work_area and containers:
+                layout_config = workspace.get("layout", {})
+                layout_type = layout_config.get("Default", "BSP") if isinstance(layout_config, dict) else layout_config
+                layout_flip = workspace.get("layout_flip")
+                if not layout_flip:
+                    layout_flip = "None"
+                    
+                if layout_type and layout_type != "Monocle":
+                    computed_rects = calculate_layout(
+                        layout_type=layout_type,
+                        work_area=work_area,
+                        num_windows=len(containers),
+                        layout_flip=layout_flip,
+                        layout_options={}
+                    )
+                    
+                    if computed_rects and len(computed_rects) == len(containers):
+                        for i, container in enumerate(containers):
+                            c_rect = computed_rects[i]
+                            rect_dict = {"left": c_rect["left"], "top": c_rect["top"], "right": c_rect["width"], "bottom": c_rect["height"]}
+                            # Override rect for all windows in this container
+                            for window in container.get("windows", {}).get("elements", []):
+                                window["rect"] = rect_dict
+        except Exception as e:
+            import logging
+            logging.error(f"Failed to calculate logical layout for preview: {e}")
+
         windows_in_workspace = []
         for container in containers:
             windows = self._komorebic.get_windows(container)
