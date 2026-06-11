@@ -509,6 +509,9 @@ class WorkspacePreviewTile(QFrame):
         super().hideEvent(event)
 
     def paintEvent(self, event):
+        if not getattr(self, "is_stack_top", True):
+            return
+            
         super().paintEvent(event)
         from PyQt6.QtGui import QPainter, QColor, QPen
         from PyQt6.QtCore import Qt
@@ -517,8 +520,8 @@ class WorkspacePreviewTile(QFrame):
         painter.fillRect(self.rect(), QColor(0, 0, 0, 1))
         
         classes = str(self.property("class") or "").split()
-        is_focused = "focused" in classes
-        is_last_focused = "last-focused" in classes
+        is_focused = getattr(self, "stack_any_focused", "focused" in classes)
+        is_last_focused = getattr(self, "stack_any_last_focused", "last-focused" in classes)
         
         is_active_workspace = self.workspace_index == self.parent_widget._curr_workspace_index
 
@@ -810,7 +813,7 @@ class WorkspaceLayoutPreview(QFrame):
             normalized_rects, content_size, stack_info = layout_result
         else:
             normalized_rects, content_size = layout_result
-            stack_info = [(0, 0, icon_footprint) for _ in rects]
+            stack_info = [(0, 0, icon_footprint, True) for _ in rects]
 
         if content_size.width() <= 0 or content_size.height() <= 0:
             return False
@@ -838,15 +841,30 @@ class WorkspaceLayoutPreview(QFrame):
             tile.setParent(self._overlay)
             self._tiles.append(tile)
 
+        stack_rect_to_focus = {}
+        for index, icon_entry in enumerate(self._entries):
+            rect_tuple = normalized_rects[index].getRect()
+            is_f = bool(icon_entry.get("focused") and cfg.preview_show_focus)
+            is_lf = bool(icon_entry.get("last_focused"))
+            if rect_tuple not in stack_rect_to_focus:
+                stack_rect_to_focus[rect_tuple] = [False, False]
+            if is_f: stack_rect_to_focus[rect_tuple][0] = True
+            if is_lf: stack_rect_to_focus[rect_tuple][1] = True
+
         for index, icon_entry in enumerate(self._entries):
             tile = self._tiles[index]
             tile_rect = normalized_rects[index]
             tile.setGeometry(tile_rect)
             
             if stack_info:
-                tile.stack_offset_x, tile.stack_offset_y, tile.base_icon_footprint = stack_info[index]
+                tile.stack_offset_x, tile.stack_offset_y, tile.base_icon_footprint, tile.is_stack_top = stack_info[index]
             else:
-                tile.stack_offset_x, tile.stack_offset_y, tile.base_icon_footprint = 0, 0, icon_footprint
+                tile.stack_offset_x, tile.stack_offset_y, tile.base_icon_footprint, tile.is_stack_top = 0, 0, icon_footprint, True
+                
+            rect_tuple = tile_rect.getRect()
+            any_f, any_lf = stack_rect_to_focus.get(rect_tuple, (False, False))
+            tile.stack_any_focused = any_f
+            tile.stack_any_last_focused = any_lf
 
             tile_class = "layout-preview-tile"
             is_focused = icon_entry.get("focused") and cfg.preview_show_focus
@@ -889,7 +907,7 @@ class WorkspaceLayoutPreview(QFrame):
         if layout_items:
             positions, width_units, height_units = layout_items
             normalized_rects = [QRect() for _ in rects]
-            stack_info = [(0, 0, icon_footprint) for _ in rects]
+            stack_info = [(0, 0, icon_footprint, True) for _ in rects]
 
             STACK_OFFSET_UNITS = 0.15
             MAX_STACK_WIDTH_ADD = 0.5
@@ -919,7 +937,8 @@ class WorkspaceLayoutPreview(QFrame):
                         expanded_w_px,
                         expanded_h_px,
                     )
-                    stack_info[original_index] = (offset_x_px, offset_y_px, icon_footprint)
+                    is_top = (stack_pos == len(stack_indices) - 1)
+                    stack_info[original_index] = (offset_x_px, offset_y_px, icon_footprint, is_top)
 
             content_size = QSize(
                 max(1, int(math.ceil(max_x * icon_footprint))),
