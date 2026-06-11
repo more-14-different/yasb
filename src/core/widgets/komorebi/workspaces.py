@@ -40,12 +40,15 @@ def _log_workspace_diag(message: str, *args) -> None:
 
 def _set_workspace_button_class(widget: QWidget, status: WorkspaceStatus, pending: bool = False) -> None:
     current_class = str(widget.property("class") or "")
-    button_classes = [cls for cls in current_class.split() if cls.startswith("button-")]
+    current_classes = current_class.split()
+    button_classes = [cls for cls in current_classes if cls.startswith("button-")]
+    pseudo_classes = [cls for cls in current_classes if cls.startswith("pseudo-")]
     classes = ["ws-btn"]
     if pending:
         classes.append("pending")
     classes.append(status.lower())
     classes.extend(button_classes)
+    classes.extend(pseudo_classes)
     widget.setProperty("class", " ".join(classes))
 
 
@@ -374,7 +377,7 @@ class WorkspaceAppIconLabel(QLabel):
             btn_label_classes = str(button.text_label.property("class") or "").split()
             # Only 'pending' (digit-click / keyboard switch) spreads cyan to sibling icons.
             # 'pseudo-pending' (icon-click) must NOT spread cyan beyond the clicked icon.
-            is_workspace_pending = "pending" in btn_label_classes
+            is_workspace_pending = "pending" in btn_label_classes and "pseudo-pending" not in btn_label_classes
 
         is_focused_or_last = is_focused or is_last_focused
 
@@ -401,6 +404,7 @@ class WorkspaceAppIconLabel(QLabel):
 
     def update_icon(self, icon_entry: dict):
         self._is_pending_jump = False
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
         button = self.parent_button
         if hasattr(button, "set_pseudo_pending"):
             button.set_pseudo_pending(False)
@@ -413,6 +417,8 @@ class WorkspaceAppIconLabel(QLabel):
     def mousePressEvent(self, event: QMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton:
             self._is_pending_jump = True
+            self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+            
             button = self.parent_button
             if hasattr(button, "set_pseudo_pending"):
                 button.set_pseudo_pending(True)
@@ -522,7 +528,7 @@ class WorkspacePreviewTile(QFrame):
             btn_label_classes = str(button.text_label.property("class") or "").split()
             # Only 'pending' (digit-click / keyboard switch) spreads cyan to sibling tiles.
             # 'pseudo-pending' (icon-click) must NOT spread cyan beyond the clicked tile.
-            is_workspace_pending = "pending" in btn_label_classes
+            is_workspace_pending = "pending" in btn_label_classes and "pseudo-pending" not in btn_label_classes
 
         is_focused_or_last = is_focused or is_last_focused
 
@@ -594,6 +600,8 @@ class WorkspacePreviewTile(QFrame):
     def mousePressEvent(self, event: QMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton:
             self._is_pending_jump = True
+            self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+            
             button = self.parent_button
             if hasattr(button, "set_pseudo_pending"):
                 button.set_pseudo_pending(True)
