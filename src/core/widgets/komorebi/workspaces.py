@@ -555,7 +555,16 @@ class WorkspacePreviewTile(QFrame):
 
     def update_entry(self, icon_entry: dict, tile_class: str) -> None:
         self._is_pending_jump = False
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+        
+        was_hovered = self._is_hovered
+        self._is_hovered = self.underMouse()
+        
         button = self.parent_button
+        if was_hovered and not self._is_hovered:
+            if hasattr(button, "set_pseudo_hover"):
+                button.set_pseudo_hover(False)
+                
         if hasattr(button, "set_pseudo_pending"):
             button.set_pseudo_pending(False)
         self.target_hwnd = icon_entry["hwnd"]
