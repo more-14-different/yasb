@@ -1,4 +1,5 @@
 import logging
+import time
 import math
 from contextlib import suppress
 from typing import Literal
@@ -1098,6 +1099,11 @@ class WorkspaceWidget(BaseWidget):
         self._pending_focus_token = None
         self._icon_focus_suspended_mouse_follows_focus = False
         self._icon_focus_request_id = 0
+        
+        self._focus_event_history: list[float] = []
+        self._loop_guardian_active: bool = False
+        self._cursor_correction_timer: QTimer | None = None
+        self._icon_refresh_timer: QTimer | None = None
         self._active_icon_focus_request_id = None
         self._active_icon_focus_hwnd = None
         self._active_icon_focus_workspace_index = None
@@ -1359,6 +1365,27 @@ class WorkspaceWidget(BaseWidget):
                     )
 
             if event["type"] == KomorebiEvent.FocusChange.value:
+                # --- LOOP GUARDIAN ---
+                now = time.time()
+                self._focus_event_history.append(now)
+                self._focus_event_history = [t for t in self._focus_event_history if now - t < 1.0]
+                
+                if len(self._focus_event_history) > 8:
+                    if not self._loop_guardian_active:
+                        self._loop_guardian_active = True
+                        if self._mouse_follows_focus_enabled():
+                            _log_workspace_diag("Komorebi infinite focus loop detected! Suspending mouse-follows-focus.")
+                            self._komorebic.set_mouse_follows_focus(False, wait=False)
+                        
+                        self._pending_cursor_hwnd = None
+                        QTimer.singleShot(3000, self._loop_guardian_cooldown)
+                    
+                    return  # Drop the event
+                    
+                if self._loop_guardian_active:
+                    return  # Still in cooldown, drop event
+                # --- END LOOP GUARDIAN ---
+
                 self._remember_active_window()
                 self._log_focus_diag("focuschange-event", self._pending_cursor_hwnd, self._pending_cursor_workspace_index)
                 
@@ -1367,7 +1394,13 @@ class WorkspaceWidget(BaseWidget):
                     if self._is_active_monitor():
                         global_hwnd = self._get_global_focused_hwnd()
                         if global_hwnd:
-                            QTimer.singleShot(150, lambda h=global_hwnd: self._correct_komorebi_cursor(h))
+                            if self._cursor_correction_timer:
+                                self._cursor_correction_timer.stop()
+                                self._cursor_correction_timer.deleteLater()
+                            self._cursor_correction_timer = QTimer()
+                            self._cursor_correction_timer.setSingleShot(True)
+                            self._cursor_correction_timer.timeout.connect(lambda h=global_hwnd: self._correct_komorebi_cursor(h))
+                            self._cursor_correction_timer.start(150)
 
                 QTimer.singleShot(16, self._finalize_pending_cursor_move)
             if self._workspace_app_icons_enabled:
@@ -1380,7 +1413,7 @@ class WorkspaceWidget(BaseWidget):
                         target_indexes = range(len(self._komorebi_workspaces))
                         for i in target_indexes:
                             self._workspace_buttons[i].update_icons()
-                        QTimer.singleShot(30, self._refresh_all_workspace_icons)
+                        self._queue_all_workspace_icons_refresh(30)
                     if active_workspace_changed:
                         self._workspace_buttons[self._prev_workspace_index].update_icons()
                         self._workspace_buttons[self._curr_workspace_index].update_icons()
@@ -1400,7 +1433,7 @@ class WorkspaceWidget(BaseWidget):
                             self._queue_title_update_icon_refresh(i, hwnd)
                 except (IndexError, TypeError):
                     pass
-                QTimer.singleShot(0, self._refresh_all_workspace_icons)
+                self._queue_all_workspace_icons_refresh(16)
 
             if event["type"] == KomorebiEvent.MoveWorkspaceToMonitorNumber.value:
                 if event["content"] != self._komorebi_screen["index"]:
@@ -2027,6 +2060,23 @@ class WorkspaceWidget(BaseWidget):
         populated_label = populated_label if populated_label and populated_label.strip() else default_label
         
         return default_label, active_label, populated_label
+
+    def _queue_all_workspace_icons_refresh(self, delay: int = 16) -> None:
+        if self._icon_refresh_timer:
+            self._icon_refresh_timer.stop()
+            self._icon_refresh_timer.deleteLater()
+        self._icon_refresh_timer = QTimer()
+        self._icon_refresh_timer.setSingleShot(True)
+        self._icon_refresh_timer.timeout.connect(self._refresh_all_workspace_icons)
+        self._icon_refresh_timer.start(delay)
+
+    def _loop_guardian_cooldown(self) -> None:
+        self._focus_event_history.clear()
+        self._loop_guardian_active = False
+        _log_workspace_diag("Loop Guardian cooldown finished. Restoring mouse-follows-focus.")
+        if self._mouse_follows_focus_enabled():
+            self._komorebic.set_mouse_follows_focus(True, wait=False)
+
 
     def _try_add_workspace_button(self, workspace_index: int) -> WorkspaceButton:
         workspace_button_indexes = [ws_btn.workspace_index for ws_btn in self._workspace_buttons]
