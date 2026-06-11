@@ -860,7 +860,33 @@ class WorkspaceLayoutPreview(QFrame):
                 self.parent_widget._set_workspace_focused_tile(self.workspace_index, tile)
             
             tile.show()
-            tile.raise_()
+
+        # Determine z-order to bring focused stacked windows to the front
+        clusters: dict[tuple[int, int, int, int], list[int]] = {}
+        for i, rect in enumerate(rects):
+            clusters.setdefault(rect, []).append(i)
+
+        raise_order = list(range(len(self._entries)))
+        for cluster_indices in clusters.values():
+            if len(cluster_indices) > 1:
+                f_idx_in_cluster = len(cluster_indices) - 1
+                for pos, i in enumerate(cluster_indices):
+                    if self._entries[i].get("focused"):
+                        f_idx_in_cluster = pos
+                        break
+                    elif self._entries[i].get("last_focused"):
+                        f_idx_in_cluster = pos
+
+                sorted_indices = sorted(cluster_indices, key=lambda i: (
+                    -abs(cluster_indices.index(i) - f_idx_in_cluster),
+                    i
+                ))
+                
+                for slot, new_i in zip(cluster_indices, sorted_indices):
+                    raise_order[slot] = new_i
+
+        for i in raise_order:
+            self._tiles[i].raise_()
 
         self.setProperty("class", "layout-preview-anchor")
         self._sync_overlay_class()
