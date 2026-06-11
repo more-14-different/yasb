@@ -1361,6 +1361,14 @@ class WorkspaceWidget(BaseWidget):
             if event["type"] == KomorebiEvent.FocusChange.value:
                 self._remember_active_window()
                 self._log_focus_diag("focuschange-event", self._pending_cursor_hwnd, self._pending_cursor_workspace_index)
+                
+                # Check if we should correct Komorebi's native mouse-follows-focus
+                if not self._pending_cursor_hwnd and self._mouse_follows_focus_enabled():
+                    if self._is_active_monitor():
+                        global_hwnd = self._get_global_focused_hwnd()
+                        if global_hwnd:
+                            QTimer.singleShot(150, lambda h=global_hwnd: self._correct_komorebi_cursor(h))
+
                 QTimer.singleShot(16, self._finalize_pending_cursor_move)
             if self._workspace_app_icons_enabled:
                 try:
@@ -2419,6 +2427,57 @@ class WorkspaceWidget(BaseWidget):
         self._pending_cursor_workspace_index = None
         _log_workspace_diag("cursor move executing: workspace=%s hwnd=%s", pending_workspace_index, pending_hwnd)
         move_cursor_to_window_center(pending_hwnd)
+
+    def _is_active_monitor(self) -> bool:
+        try:
+            focused_monitor_idx = self._komorebi_state["monitors"]["focused"]
+            focused_monitor = self._komorebi_state["monitors"]["elements"][focused_monitor_idx]
+            return focused_monitor.get("id") == self._screen_hwnd
+        except Exception:
+            return False
+
+    def _get_global_focused_hwnd(self) -> int | None:
+        try:
+            focused_monitor_idx = self._komorebi_state["monitors"]["focused"]
+            focused_monitor = self._komorebi_state["monitors"]["elements"][focused_monitor_idx]
+            focused_ws = self._komorebic.get_focused_workspace(focused_monitor)
+            if not focused_ws:
+                return None
+            focused_window = self._get_current_workspace_focused_window(focused_ws)
+            return focused_window.get("hwnd") if focused_window else None
+        except Exception:
+            return None
+
+    def _correct_komorebi_cursor(self, hwnd: int) -> None:
+        if not hwnd:
+            return
+        try:
+            from core.utils.win32.utils import get_window_rect
+            import win32api
+            
+            rect_dict = get_window_rect(hwnd)
+            if not rect_dict:
+                return
+                
+            x, y = win32api.GetCursorPos()
+            left = rect_dict.get("x", 0)
+            top = rect_dict.get("y", 0)
+            right = left + rect_dict.get("width", 0)
+            bottom = top + rect_dict.get("height", 0)
+            
+            if left <= x <= right and top <= y <= bottom:
+                return
+                
+            center_x = left + rect_dict.get("width", 0) // 2
+            center_y = top + rect_dict.get("height", 0) // 2
+            
+            _log_workspace_diag(
+                "correcting komorebi mouse position: hwnd=%s old_pos=(%s,%s) new_pos=(%s,%s)",
+                hwnd, x, y, center_x, center_y
+            )
+            win32api.SetCursorPos((center_x, center_y))
+        except Exception:
+            pass
 
     def _move_cursor_after_icon_focus(self, workspace_index: int, hwnd: int, reason: str) -> None:
         if self._curr_workspace_index != workspace_index:
