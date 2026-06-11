@@ -514,6 +514,8 @@ class WorkspacePreviewTile(QFrame):
         from PyQt6.QtCore import Qt
         painter = QPainter(self)
         
+        painter.fillRect(self.rect(), QColor(0, 0, 0, 1))
+        
         classes = str(self.property("class") or "").split()
         is_focused = "focused" in classes
         is_last_focused = "last-focused" in classes
