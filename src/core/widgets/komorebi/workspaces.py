@@ -403,11 +403,15 @@ class WorkspaceAppIconLabel(QLabel):
         painter.end()
 
     def update_icon(self, icon_entry: dict):
-        self._is_pending_jump = False
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
         button = self.parent_button
-        if hasattr(button, "set_pseudo_pending"):
+        is_this_icon_pending = getattr(button, "_pending_jump_hwnd", None) == icon_entry["hwnd"]
+        
+        self._is_pending_jump = is_this_icon_pending
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, is_this_icon_pending)
+        
+        if hasattr(button, "set_pseudo_pending") and not getattr(button, "_pending_jump_hwnd", None):
             button.set_pseudo_pending(False)
+
         self.target_hwnd = icon_entry["hwnd"]
         self.app_key = icon_entry["app_key"]
         self.setProperty("class", icon_entry["class_name"])
@@ -421,6 +425,7 @@ class WorkspaceAppIconLabel(QLabel):
             
             button = self.parent_button
             if hasattr(button, "set_pseudo_pending"):
+                button._pending_jump_hwnd = self.target_hwnd
                 button.set_pseudo_pending(True)
             
             # Force immediate synchronous repaint before any blocking focus calls
@@ -554,10 +559,15 @@ class WorkspacePreviewTile(QFrame):
         painter.end()
 
     def update_entry(self, icon_entry: dict, tile_class: str) -> None:
-        self._is_pending_jump = False
         button = self.parent_button
-        if hasattr(button, "set_pseudo_pending"):
+        is_this_tile_pending = getattr(button, "_pending_jump_hwnd", None) == icon_entry["hwnd"]
+        
+        self._is_pending_jump = is_this_tile_pending
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, is_this_tile_pending)
+        
+        if hasattr(button, "set_pseudo_pending") and not getattr(button, "_pending_jump_hwnd", None):
             button.set_pseudo_pending(False)
+            
         self.target_hwnd = icon_entry["hwnd"]
         self.app_key = icon_entry["app_key"]
         self.setProperty("class", tile_class)
@@ -604,6 +614,7 @@ class WorkspacePreviewTile(QFrame):
             
             button = self.parent_button
             if hasattr(button, "set_pseudo_pending"):
+                button._pending_jump_hwnd = self.target_hwnd
                 button.set_pseudo_pending(True)
                 
             # Force immediate synchronous repaint before any blocking focus calls
@@ -1864,6 +1875,15 @@ class WorkspaceWidget(BaseWidget):
             cleared_workspace_indexes = {workspace_index}
             self._pending_workspace_indexes.discard(workspace_index)
             self._pending_workspace_tokens.pop(workspace_index, None)
+
+        for ws_idx in cleared_workspace_indexes:
+            try:
+                ws_btn = self._workspace_buttons[ws_idx]
+                ws_btn._pending_jump_hwnd = None
+                if hasattr(ws_btn, "set_pseudo_pending"):
+                    ws_btn.set_pseudo_pending(False)
+            except (IndexError, TypeError):
+                pass
 
         if self._pending_focus_workspace_index in cleared_workspace_indexes:
             self._clear_pending_workspace_focus("pending_cleared")
