@@ -176,6 +176,8 @@ class WorkspaceButtonWithIcons(WorkspaceButtonMixin, QFrame):
         self.text_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.button_layout.addWidget(self.text_label)
 
+        self.button_layout.addSpacing(-4)
+
         self.preview_widget = WorkspaceLayoutPreview(workspace_index, self, parent_widget)
         self.button_layout.addWidget(self.preview_widget)
 
