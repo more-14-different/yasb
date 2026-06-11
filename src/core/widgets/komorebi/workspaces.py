@@ -602,10 +602,16 @@ class WorkspacePreviewTile(QFrame):
         if self._icon_size.isEmpty():
             self.icon_label.hide()
             return
-        width = min(self.width(), self._icon_size.width())
-        height = min(self.height(), self._icon_size.height())
-        x = max(0, int((self.width() - width) / 2))
-        y = max(0, int((self.height() - height) / 2))
+            
+        base_w = getattr(self, "base_icon_footprint", self.width())
+        base_h = getattr(self, "base_icon_footprint", self.height())
+        offset_x = getattr(self, "stack_offset_x", 0)
+        offset_y = getattr(self, "stack_offset_y", 0)
+        
+        width = min(base_w, self._icon_size.width())
+        height = min(base_h, self._icon_size.height())
+        x = max(0, int((base_w - width) / 2)) + offset_x
+        y = max(0, int((base_h - height) / 2)) + offset_y
         self.icon_label.setGeometry(x, y, width, height)
 
     def mousePressEvent(self, event: QMouseEvent):
@@ -799,7 +805,13 @@ class WorkspaceLayoutPreview(QFrame):
                 return False
             rects.append(rect)
 
-        normalized_rects, content_size = self._compact_layout_rects(rects, icon_footprint)
+        layout_result = self._compact_layout_rects(rects, icon_footprint)
+        if len(layout_result) == 3:
+            normalized_rects, content_size, stack_info = layout_result
+        else:
+            normalized_rects, content_size = layout_result
+            stack_info = [(0, 0, icon_footprint) for _ in rects]
+
         if content_size.width() <= 0 or content_size.height() <= 0:
             return False
         frame_padding = max(3, padding + 2)
@@ -830,6 +842,12 @@ class WorkspaceLayoutPreview(QFrame):
             tile = self._tiles[index]
             tile_rect = normalized_rects[index]
             tile.setGeometry(tile_rect)
+            
+            if stack_info:
+                tile.stack_offset_x, tile.stack_offset_y, tile.base_icon_footprint = stack_info[index]
+            else:
+                tile.stack_offset_x, tile.stack_offset_y, tile.base_icon_footprint = 0, 0, icon_footprint
+
             tile_class = "layout-preview-tile"
             is_focused = icon_entry.get("focused") and cfg.preview_show_focus
             if is_focused:
@@ -854,28 +872,62 @@ class WorkspaceLayoutPreview(QFrame):
         status_class = f" {status}" if status else ""
         self._overlay.setProperty("class", f"layout-preview{status_class}")
 
-    def _compact_layout_rects(self, rects: list[tuple[int, int, int, int]], icon_footprint: int) -> tuple[list[QRect], QSize]:
+    def _compact_layout_rects(self, rects: list[tuple[int, int, int, int]], icon_footprint: int) -> tuple[list[QRect], QSize, list[tuple[int, int, int]]]:
         if not rects:
-            return [], QSize()
+            return [], QSize(), []
 
-        layout_items = self._build_compact_tree_layout(list(enumerate(rects)))
+        # Step 1: Cluster identical rects (stacks)
+        clusters: dict[tuple[int, int, int, int], list[int]] = {}
+        for i, r in enumerate(rects):
+            clusters.setdefault(r, []).append(i)
+
+        unique_rects = list(clusters.keys())
+        indexed_unique_rects = list(enumerate(unique_rects))
+
+        # Step 2: Compute layout for unique rects
+        layout_items = self._build_compact_tree_layout(indexed_unique_rects)
         if layout_items:
             positions, width_units, height_units = layout_items
             normalized_rects = [QRect() for _ in rects]
-            for index, x_units, y_units in positions:
-                normalized_rects[index] = QRect(
-                    int(round(x_units * icon_footprint)),
-                    int(round(y_units * icon_footprint)),
-                    icon_footprint,
-                    icon_footprint,
-                )
-            content_size = QSize(
-                max(1, int(math.ceil(width_units * icon_footprint))),
-                max(1, int(math.ceil(height_units * icon_footprint))),
-            )
-            return normalized_rects, content_size
+            stack_info = [(0, 0, icon_footprint) for _ in rects]
 
-        return [], QSize()
+            STACK_OFFSET_UNITS = 0.15
+            MAX_STACK_WIDTH_ADD = 0.5
+
+            max_x = width_units
+            max_y = height_units
+
+            for unique_index, x_units, y_units in positions:
+                rect_key = unique_rects[unique_index]
+                stack_indices = clusters[rect_key]
+
+                max_offset_units = min((len(stack_indices) - 1) * STACK_OFFSET_UNITS, MAX_STACK_WIDTH_ADD)
+                expanded_w_px = int(round((1.0 + max_offset_units) * icon_footprint))
+                expanded_h_px = int(round((1.0 + max_offset_units) * icon_footprint))
+
+                max_x = max(max_x, x_units + 1.0 + max_offset_units)
+                max_y = max(max_y, y_units + 1.0 + max_offset_units)
+
+                for stack_pos, original_index in enumerate(stack_indices):
+                    offset_units = min(stack_pos * STACK_OFFSET_UNITS, MAX_STACK_WIDTH_ADD)
+                    offset_x_px = int(round(offset_units * icon_footprint))
+                    offset_y_px = int(round(offset_units * icon_footprint))
+
+                    normalized_rects[original_index] = QRect(
+                        int(round(x_units * icon_footprint)),
+                        int(round(y_units * icon_footprint)),
+                        expanded_w_px,
+                        expanded_h_px,
+                    )
+                    stack_info[original_index] = (offset_x_px, offset_y_px, icon_footprint)
+
+            content_size = QSize(
+                max(1, int(math.ceil(max_x * icon_footprint))),
+                max(1, int(math.ceil(max_y * icon_footprint))),
+            )
+            return normalized_rects, content_size, stack_info
+
+        return [], QSize(), []
 
     def _build_compact_tree_layout(
         self,
