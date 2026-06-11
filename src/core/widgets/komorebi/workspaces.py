@@ -334,6 +334,7 @@ class WorkspaceAppIconLabel(QLabel):
         self.app_key = None
         self._is_hovered = False
         self._is_pending_jump = False
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
 
     def enterEvent(self, event):
         self._is_hovered = True
@@ -485,6 +486,7 @@ class WorkspacePreviewTile(QFrame):
         self.setProperty("class", "layout-preview-tile")
         self._is_hovered = False
         self._is_pending_jump = False
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
 
     def enterEvent(self, event):
         self._is_hovered = True
@@ -655,6 +657,8 @@ class WorkspaceLayoutPreview(QFrame):
         self._overlay.setWindowFlag(Qt.WindowType.NoDropShadowWindowHint)
         self._overlay.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self._overlay.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        # Ensure the entire overlay is hit-testable by Windows DWM (alpha=0.01)
+        self._overlay.setStyleSheet("background-color: rgba(0, 0, 0, 0.01);")
         self.setProperty("class", "layout-preview-anchor")
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.hide()
@@ -868,7 +872,6 @@ class WorkspaceLayoutPreview(QFrame):
         for i, rect in enumerate(rects):
             clusters.setdefault(rect, []).append(i)
 
-        raise_order = list(range(len(self._entries)))
         for cluster_indices in clusters.values():
             if len(cluster_indices) > 1:
                 f_idx_in_cluster = len(cluster_indices) - 1
@@ -884,11 +887,9 @@ class WorkspaceLayoutPreview(QFrame):
                     i
                 ))
                 
-                for slot, new_i in zip(cluster_indices, sorted_indices):
-                    raise_order[slot] = new_i
-
-        for i in raise_order:
-            self._tiles[i].raise_()
+                # For stacked windows, explicitly raise them in the desired order
+                for new_i in sorted_indices:
+                    self._tiles[new_i].raise_()
 
         self.setProperty("class", "layout-preview-anchor")
         self._sync_overlay_class()
