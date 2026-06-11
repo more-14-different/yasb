@@ -441,26 +441,26 @@ class WorkspaceAppIconLabel(QLabel):
             # 1. Update icon label styles instantly
             for icon in button.icon_labels:
                 old_class = str(icon.property("class") or "")
-                if " focused" in old_class:
-                    icon.setProperty("class", old_class.replace(" focused", ""))
+                if " focused" in old_class or " last-focused" in old_class:
+                    icon.setProperty("class", old_class.replace(" focused", "").replace(" last-focused", ""))
                     refresh_widget_style(icon)
             
             new_class = str(self.property("class") or "")
             if " focused" not in new_class:
-                self.setProperty("class", new_class + " focused")
+                self.setProperty("class", new_class.replace(" last-focused", "") + " focused")
                 refresh_widget_style(self)
 
             # 2. Update layout preview tile styles instantly
             if button.preview_widget:
                 for tile in button.preview_widget._tiles:
                     tile_class = str(tile.property("class") or "")
-                    if " focused" in tile_class:
-                        tile.setProperty("class", tile_class.replace(" focused", ""))
+                    if " focused" in tile_class or " last-focused" in tile_class:
+                        tile.setProperty("class", tile_class.replace(" focused", "").replace(" last-focused", ""))
                         refresh_widget_style(tile)
                     if getattr(tile, "target_hwnd", None) == self.target_hwnd:
                         new_tile_class = str(tile.property("class") or "")
                         if " focused" not in new_tile_class:
-                            tile.setProperty("class", new_tile_class + " focused")
+                            tile.setProperty("class", new_tile_class.replace(" last-focused", "") + " focused")
                             refresh_widget_style(tile)
                             self.parent_widget._set_workspace_focused_tile(self.workspace_index, tile)
         except Exception:
@@ -2134,15 +2134,22 @@ class WorkspaceWidget(BaseWidget):
         icon_entries = []
         focused_hwnd = self._get_workspace_focused_hwnd(workspace_index)
         last_active_hwnd = self._workspace_last_active_hwnd.get(workspace_index)
+        
+        has_focused = any(w["hwnd"] == focused_hwnd for w in windows_in_workspace)
+        
         for index, window in enumerate(windows_in_workspace):
             hwnd = window["hwnd"]
             pixmap = self._get_app_icon(hwnd, workspace_index, unique_app_keys=unique_app_keys)
             if pixmap is None:
                 continue
             class_name = f"icon icon-{index + 1}"
-            if hwnd == focused_hwnd:
+            
+            is_focused = (hwnd == focused_hwnd)
+            is_last_focused = (hwnd == last_active_hwnd and not has_focused)
+            
+            if is_focused:
                 class_name += " focused"
-            elif hwnd == last_active_hwnd and hwnd != focused_hwnd:
+            elif is_last_focused:
                 class_name += " last-focused"
                 
             icon_entries.append(
@@ -2152,8 +2159,8 @@ class WorkspaceWidget(BaseWidget):
                     "pixmap": pixmap,
                     "class_name": class_name,
                     "window_rect": window.get("rect"),
-                    "focused": hwnd == focused_hwnd,
-                    "last_focused": hwnd == last_active_hwnd and hwnd != focused_hwnd,
+                    "focused": is_focused,
+                    "last_focused": is_last_focused,
                 }
             )
         return icon_entries
