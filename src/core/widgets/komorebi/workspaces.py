@@ -690,9 +690,12 @@ class WorkspaceLayoutPreview(QFrame):
         self.setMinimumSize(0, 0)
         self.setFixedSize(0, 1)
         for tile in self._tiles:
-            tile.hide()
-        self._overlay.hide()
-        self.hide()
+            if tile.isVisible():
+                tile.hide()
+        if self._overlay.isVisible():
+            self._overlay.hide()
+        if self.isVisible():
+            self.hide()
 
     def refresh_preview_styles(self) -> None:
         self._sync_overlay_class()
@@ -712,10 +715,10 @@ class WorkspaceLayoutPreview(QFrame):
             self._preview_failed = True
             return False
         self.show()
-        self._overlay.show()
+        if not self._overlay.isVisible():
+            self._overlay.show()
         self._sync_overlay_geometry()
         self._raise_overlay()
-        QTimer.singleShot(0, self._raise_overlay)
         return True
 
     def _get_row_icon_padding_horizontal(self) -> int:
@@ -800,14 +803,17 @@ class WorkspaceLayoutPreview(QFrame):
         if previous_size != content_size:
             self._request_parent_layout_update()
 
-        for tile in self._tiles:
+        # Reuse existing tiles to prevent EVENT_OBJECT_CREATE/DESTROY storms
+        while len(self._tiles) > len(self._entries):
+            tile = self._tiles.pop()
+            tile.hide()
             tile.setParent(None)
             tile.deleteLater()
-        self._tiles = []
 
-        for _ in range(len(self._entries)):
-            self._tiles.append(WorkspacePreviewTile(self.workspace_index, self.parent_widget, self))
-            self._tiles[-1].setParent(self._overlay)
+        while len(self._tiles) < len(self._entries):
+            tile = WorkspacePreviewTile(self.workspace_index, self.parent_widget, self)
+            tile.setParent(self._overlay)
+            self._tiles.append(tile)
 
         for index, icon_entry in enumerate(self._entries):
             tile = self._tiles[index]
@@ -1002,18 +1008,6 @@ class WorkspaceLayoutPreview(QFrame):
         if not self._overlay.isVisible():
             return
         self._overlay.raise_()
-        try:
-            SetWindowPos(
-                int(self._overlay.winId()),
-                HWND_TOPMOST,
-                0,
-                0,
-                0,
-                0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-            )
-        except Exception:
-            pass
 
     def _request_parent_layout_update(self) -> None:
         self.updateGeometry()
