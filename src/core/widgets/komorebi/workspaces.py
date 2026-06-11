@@ -405,10 +405,15 @@ class WorkspaceAppIconLabel(QLabel):
     def mousePressEvent(self, event: QMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton:
             self._is_pending_jump = True
-            self.update()
             button = self.parent_button
             if hasattr(button, "set_pseudo_pending"):
                 button.set_pseudo_pending(True)
+            
+            # Force immediate synchronous repaint before any blocking focus calls
+            self.repaint()
+            if hasattr(button, "text_label") and button.text_label:
+                button.text_label.repaint()
+                
             self.parent_widget.focus_workspace_window(self.workspace_index, self.target_hwnd, self.app_key)
             self._apply_instant_focus()
             event.accept()
@@ -573,10 +578,15 @@ class WorkspacePreviewTile(QFrame):
     def mousePressEvent(self, event: QMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton:
             self._is_pending_jump = True
-            self.update()
             button = self.parent_button
             if hasattr(button, "set_pseudo_pending"):
                 button.set_pseudo_pending(True)
+                
+            # Force immediate synchronous repaint before any blocking focus calls
+            self.repaint()
+            if hasattr(button, "text_label") and button.text_label:
+                button.text_label.repaint()
+                
             self.owner.handle_tile_click(self.target_hwnd, self.app_key)
             event.accept()
             return
