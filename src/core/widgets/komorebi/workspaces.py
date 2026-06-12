@@ -1539,7 +1539,8 @@ class WorkspaceWidget(BaseWidget):
                 if not self._pending_cursor_hwnd and self._mouse_follows_focus_enabled():
                     import time
                     recently_closed = hasattr(self, "_last_window_close_time") and (time.time() - self._last_window_close_time) < 0.5
-                    if self._is_active_monitor() and not recently_closed:
+                    recently_clicked = hasattr(self, "_last_icon_click_time") and (time.time() - self._last_icon_click_time) < 0.5
+                    if self._is_active_monitor() and (recently_closed or recently_clicked):
                         global_hwnd = self._get_global_focused_hwnd()
                         if global_hwnd:
                             QTimer.singleShot(150, lambda h=global_hwnd: self._correct_komorebi_cursor(h))
@@ -1829,6 +1830,8 @@ class WorkspaceWidget(BaseWidget):
         self._active_icon_focus_reason = None
 
     def _begin_icon_focus_request(self, workspace_index: int, hwnd: int, reason: str) -> int:
+        import time
+        self._last_icon_click_time = time.time()
         self._icon_focus_request_id += 1
         request_id = self._icon_focus_request_id
         self._active_icon_focus_request_id = request_id
