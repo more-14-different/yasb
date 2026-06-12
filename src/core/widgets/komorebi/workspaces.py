@@ -5,7 +5,7 @@ from typing import Literal
 
 from PIL import Image
 from PyQt6.QtCore import QPoint, QRect, QSize, QTimer, Qt, pyqtSignal
-from PyQt6.QtGui import QImage, QMouseEvent, QPixmap
+from PyQt6.QtGui import QCursor, QImage, QMouseEvent, QPixmap
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QWidget
 from win32con import HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE
 
@@ -662,6 +662,11 @@ class WorkspaceLayoutPreview(QFrame):
         self._overlay.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self.setProperty("class", "layout-preview-anchor")
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self._hover_timer = QTimer(self)
+        self._hover_timer.setInterval(50)
+        self._hover_timer.timeout.connect(self._poll_tile_hover)
+        self._last_hovered_tile_index = -1
+        self._tile_raise_order: list[int] = []
         self.hide()
 
     def sizeHint(self) -> QSize:
@@ -695,8 +700,12 @@ class WorkspaceLayoutPreview(QFrame):
         if self._entries:
             self._overlay.show()
             self._sync_overlay_geometry()
+        if self._tiles:
+            self._hover_timer.start()
 
     def hideEvent(self, event):
+        self._hover_timer.stop()
+        self._clear_all_tile_hover()
         self._overlay.hide()
         super().hideEvent(event)
 
@@ -708,6 +717,8 @@ class WorkspaceLayoutPreview(QFrame):
         self.parent_widget.focus_workspace_window(self.workspace_index, target_hwnd, app_key)
 
     def clear_preview(self) -> None:
+        self._hover_timer.stop()
+        self._clear_all_tile_hover()
         self._entries = []
         self._preview_failed = False
         self._current_canvas_size = QSize()
@@ -798,6 +809,7 @@ class WorkspaceLayoutPreview(QFrame):
         return 4
 
     def _apply_layout(self) -> bool:
+        self._last_hovered_tile_index = -1
         bounds = self._compute_bounds(self._entries)
         if not bounds:
             return False
@@ -894,6 +906,8 @@ class WorkspaceLayoutPreview(QFrame):
 
         for i in raise_order:
             self._tiles[i].raise_()
+
+        self._tile_raise_order = list(raise_order)
 
         self.setProperty("class", "layout-preview-anchor")
         self._sync_overlay_class()
@@ -1104,6 +1118,75 @@ class WorkspaceLayoutPreview(QFrame):
         if not self._overlay.isVisible():
             return
         self._overlay.raise_()
+
+    def _poll_tile_hover(self) -> None:
+        """Periodically check cursor position against tile geometry to fix hover
+        when Qt enter/leave events are blocked by bar-vs-overlay z-order issues."""
+        if not self._overlay.isVisible() or not self._tiles:
+            if self._last_hovered_tile_index >= 0:
+                self._clear_all_tile_hover()
+            return
+
+        cursor_pos = QCursor.pos()
+        hovered_index = -1
+
+        # Check tiles in reverse raise order (visually topmost first)
+        check_order = (
+            reversed(self._tile_raise_order)
+            if self._tile_raise_order
+            else reversed(range(len(self._tiles)))
+        )
+        for i in check_order:
+            if i >= len(self._tiles):
+                continue
+            tile = self._tiles[i]
+            if not tile.isVisible():
+                continue
+            tile_pos = tile.mapToGlobal(QPoint(0, 0))
+            tile_rect = QRect(tile_pos, tile.size())
+            if tile_rect.contains(cursor_pos):
+                hovered_index = i
+                break
+
+        if hovered_index == self._last_hovered_tile_index:
+            return  # No change
+
+        # Clear old hover
+        if 0 <= self._last_hovered_tile_index < len(self._tiles):
+            old_tile = self._tiles[self._last_hovered_tile_index]
+            if old_tile._is_hovered:
+                old_tile._is_hovered = False
+                old_tile.update()
+
+        # Set new hover
+        if hovered_index >= 0:
+            new_tile = self._tiles[hovered_index]
+            if not new_tile._is_hovered:
+                new_tile._is_hovered = True
+                new_tile.update()
+
+        # Update pseudo_hover on parent button
+        any_hovered = hovered_index >= 0
+        button = self.parent_button
+        if hasattr(button, "set_pseudo_hover"):
+            button.set_pseudo_hover(any_hovered)
+
+        self._last_hovered_tile_index = hovered_index
+
+    def _clear_all_tile_hover(self) -> None:
+        """Clear hover state on all tiles."""
+        changed = False
+        for tile in self._tiles:
+            if tile._is_hovered:
+                tile._is_hovered = False
+                tile.update()
+                changed = True
+        self._last_hovered_tile_index = -1
+        if changed:
+            button = self.parent_button
+            if hasattr(button, "set_pseudo_hover"):
+                button.set_pseudo_hover(False)
+
 
     def _request_parent_layout_update(self) -> None:
         self.updateGeometry()
