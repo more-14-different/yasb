@@ -283,6 +283,11 @@ class WorkspaceButtonWithIcons(WorkspaceButtonMixin, QFrame):
         self._show_row_icons(icons_list)
         self.text_label.show()
 
+        # Force layout to recalculate immediately to prevent lagging negative spacing
+        self.button_layout.invalidate()
+        self.button_layout.activate()
+        self.updateGeometry()
+
     def update_icon_by_hwnd(self, hwnd: int):
         if any(icon_entry["hwnd"] == hwnd for icon_entry in self.icons):
             pixmap = self.parent_widget._get_app_icon(hwnd, self.workspace_index, ignore_cache=True)
