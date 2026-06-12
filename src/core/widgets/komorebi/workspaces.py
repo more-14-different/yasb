@@ -1503,6 +1503,8 @@ class WorkspaceWidget(BaseWidget):
                 )
 
             if pending_workspace_confirmed:
+                import time
+                self._last_pending_workspace_confirmed_time = time.time()
                 confirmed_workspace_index = self._curr_workspace_index
                 try:
                     prev_workspace_button = self._workspace_buttons[self._prev_workspace_index]
@@ -1538,8 +1540,8 @@ class WorkspaceWidget(BaseWidget):
                 # Check if we should correct Komorebi's native mouse-follows-focus
                 if not self._pending_cursor_hwnd and self._mouse_follows_focus_enabled():
                     import time
-                    recently_closed = hasattr(self, "_last_window_close_time") and (time.time() - self._last_window_close_time) < 0.5
-                    if self._is_active_monitor() and not recently_closed:
+                    recently_confirmed = hasattr(self, "_last_pending_workspace_confirmed_time") and (time.time() - self._last_pending_workspace_confirmed_time) < 0.5
+                    if self._is_active_monitor() and recently_confirmed:
                         global_hwnd = self._get_global_focused_hwnd()
                         if global_hwnd:
                             QTimer.singleShot(150, lambda h=global_hwnd: self._correct_komorebi_cursor(h))
@@ -1666,13 +1668,6 @@ class WorkspaceWidget(BaseWidget):
                     self._curr_num_windows_in_workspaces[i] = len(windows) if windows else 0
                     self._curr_workspace_layout_signatures[i] = self._get_windows_layout_signature(windows)
 
-                global_num_windows = self._get_global_num_windows(self._komorebi_state)
-                prev_global = getattr(self, "_global_num_windows", global_num_windows)
-                if global_num_windows < prev_global:
-                    import time
-                    self._last_window_close_time = time.time()
-                self._global_num_windows = global_num_windows
-
                 return True
         except TypeError:
             return False
@@ -1693,31 +1688,6 @@ class WorkspaceWidget(BaseWidget):
                 rect_signature = None
             signature.append((window.get("hwnd"), rect_signature))
         return tuple(signature)
-
-    @staticmethod
-    def _get_global_num_windows(state: dict) -> int:
-        count = 0
-        try:
-            for monitor in state.get("monitors", {}).get("elements", []):
-                for workspace in monitor.get("workspaces", {}).get("elements", []):
-                    floating = workspace.get("floating_windows", {})
-                    if isinstance(floating, dict):
-                        count += len(floating.get("elements", []))
-                    elif isinstance(floating, list):
-                        count += len(floating)
-                        
-                    for container in workspace.get("containers", {}).get("elements", []):
-                        count += len(container.get("windows", {}).get("elements", []))
-                        
-                    monocle = workspace.get("monocle_container")
-                    if isinstance(monocle, dict):
-                        count += len(monocle.get("windows", {}).get("elements", []))
-                        
-                    if isinstance(workspace.get("maximized_window"), dict):
-                        count += 1
-        except Exception:
-            pass
-        return count
 
     def _get_focused_workspace(self):
         return self._komorebic.get_focused_workspace(self._komorebi_screen)
