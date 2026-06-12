@@ -34,6 +34,23 @@ APP_ICON_DISPLAY_MODE_ROW = "row"
 APP_ICON_DISPLAY_MODE_LAYOUT_PREVIEW = "layout_preview"
 
 
+def apply_icon_effects(pixmap: QPixmap, is_focused: bool) -> QPixmap:
+    if pixmap is None or pixmap.isNull():
+        return pixmap
+    if is_focused:
+        return pixmap
+        
+    from PyQt6.QtGui import QPainter
+    from PyQt6.QtCore import Qt
+    
+    new_pixmap = QPixmap(pixmap.size())
+    new_pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(new_pixmap)
+    painter.setOpacity(200 / 255.0)
+    painter.drawPixmap(0, 0, pixmap)
+    painter.end()
+    return new_pixmap
+
 def _log_workspace_diag(message: str, *args) -> None:
     logging.info("[komorebi-workspaces] " + message, *args)
 
@@ -418,7 +435,12 @@ class WorkspaceAppIconLabel(QLabel):
         self.target_hwnd = icon_entry["hwnd"]
         self.app_key = icon_entry["app_key"]
         self.setProperty("class", icon_entry["class_name"])
-        self.setPixmap(icon_entry["pixmap"])
+        
+        pixmap = icon_entry["pixmap"]
+        is_focused = "focused" in icon_entry.get("class_name", "")
+        if pixmap is not None:
+            pixmap = apply_icon_effects(pixmap, is_focused)
+        self.setPixmap(pixmap)
         refresh_widget_style(self)
 
     def mousePressEvent(self, event: QMouseEvent):
@@ -451,11 +473,21 @@ class WorkspaceAppIconLabel(QLabel):
                 if " focused" in old_class or " last-focused" in old_class:
                     icon.setProperty("class", old_class.replace(" focused", "").replace(" last-focused", ""))
                     refresh_widget_style(icon)
+                    if icon.target_hwnd:
+                        for entry in button.icons:
+                            if entry["hwnd"] == icon.target_hwnd:
+                                icon.setPixmap(apply_icon_effects(entry["pixmap"], False))
+                                break
             
             new_class = str(self.property("class") or "")
             if " focused" not in new_class:
                 self.setProperty("class", new_class.replace(" last-focused", "") + " focused")
                 refresh_widget_style(self)
+                if self.target_hwnd:
+                    for entry in button.icons:
+                        if entry["hwnd"] == self.target_hwnd:
+                            self.setPixmap(apply_icon_effects(entry["pixmap"], True))
+                            break
 
             # 2. Update layout preview tile styles instantly
             if button.preview_widget:
@@ -464,12 +496,22 @@ class WorkspaceAppIconLabel(QLabel):
                     if " focused" in tile_class or " last-focused" in tile_class:
                         tile.setProperty("class", tile_class.replace(" focused", "").replace(" last-focused", ""))
                         refresh_widget_style(tile)
+                        if tile.target_hwnd:
+                            for entry in button.icons:
+                                if entry["hwnd"] == tile.target_hwnd:
+                                    tile.icon_label.setPixmap(apply_icon_effects(entry["pixmap"], False))
+                                    break
                     if getattr(tile, "target_hwnd", None) == self.target_hwnd:
                         new_tile_class = str(tile.property("class") or "")
                         if " focused" not in new_tile_class:
                             tile.setProperty("class", new_tile_class.replace(" last-focused", "") + " focused")
                             refresh_widget_style(tile)
                             self.parent_widget._set_workspace_focused_tile(self.workspace_index, tile)
+                            if tile.target_hwnd:
+                                for entry in button.icons:
+                                    if entry["hwnd"] == tile.target_hwnd:
+                                        tile.icon_label.setPixmap(apply_icon_effects(entry["pixmap"], True))
+                                        break
         except Exception:
             pass
 
@@ -580,7 +622,9 @@ class WorkspacePreviewTile(QFrame):
         self.app_key = icon_entry["app_key"]
         self.setProperty("class", tile_class)
         pixmap = icon_entry["pixmap"]
+        is_focused = "focused" in tile_class
         if pixmap is not None:
+            pixmap = apply_icon_effects(pixmap, is_focused)
             self.icon_label.setProperty("class", "layout-preview-icon")
             self.icon_label.setPixmap(pixmap)
             try:
