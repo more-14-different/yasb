@@ -368,13 +368,14 @@ class WorkspaceAppIconLabel(QLabel):
         super().paintEvent(event)
         from PyQt6.QtGui import QPainter, QColor, QPen
         from PyQt6.QtCore import Qt
-        painter = QPainter(self)
-        
+
         classes = str(self.property("class") or "").split()
         is_focused = "focused" in classes
         is_last_focused = "last-focused" in classes
-        
         is_active_workspace = self.workspace_index == self.parent_widget._curr_workspace_index
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
 
         button = self.parent_button
         is_workspace_hovered = False
@@ -406,11 +407,11 @@ class WorkspaceAppIconLabel(QLabel):
         elif (is_focused and not is_active_workspace) or is_last_focused:
             painter.setPen(QPen(QColor(141, 163, 184, 255), 1, Qt.PenStyle.SolidLine))
             painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
-            
+
         painter.end()
 
     def update_icon(self, icon_entry: dict):
-        self._is_pending_jump = False
+        from PyQt6.QtGui import QPainter
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
         button = self.parent_button
         if hasattr(button, "set_pseudo_pending"):
@@ -418,7 +419,26 @@ class WorkspaceAppIconLabel(QLabel):
         self.target_hwnd = icon_entry["hwnd"]
         self.app_key = icon_entry["app_key"]
         self.setProperty("class", icon_entry["class_name"])
-        self.setPixmap(icon_entry["pixmap"])
+        
+        # Calculate transparency based on focus state
+        classes = str(self.property("class") or "").split()
+        is_focused = "focused" in classes
+        is_last_focused = "last-focused" in classes
+        is_active_workspace = self.workspace_index == self.parent_widget._curr_workspace_index
+        is_unfocused = True if not is_active_workspace else (not is_focused and not is_last_focused)
+
+        orig_pixmap = icon_entry["pixmap"]
+        if orig_pixmap and not orig_pixmap.isNull() and is_unfocused:
+            dim_pixmap = orig_pixmap.copy()
+            dim_pixmap.fill(Qt.GlobalColor.transparent)
+            p = QPainter(dim_pixmap)
+            p.setOpacity(200 / 255)
+            p.drawPixmap(0, 0, orig_pixmap)
+            p.end()
+            self.setPixmap(dim_pixmap)
+        else:
+            self.setPixmap(orig_pixmap)
+            
         refresh_widget_style(self)
 
     def mousePressEvent(self, event: QMouseEvent):
@@ -519,15 +539,17 @@ class WorkspacePreviewTile(QFrame):
         super().paintEvent(event)
         from PyQt6.QtGui import QPainter, QColor, QPen
         from PyQt6.QtCore import Qt
-        painter = QPainter(self)
-        
-        painter.fillRect(self.rect(), QColor(0, 0, 0, 1))
-        
+
         classes = str(self.property("class") or "").split()
         is_focused = "focused" in classes
         is_last_focused = "last-focused" in classes
-        
         is_active_workspace = self.workspace_index == self.parent_widget._curr_workspace_index
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+
+        # Minimal opaque fill so Qt doesn't composite garbage beneath the tile
+        painter.fillRect(self.rect(), QColor(0, 0, 0, 1))
 
         button = self.parent_button
         is_workspace_hovered = False
@@ -559,10 +581,12 @@ class WorkspacePreviewTile(QFrame):
         elif (is_focused and not is_active_workspace) or is_last_focused:
             painter.setPen(QPen(QColor(141, 163, 184, 255), 1, Qt.PenStyle.SolidLine))
             painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
-            
+
         painter.end()
 
     def update_entry(self, icon_entry: dict, tile_class: str) -> None:
+        from PyQt6.QtGui import QPainter
+        
         self._is_pending_jump = False
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
         
@@ -579,18 +603,37 @@ class WorkspacePreviewTile(QFrame):
         self.target_hwnd = icon_entry["hwnd"]
         self.app_key = icon_entry["app_key"]
         self.setProperty("class", tile_class)
-        pixmap = icon_entry["pixmap"]
-        if pixmap is not None:
+        
+        # Calculate transparency based on focus state
+        classes = str(self.property("class") or "").split()
+        is_focused = "focused" in classes
+        is_last_focused = "last-focused" in classes
+        is_active_workspace = self.workspace_index == self.parent_widget._curr_workspace_index
+        is_unfocused = True if not is_active_workspace else (not is_focused and not is_last_focused)
+        
+        orig_pixmap = icon_entry["pixmap"]
+        if orig_pixmap is not None:
             self.icon_label.setProperty("class", "layout-preview-icon")
-            self.icon_label.setPixmap(pixmap)
+            
+            if not orig_pixmap.isNull() and is_unfocused:
+                dim_pixmap = orig_pixmap.copy()
+                dim_pixmap.fill(Qt.GlobalColor.transparent)
+                p = QPainter(dim_pixmap)
+                p.setOpacity(200 / 255)
+                p.drawPixmap(0, 0, orig_pixmap)
+                p.end()
+                self.icon_label.setPixmap(dim_pixmap)
+            else:
+                self.icon_label.setPixmap(orig_pixmap)
+                
             try:
-                di_size = pixmap.deviceIndependentSize().toSize()
+                di_size = orig_pixmap.deviceIndependentSize().toSize()
                 self._icon_size = QSize(max(1, di_size.width()), max(1, di_size.height()))
             except Exception:
-                dpr = pixmap.devicePixelRatio() or 1.0
+                dpr = orig_pixmap.devicePixelRatio() or 1.0
                 self._icon_size = QSize(
-                    max(1, int(round(pixmap.width() / dpr))),
-                    max(1, int(round(pixmap.height() / dpr))),
+                    max(1, int(round(orig_pixmap.width() / dpr))),
+                    max(1, int(round(orig_pixmap.height() / dpr))),
                 )
             self.icon_label.show()
             refresh_widget_style(self.icon_label)
