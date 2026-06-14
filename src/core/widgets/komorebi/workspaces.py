@@ -208,6 +208,16 @@ class WorkspaceButtonWithIcons(WorkspaceButtonMixin, QFrame):
             self.text_label.setProperty("class", new_class)
             refresh_widget_style(self.text_label)
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "preview_widget") and self.preview_widget:
+            self.preview_widget._sync_overlay_geometry()
+
+    def moveEvent(self, event):
+        super().moveEvent(event)
+        if hasattr(self, "preview_widget") and self.preview_widget:
+            self.preview_widget._sync_overlay_geometry()
+
     def set_pseudo_pending(self, pending: bool):
         current_class = str(self.text_label.property("class") or "")
         classes = set(current_class.split())
@@ -289,7 +299,6 @@ class WorkspaceButtonWithIcons(WorkspaceButtonMixin, QFrame):
         self.button_layout.invalidate()
         self.button_layout.activate()
         self.updateGeometry()
-        QTimer.singleShot(0, self.parent_widget._sync_all_layout_preview_overlays)
 
     def update_icon_by_hwnd(self, hwnd: int):
         if any(icon_entry["hwnd"] == hwnd for icon_entry in self.icons):
@@ -1247,7 +1256,6 @@ class WorkspaceLayoutPreview(QFrame):
                 layout.activate()
         self.parent_widget._workspace_container.updateGeometry()
         self.parent_widget.updateGeometry()
-        QTimer.singleShot(0, self.parent_widget._sync_all_layout_preview_overlays)
 
     def _compute_bounds(self, icon_entries: list[dict]) -> tuple[int, int, int, int] | None:
         bounds = [self._rect_to_geometry(icon_entry.get("window_rect")) for icon_entry in icon_entries]
