@@ -67,6 +67,8 @@ class WorkspaceButtonMixin:
 
     def activate_workspace(self):
         try:
+            import time
+            self.parent_widget._last_yasb_click_time = time.time()
             screen_index = (
                 self.parent_widget._komorebi_screen.get("index") if self.parent_widget._komorebi_screen else None
             )
@@ -287,6 +289,7 @@ class WorkspaceButtonWithIcons(WorkspaceButtonMixin, QFrame):
         self.button_layout.invalidate()
         self.button_layout.activate()
         self.updateGeometry()
+        QTimer.singleShot(0, self.parent_widget._sync_all_layout_preview_overlays)
 
     def update_icon_by_hwnd(self, hwnd: int):
         if any(icon_entry["hwnd"] == hwnd for icon_entry in self.icons):
@@ -1581,9 +1584,8 @@ class WorkspaceWidget(BaseWidget):
                 # Check if we should correct Komorebi's native mouse-follows-focus
                 if not self._pending_cursor_hwnd and self._mouse_follows_focus_enabled():
                     import time
-                    recently_closed = hasattr(self, "_last_window_close_time") and (time.time() - self._last_window_close_time) < 0.5
-                    recently_clicked = hasattr(self, "_last_icon_click_time") and (time.time() - self._last_icon_click_time) < 0.5
-                    if self._is_active_monitor() and (recently_closed or recently_clicked):
+                    recently_clicked = hasattr(self, "_last_yasb_click_time") and (time.time() - self._last_yasb_click_time) < 0.5
+                    if self._is_active_monitor() and recently_clicked:
                         global_hwnd = self._get_global_focused_hwnd()
                         if global_hwnd:
                             QTimer.singleShot(150, lambda h=global_hwnd: self._correct_komorebi_cursor(h))
@@ -1709,13 +1711,6 @@ class WorkspaceWidget(BaseWidget):
                     windows = self._get_all_windows_in_workspace(i)
                     self._curr_num_windows_in_workspaces[i] = len(windows) if windows else 0
                     self._curr_workspace_layout_signatures[i] = self._get_windows_layout_signature(windows)
-
-                global_num_windows = self._get_global_num_windows(self._komorebi_state)
-                prev_global = getattr(self, "_global_num_windows", global_num_windows)
-                if global_num_windows < prev_global:
-                    import time
-                    self._last_window_close_time = time.time()
-                self._global_num_windows = global_num_windows
 
                 return True
         except TypeError:
@@ -1874,7 +1869,7 @@ class WorkspaceWidget(BaseWidget):
 
     def _begin_icon_focus_request(self, workspace_index: int, hwnd: int, reason: str) -> int:
         import time
-        self._last_icon_click_time = time.time()
+        self._last_yasb_click_time = time.time()
         self._icon_focus_request_id += 1
         request_id = self._icon_focus_request_id
         self._active_icon_focus_request_id = request_id
