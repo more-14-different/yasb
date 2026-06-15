@@ -31,6 +31,9 @@ except ImportError:
 
 class Bar(QWidget):
     handle_bar_management = pyqtSignal(str, str)
+    animation_tick = pyqtSignal()
+    opacity_tick = pyqtSignal(float)
+    animation_finished = pyqtSignal()
 
     def __init__(
         self,

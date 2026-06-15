@@ -755,6 +755,15 @@ class WorkspaceLayoutPreview(QFrame):
 
     def showEvent(self, event):
         super().showEvent(event)
+        
+        bar_window = self.window()
+        if hasattr(bar_window, "animation_tick") and not getattr(self, "_connected_anim", False):
+            bar_window.animation_tick.connect(self._sync_overlay_geometry)
+            bar_window.animation_finished.connect(self._sync_overlay_geometry)
+            if hasattr(bar_window, "opacity_tick"):
+                bar_window.opacity_tick.connect(self._overlay.setWindowOpacity)
+            self._connected_anim = True
+
         if self._entries:
             self._overlay.show()
             self._sync_overlay_geometry()

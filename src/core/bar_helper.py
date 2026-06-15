@@ -129,6 +129,8 @@ class BarAnimationManager(QObject):
         self._animation.setStartValue(0.0 if show else 1.0)
         self._animation.setEndValue(1.0 if show else 0.0)
         self._animation.setEasingCurve(QEasingCurve.Type.OutQuad if show else QEasingCurve.Type.InQuad)
+        if hasattr(self.bar_widget, "opacity_tick"):
+            self._animation.valueChanged.connect(lambda v: self.bar_widget.opacity_tick.emit(float(v)))
         self._animation.finished.connect(self._on_show_finished if show else self._on_hide_finished)
         if show:
             self.bar_widget.setWindowOpacity(0.0)
@@ -195,11 +197,16 @@ class BarAnimationManager(QObject):
                 self.bar_widget.setGeometry(x, round(self._edge_y - full_h - self._padding * t), w, full_h)
             self.bar_widget._bar_frame.move(0, 0)
 
+        if hasattr(self.bar_widget, "animation_tick"):
+            self.bar_widget.animation_tick.emit()
+
     def _on_show_finished(self):
         if self._target_geo:
             self.bar_widget.setGeometry(*self._target_geo)
         self.bar_widget._bar_frame.move(0, 0)
         self._animation = None
+        if hasattr(self.bar_widget, "animation_finished"):
+            self.bar_widget.animation_finished.emit()
         self._process_pending()
 
         # Check if mouse left during the animation
@@ -225,6 +232,8 @@ class BarAnimationManager(QObject):
         self.bar_widget._skip_animation = False
         self.bar_widget.setWindowOpacity(1.0)
         self._animation = None
+        if hasattr(self.bar_widget, "animation_finished"):
+            self.bar_widget.animation_finished.emit()
         self._process_pending()
 
     def _process_pending(self):

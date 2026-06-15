@@ -419,6 +419,16 @@ class PiecesDensityWidget(BaseWidget):
     def showEvent(self, event):
         super().showEvent(event)
         self.lower()
+        
+        # Connect to bar animation signals to stay in sync
+        bar_window = self.window()
+        if hasattr(bar_window, "animation_tick") and not getattr(self, "_connected_anim", False):
+            bar_window.animation_tick.connect(self._update_overlay_geometry)
+            bar_window.animation_finished.connect(self._update_overlay_geometry)
+            if hasattr(bar_window, "opacity_tick"):
+                bar_window.opacity_tick.connect(self._overlay.setWindowOpacity)
+            self._connected_anim = True
+
         # Initial geometry update and fetch
         QTimer.singleShot(100, self._fetch_data)
         
