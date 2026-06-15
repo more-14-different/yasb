@@ -1425,6 +1425,21 @@ class WorkspaceWidget(BaseWidget):
         except Exception:
             pass
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        # When the bar is toggled from hidden to shown, force a comprehensive
+        # layout refresh to ensure all inner buttons and icons correct their geometry.
+        # This fixes issues where icons appear at wrong Y coordinates after toggle.
+        self._workspace_container_layout.invalidate()
+        self._workspace_container_layout.activate()
+        for btn in self._workspace_buttons:
+            if hasattr(btn, "button_layout") and btn.button_layout:
+                btn.button_layout.invalidate()
+                btn.button_layout.activate()
+        # Ensure layout previews also re-sync their geometry when shown
+        QTimer.singleShot(10, self._sync_all_layout_preview_overlays)
+        QTimer.singleShot(50, self._sync_all_layout_preview_overlays)
+
     def _on_destroyed(self, *args):
         try:
             self._event_service.unregister_event(KomorebiEvent.KomorebiConnect, self.k_signal_connect)

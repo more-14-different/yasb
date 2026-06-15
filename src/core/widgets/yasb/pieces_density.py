@@ -54,10 +54,10 @@ class DensityOverlay(QFrame):
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.Tool
             | Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.WindowDoesNotAcceptFocus
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        # Enable mouse tracking for hover tooltips
-        self.setMouseTracking(True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         
         # Internal state
         self.stream_start_time = 0
@@ -188,45 +188,6 @@ class DensityOverlay(QFrame):
                     painter.drawLine(QPointF(x, h), QPointF(x, h - 5))
 
 
-    def mouseMoveEvent(self, event):
-        """Show tooltip with event density on hover."""
-        if not self.config.show_tooltip or not self.is_streaming:
-            return
-
-        w = self.width()
-        if w <= 0:
-            return
-            
-        if self.error_msg:
-            QToolTip.showText(QCursor.pos(), f"Error: {self.error_msg}", self)
-            return
-            
-        if not self.buckets:
-            QToolTip.showText(QCursor.pos(), "0 Events", self)
-            return
-
-        # Map mouse X to time bucket
-        x = event.pos().x()
-        bucket_index = int((x / w) * len(self.buckets))
-        bucket_index = min(max(bucket_index, 0), len(self.buckets) - 1)
-        
-        self.hover_idx = bucket_index
-        self.update()
-
-        val = self.buckets[bucket_index]
-        
-        # Calculate local time string
-        ts = self.stream_start_time + bucket_index * 60
-        dt_str = datetime.fromtimestamp(ts).strftime("%H:%M")
-        
-        tooltip_text = f"{dt_str} | Events (±5m): {val}"
-        QToolTip.showText(QCursor.pos(), tooltip_text, self)
-
-    def leaveEvent(self, event):
-        """Hide tooltip when mouse leaves."""
-        self.hover_idx = None
-        self.update()
-        QToolTip.hideText()
 
 
 class FetchWorker(QThread):
@@ -341,6 +302,60 @@ class PiecesDensityWidget(BaseWidget):
         self._timer.timeout.connect(self._fetch_data)
         self.register_callback("toggle_pieces_density", self._toggle_overlay)
 
+        # Drop to the bottom of the bar's Z-order to prevent covering other widgets
+        self.lower()
+
+        # Polling for hover without triggering Qt's window raising on mouse hover
+        self._hover_timer = QTimer(self)
+        self._hover_timer.setInterval(50)
+        self._hover_timer.timeout.connect(self._poll_hover)
+        self._hover_timer.start()
+
+    def _poll_hover(self):
+        if not self._overlay or not self._overlay.isVisible() or not self.config.show_tooltip or not self._overlay.is_streaming:
+            if getattr(self._overlay, 'hover_idx', None) is not None:
+                self._overlay.hover_idx = None
+                self._overlay.update()
+                QToolTip.hideText()
+            return
+
+        cursor_pos = QCursor.pos()
+        geo = self._overlay.geometry()
+        
+        if geo.contains(cursor_pos):
+            w = self._overlay.width()
+            if w <= 0:
+                return
+
+            if self._overlay.error_msg:
+                QToolTip.showText(cursor_pos, f"Error: {self._overlay.error_msg}")
+                return
+                
+            if not self._overlay.buckets:
+                QToolTip.showText(cursor_pos, "0 Events")
+                return
+
+            # Map mouse global X to time bucket
+            local_x = cursor_pos.x() - geo.x()
+            bucket_index = int((local_x / w) * len(self._overlay.buckets))
+            bucket_index = min(max(bucket_index, 0), len(self._overlay.buckets) - 1)
+            
+            if getattr(self._overlay, 'hover_idx', None) != bucket_index:
+                self._overlay.hover_idx = bucket_index
+                self._overlay.update()
+
+            val = self._overlay.buckets[bucket_index]
+            ts = self._overlay.stream_start_time + bucket_index * 60
+            dt_str = datetime.fromtimestamp(ts).strftime("%H:%M")
+            tooltip_text = f"{dt_str} | Events (±5m): {val}"
+            
+            QToolTip.showText(cursor_pos, tooltip_text)
+        else:
+            if getattr(self._overlay, 'hover_idx', None) is not None:
+                self._overlay.hover_idx = None
+                self._overlay.update()
+                QToolTip.hideText()
+
     def _fetch_data(self):
         # Don't overlap fetches
         if self._worker and self._worker.isRunning():
@@ -402,8 +417,15 @@ class PiecesDensityWidget(BaseWidget):
 
     def showEvent(self, event):
         super().showEvent(event)
+        self.lower()
         # Initial geometry update and fetch
         QTimer.singleShot(100, self._fetch_data)
+        
+        # Ensure overlay stays under the bar window when the bar is shown again
+        if self._overlay and self._overlay.isVisible():
+            bar_window = self.window()
+            if bar_window:
+                self._overlay.stackUnder(bar_window)
 
     def hideEvent(self, event):
         super().hideEvent(event)
