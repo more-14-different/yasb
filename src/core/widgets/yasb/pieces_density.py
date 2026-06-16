@@ -314,6 +314,14 @@ class PiecesDensityWidget(BaseWidget):
         self._hover_timer.start()
 
     def _poll_hover(self):
+        # Continually enforce Z-order to absolutely prevent the widget or overlay
+        # from ever appearing above other yasb bar widgets, as requested by the user.
+        self.lower()
+        if self._overlay and self._overlay.isVisible():
+            bar_window = self.window()
+            if bar_window:
+                self._overlay.stackUnder(bar_window)
+
         if not self._overlay or not self._overlay.isVisible() or not self.config.show_tooltip or not self._overlay.is_streaming:
             if getattr(self._overlay, 'hover_idx', None) is not None:
                 self._overlay.hover_idx = None
