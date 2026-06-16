@@ -91,6 +91,9 @@ class DensityOverlay(QFrame):
             return
 
         n = len(self.buckets)
+        if self.hover_idx is not None and self.hover_idx >= n:
+            self.hover_idx = None
+            
         step_x = w / (n - 1) if n > 1 else w
 
         # Draw Hover Highlight (±5 mins)
