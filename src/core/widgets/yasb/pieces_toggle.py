@@ -96,6 +96,18 @@ class PiecesToggleWidget(BaseWidget):
             bottom_layout.addWidget(w)
         self._widget_container_layout.addWidget(bottom_frame, alignment=Qt.AlignmentFlag.AlignBottom)
 
+    def mouseReleaseEvent(self, event):
+        pass # We use _handle_mouse_events instead
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not getattr(self, "_height_adjusted", False):
+            for w in self._time_widgets + self._time_widgets_alt + self._pieces_widgets + self._pieces_widgets_alt:
+                h = w.sizeHint().height()
+                # Reduce capsule height by 3px
+                w.setFixedHeight(h - 3)
+            self._height_adjusted = True
+
     def _handle_mouse_events(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             # Top half for time source toggle, bottom half for pieces toggle
