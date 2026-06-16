@@ -76,8 +76,8 @@ class PiecesToggleWidget(BaseWidget):
         top_frame = QFrame()
         top_layout = QHBoxLayout(top_frame)
         top_layout.setSpacing(0)
-        top_layout.setContentsMargins(0, 0, 0, 0)
-        top_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        top_layout.setContentsMargins(-4, 0, 0, 0)
+        top_layout.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self._time_widgets = process_content(self.config.label, False)
         self._time_widgets_alt = process_content(self.config.label_alt, True)
         for w in self._time_widgets + self._time_widgets_alt:
@@ -88,8 +88,8 @@ class PiecesToggleWidget(BaseWidget):
         bottom_frame = QFrame()
         bottom_layout = QHBoxLayout(bottom_frame)
         bottom_layout.setSpacing(0)
-        bottom_layout.setContentsMargins(0, 0, 0, 0)
-        bottom_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        bottom_layout.setContentsMargins(-4, 0, 0, 0)
+        bottom_layout.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self._pieces_widgets = process_content(self.config.label, False)
         self._pieces_widgets_alt = process_content(self.config.label_alt, True)
         for w in self._pieces_widgets + self._pieces_widgets_alt:
