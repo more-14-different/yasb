@@ -82,12 +82,12 @@ class DensityOverlay(QFrame):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         if self.error_msg:
-            # Draw text at 1/4 of the height
+            # Draw text at 3/4 of the height
             painter.setPen(QColor(255, 255, 255, 200))
             font = painter.font()
             font.setPointSize(10)
             painter.setFont(font)
-            painter.drawText(QRectF(0, h * 0.25 - 10, w, 20), Qt.AlignmentFlag.AlignCenter, self.error_msg)
+            painter.drawText(QRectF(0, h * 0.75, w, 20), Qt.AlignmentFlag.AlignCenter, self.error_msg)
             return
 
         n = len(self.buckets)
