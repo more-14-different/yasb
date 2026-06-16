@@ -288,6 +288,8 @@ class PiecesDensityWidget(BaseWidget):
     """
     validation_schema = PiecesDensityConfig
 
+    _toggle_req_signal = pyqtSignal()
+
     def __init__(self, config: PiecesDensityConfig):
         super().__init__("pieces-density-widget")
         self.config = config
@@ -296,6 +298,7 @@ class PiecesDensityWidget(BaseWidget):
             self.hide()
             return
 
+        self._is_active = True
         self._overlay = DensityOverlay(self, self.config)
         self._worker = None
 
@@ -303,6 +306,9 @@ class PiecesDensityWidget(BaseWidget):
         self._timer.timeout.connect(self._fetch_data)
         self._timer.start(self.config.poll_interval_sec * 1000)
         self.register_callback("toggle_pieces_density", self._toggle_overlay)
+
+        self._event_service.register_event("toggle_pieces_widget", self._toggle_req_signal)
+        self._toggle_req_signal.connect(self._toggle_pieces_state)
 
         # Drop to the bottom of the bar's Z-order to prevent covering other widgets
         self.lower()
@@ -376,6 +382,9 @@ class PiecesDensityWidget(BaseWidget):
         self._worker.start()
 
     def _on_data_fetched(self, buckets: list[int], is_streaming: bool, start_time: float, error_msg: str):
+        if not getattr(self, "_is_active", True):
+            return
+
         self._overlay.buckets = buckets
         self._overlay.is_streaming = is_streaming
         self._overlay.stream_start_time = start_time
@@ -424,6 +433,20 @@ class PiecesDensityWidget(BaseWidget):
             self._update_overlay_geometry()
             self._overlay.show()
             self._overlay.lower()
+
+    def _toggle_pieces_state(self):
+        self._is_active = not self._is_active
+        if self._is_active:
+            self._timer.start(self.config.poll_interval_sec * 1000)
+            self._fetch_data()
+        else:
+            self._timer.stop()
+            if self._worker and self._worker.isRunning():
+                self._worker._is_running = False
+            if self._overlay.isVisible():
+                self._overlay.hide()
+
+        self._event_service.emit_event("pieces_widget_state_changed", self._is_active)
 
     def showEvent(self, event):
         super().showEvent(event)
