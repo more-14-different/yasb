@@ -17,9 +17,8 @@ class PiecesToggleWidget(BaseWidget):
         
         # Override the base horizontal layout with a vertical layout
         self._widget_container_layout = QVBoxLayout()
-        self._widget_container_layout.setSpacing(-8) # changed to -8 to move both containers 2px closer to waistline
-        self._widget_container_layout.setContentsMargins(0, 0, 0, 0) # reset margin to 0 for perfect symmetry
-        self._widget_container_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._widget_container_layout.setSpacing(0) # Let alignment dictate spacing
+        self._widget_container_layout.setContentsMargins(0, 0, 0, 0)
         
         self._widget_container = QFrame()
         self._widget_container.setLayout(self._widget_container_layout)
@@ -83,7 +82,7 @@ class PiecesToggleWidget(BaseWidget):
         self._time_widgets_alt = process_content(self.config.label_alt, True)
         for w in self._time_widgets + self._time_widgets_alt:
             top_layout.addWidget(w)
-        self._widget_container_layout.addWidget(top_frame)
+        self._widget_container_layout.addWidget(top_frame, alignment=Qt.AlignmentFlag.AlignTop)
 
         # Bottom toggle (Pieces Diagram)
         bottom_frame = QFrame()
@@ -95,7 +94,7 @@ class PiecesToggleWidget(BaseWidget):
         self._pieces_widgets_alt = process_content(self.config.label_alt, True)
         for w in self._pieces_widgets + self._pieces_widgets_alt:
             bottom_layout.addWidget(w)
-        self._widget_container_layout.addWidget(bottom_frame)
+        self._widget_container_layout.addWidget(bottom_frame, alignment=Qt.AlignmentFlag.AlignBottom)
 
     def _handle_mouse_events(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
