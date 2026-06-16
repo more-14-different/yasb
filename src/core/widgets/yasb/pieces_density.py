@@ -194,9 +194,10 @@ class DensityOverlay(QFrame):
 class FetchWorker(QThread):
     data_fetched = pyqtSignal(list, bool, float, str) # buckets, is_streaming, start_time, error_msg
 
-    def __init__(self, config: PiecesDensityConfig):
+    def __init__(self, config: PiecesDensityConfig, use_obs_time: bool):
         super().__init__()
         self.config = config
+        self.use_obs_time = use_obs_time
         self._is_running = True
 
     def run(self):
@@ -204,32 +205,43 @@ class FetchWorker(QThread):
             return
 
         try:
-            # 1. OBS WebSocket Query
-            try:
-                obs_client = obs.ReqClient(host=self.config.obs_host, port=self.config.obs_port, password=self.config.obs_password)
-                status = obs_client.get_stream_status()
-            except Exception as e:
-                self.data_fetched.emit([], True, 0.0, f"Waiting for OBS Connection ({str(e)})")
-                return
-            
-            is_streaming = status.output_active
-            if not is_streaming:
-                self.data_fetched.emit([], True, 0.0, "Waiting for OBS Stream to start...")
-                return
+            if self.use_obs_time:
+                # 1. OBS WebSocket Query
+                try:
+                    obs_client = obs.ReqClient(host=self.config.obs_host, port=self.config.obs_port, password=self.config.obs_password)
+                    status = obs_client.get_stream_status()
+                except Exception as e:
+                    self.data_fetched.emit([], True, 0.0, f"Waiting for OBS Connection ({str(e)})")
+                    return
+                
+                is_streaming = status.output_active
+                if not is_streaming:
+                    self.data_fetched.emit([], True, 0.0, "Waiting for OBS Stream to start...")
+                    return
 
-            duration_str = status.output_timecode # e.g. "00:12:34.567"
-            # Parse duration safely
-            parts = duration_str.split(':')
-            if len(parts) >= 3:
-                h = int(parts[0])
-                m = int(parts[1])
-                s_parts = parts[2].split('.')
-                s = int(s_parts[0])
-                total_duration_sec = h * 3600 + m * 60 + s
+                duration_str = status.output_timecode # e.g. "00:12:34.567"
+                # Parse duration safely
+                parts = duration_str.split(':')
+                if len(parts) >= 3:
+                    h = int(parts[0])
+                    m = int(parts[1])
+                    s_parts = parts[2].split('.')
+                    s = int(s_parts[0])
+                    total_duration_sec = h * 3600 + m * 60 + s
+                else:
+                    total_duration_sec = 0
+
+                stream_start_time = time.time() - total_duration_sec
             else:
-                total_duration_sec = 0
-
-            stream_start_time = time.time() - total_duration_sec
+                # Use boot time
+                try:
+                    import psutil
+                    stream_start_time = psutil.boot_time()
+                    total_duration_sec = time.time() - stream_start_time
+                    is_streaming = True
+                except Exception as e:
+                    self.data_fetched.emit([], True, 0.0, f"Waiting for Boot Time ({str(e)})")
+                    return
 
             # 2. Raw Bucket sampling (1 min intervals)
             bucket_interval = 60 # Force 1-minute base buckets
@@ -289,6 +301,7 @@ class PiecesDensityWidget(BaseWidget):
     validation_schema = PiecesDensityConfig
 
     _toggle_req_signal = pyqtSignal()
+    _time_source_changed_signal = pyqtSignal(bool)
 
     def __init__(self, config: PiecesDensityConfig):
         super().__init__("pieces-density-widget")
@@ -299,6 +312,7 @@ class PiecesDensityWidget(BaseWidget):
             return
 
         self._is_active = True
+        self._use_obs_time = True
         self._overlay = DensityOverlay(self, self.config)
         self._worker = None
 
@@ -309,6 +323,9 @@ class PiecesDensityWidget(BaseWidget):
 
         self._event_service.register_event("toggle_pieces_widget", self._toggle_req_signal)
         self._toggle_req_signal.connect(self._toggle_pieces_state)
+
+        self._event_service.register_event("pieces_time_source_changed", self._time_source_changed_signal)
+        self._time_source_changed_signal.connect(self._on_time_source_changed)
 
         # Drop to the bottom of the bar's Z-order to prevent covering other widgets
         self.lower()
@@ -377,7 +394,7 @@ class PiecesDensityWidget(BaseWidget):
         if self._worker and self._worker.isRunning():
             return
 
-        self._worker = FetchWorker(self.config)
+        self._worker = FetchWorker(self.config, self._use_obs_time)
         self._worker.data_fetched.connect(self._on_data_fetched)
         self._worker.start()
 
@@ -433,6 +450,10 @@ class PiecesDensityWidget(BaseWidget):
             self._update_overlay_geometry()
             self._overlay.show()
             self._overlay.lower()
+
+    def _on_time_source_changed(self, use_obs: bool):
+        self._use_obs_time = use_obs
+        self._fetch_data()
 
     def _toggle_pieces_state(self):
         self._is_active = not self._is_active
