@@ -301,6 +301,7 @@ class PiecesDensityWidget(BaseWidget):
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._fetch_data)
+        self._timer.start(self.config.poll_interval_sec * 1000)
         self.register_callback("toggle_pieces_density", self._toggle_overlay)
 
         # Drop to the bottom of the bar's Z-order to prevent covering other widgets
