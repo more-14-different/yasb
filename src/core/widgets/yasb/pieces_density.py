@@ -362,6 +362,11 @@ class PiecesDensityWidget(BaseWidget):
         self._hover_timer.timeout.connect(self._poll_hover)
         self._hover_timer.start()
 
+    def _enforce_z_order(self):
+        if self.isVisible():
+            self.lower()
+        self._place_overlay_below_bar()
+
     def _place_overlay_below_bar(self, allow_hidden: bool = False):
         if not self._overlay or not self._overlay.isVisible():
             if not allow_hidden:
@@ -379,13 +384,21 @@ class PiecesDensityWidget(BaseWidget):
 
         SetWindowPos(overlay_hwnd, bar_hwnd, 0, 0, 0, 0, SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE)
 
+    def _sync_overlay_with_bar(self):
+        self._update_overlay_geometry()
+        self._enforce_z_order()
+
     def _show_overlay_below_bar(self):
         self._update_overlay_geometry()
         self._place_overlay_below_bar(allow_hidden=True)
         self._overlay.show()
-        self._place_overlay_below_bar()
+        self._enforce_z_order()
 
     def _poll_hover(self):
+        # The heatmap must remain the bottom-most visible YASB layer while enabled.
+        # Qt/Win32 show/topmost operations can reorder windows after the initial show.
+        self._enforce_z_order()
+
         if not self._overlay or not self._overlay.isVisible() or not self.config.show_tooltip or not self._overlay.is_streaming:
             if getattr(self._overlay, 'hover_idx', None) is not None:
                 self._overlay.hover_idx = None
@@ -467,8 +480,7 @@ class PiecesDensityWidget(BaseWidget):
             if not self._overlay.isVisible():
                 self._show_overlay_below_bar()
             else:
-                self._update_overlay_geometry()
-                self._place_overlay_below_bar()
+                self._sync_overlay_with_bar()
             self._overlay.update()
         else:
             if self._overlay.isVisible():
@@ -514,6 +526,7 @@ class PiecesDensityWidget(BaseWidget):
         self._is_active = not self._is_active
         if self._is_active:
             self._timer.start(self.config.poll_interval_sec * 1000)
+            self._enforce_z_order()
             self._fetch_data()
         else:
             self._timer.stop()
@@ -531,8 +544,8 @@ class PiecesDensityWidget(BaseWidget):
         # Connect to bar animation signals to stay in sync
         bar_window = self.window()
         if hasattr(bar_window, "animation_tick") and not getattr(self, "_connected_anim", False):
-            bar_window.animation_tick.connect(self._update_overlay_geometry)
-            bar_window.animation_finished.connect(self._update_overlay_geometry)
+            bar_window.animation_tick.connect(self._sync_overlay_with_bar)
+            bar_window.animation_finished.connect(self._sync_overlay_with_bar)
             if hasattr(bar_window, "opacity_tick"):
                 bar_window.opacity_tick.connect(self._overlay.setWindowOpacity)
             self._connected_anim = True
