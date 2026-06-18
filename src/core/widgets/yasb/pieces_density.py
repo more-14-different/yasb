@@ -218,6 +218,7 @@ class FetchWorker(QThread):
                 try:
                     obs_client = obs.ReqClient(host=self.config.obs_host, port=self.config.obs_port, password=self.config.obs_password, timeout=5)
                     status = obs_client.get_stream_status()
+                    stats = obs_client.get_stats()
                 except Exception as e:
                     self.data_fetched.emit([], True, 0.0, f"Waiting for OBS Connection ({str(e)})", self.use_obs_time)
                     return
@@ -233,17 +234,20 @@ class FetchWorker(QThread):
                     self.data_fetched.emit([], True, 0.0, "Waiting for OBS Stream to start...", self.use_obs_time)
                     return
 
-                duration_str = status.output_timecode # e.g. "00:12:34.567"
-                # Parse duration safely
-                parts = duration_str.split(':')
-                if len(parts) >= 3:
-                    h = int(parts[0])
-                    m = int(parts[1])
-                    s_parts = parts[2].split('.')
-                    s = int(s_parts[0])
-                    total_duration_sec = h * 3600 + m * 60 + s
+                if hasattr(stats, 'render_total_frames') and getattr(stats, 'active_fps', 0) > 0:
+                    total_duration_sec = int(stats.render_total_frames / stats.active_fps)
                 else:
-                    total_duration_sec = 0
+                    duration_str = status.output_timecode # e.g. "00:12:34.567"
+                    # Parse duration safely
+                    parts = duration_str.split(':')
+                    if len(parts) >= 3:
+                        h = int(parts[0])
+                        m = int(parts[1])
+                        s_parts = parts[2].split('.')
+                        s = int(s_parts[0])
+                        total_duration_sec = h * 3600 + m * 60 + s
+                    else:
+                        total_duration_sec = 0
 
                 stream_start_time = time.time() - total_duration_sec
             else:
@@ -307,10 +311,6 @@ class FetchWorker(QThread):
                 end_idx = min(num_buckets, i + 6)
                 buckets[i] = sum(raw_buckets[start_idx:end_idx])
 
-            first_visible_idx = next((idx for idx, value in enumerate(buckets) if value > 0), 0)
-            if first_visible_idx > 0:
-                buckets = buckets[first_visible_idx:]
-                stream_start_time += first_visible_idx * bucket_interval
 
             self.data_fetched.emit(buckets, True, stream_start_time, "", self.use_obs_time)
 
