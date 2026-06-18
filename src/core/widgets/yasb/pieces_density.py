@@ -404,16 +404,22 @@ class PiecesDensityWidget(BaseWidget):
                 QToolTip.hideText()
 
     def _fetch_data(self):
-        # Don't overlap fetches
-        if self._worker and self._worker.isRunning():
-            return
+        # Don't overlap fetches.  Guard isRunning() with try/except because
+        # deleteLater() destroys the underlying C++ object while Python's
+        # self._worker reference may still be alive, causing:
+        #   RuntimeError: wrapped C/C++ object of type FetchWorker has been deleted
+        try:
+            if self._worker and self._worker.isRunning():
+                return
+        except RuntimeError:
+            # C++ object already deleted; treat as no active worker
+            self._worker = None
 
         self._worker = FetchWorker(self.config, self._use_obs_time)
         self._worker.data_fetched.connect(self._on_data_fetched)
-        # deleteLater ensures Qt cleans up the C++ thread object only after all
-        # signals are processed, preventing use-after-free when self._worker is
-        # replaced before the thread's finished signal has been fully dispatched.
-        self._worker.finished.connect(self._worker.deleteLater)
+        # Clear the Python reference once the thread finishes so the guard
+        # above never sees a stale (deleted) C++ object again.
+        self._worker.finished.connect(lambda: setattr(self, "_worker", None))
         self._worker.start()
 
     def _on_data_fetched(self, buckets: list[int], is_streaming: bool, start_time: float, error_msg: str, was_obs_time: bool):
