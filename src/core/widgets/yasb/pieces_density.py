@@ -304,6 +304,11 @@ class FetchWorker(QThread):
                 end_idx = min(num_buckets, i + 6)
                 buckets[i] = sum(raw_buckets[start_idx:end_idx])
 
+            first_visible_idx = next((idx for idx, value in enumerate(buckets) if value > 0), 0)
+            if first_visible_idx > 0:
+                buckets = buckets[first_visible_idx:]
+                stream_start_time += first_visible_idx * bucket_interval
+
             self.data_fetched.emit(buckets, True, stream_start_time, "", self.use_obs_time)
 
         except Exception as e:
