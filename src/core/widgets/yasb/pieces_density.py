@@ -53,10 +53,13 @@ class DensityOverlay(QFrame):
         self.config = config
         
         # Set up window flags for a floating overlay that sits below the bar but above desktop
+        # WARNING: DO NOT ADD WindowStaysOnTopHint! 
+        # If we add it, Qt will constantly fight our SetWindowPos Win32 calls and 
+        # occasionally raise the heatmap ABOVE the bar, causing it to overlap 
+        # transparent komorebi icons and widgets!
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.Tool
-            | Qt.WindowType.WindowStaysOnTopHint
             | Qt.WindowType.WindowDoesNotAcceptFocus
             | Qt.WindowType.WindowTransparentForInput
         )
