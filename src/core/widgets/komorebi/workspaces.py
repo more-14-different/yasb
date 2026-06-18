@@ -445,10 +445,11 @@ class WorkspaceAppIconLabel(QLabel):
         orig_pixmap = icon_entry["pixmap"]
         if orig_pixmap and not orig_pixmap.isNull() and is_unfocused:
             dim_pixmap = orig_pixmap.copy()
-            dim_pixmap.fill(Qt.GlobalColor.transparent)
+            # Draw a dark semi-transparent layer over the icon without altering the alpha of the icon itself.
+            # This makes it opaque but dark, preventing the pieces heatmap from bleeding through from behind.
             p = QPainter(dim_pixmap)
-            p.setOpacity(200 / 255)
-            p.drawPixmap(0, 0, orig_pixmap)
+            p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceAtop)
+            p.fillRect(dim_pixmap.rect(), QColor(0, 0, 0, 150))
             p.end()
             self.setPixmap(dim_pixmap)
         else:
@@ -632,10 +633,9 @@ class WorkspacePreviewTile(QFrame):
             
             if not orig_pixmap.isNull() and is_unfocused:
                 dim_pixmap = orig_pixmap.copy()
-                dim_pixmap.fill(Qt.GlobalColor.transparent)
                 p = QPainter(dim_pixmap)
-                p.setOpacity(200 / 255)
-                p.drawPixmap(0, 0, orig_pixmap)
+                p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceAtop)
+                p.fillRect(dim_pixmap.rect(), QColor(0, 0, 0, 150))
                 p.end()
                 self.icon_label.setPixmap(dim_pixmap)
             else:
