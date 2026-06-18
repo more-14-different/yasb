@@ -110,7 +110,7 @@ class PiecesToggleWidget(BaseWidget):
                 
     def _toggle_time_source(self):
         self._time_is_on = not self._time_is_on
-        self._event_service.emit_event("pieces_time_source_changed", self._time_is_on)
+        self._event_service.emit_event("pieces_time_source_changed", self._time_is_on, self.screen_name)
         self._update_labels()
 
     def _toggle_pieces(self):

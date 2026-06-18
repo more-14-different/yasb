@@ -304,7 +304,7 @@ class PiecesDensityWidget(BaseWidget):
     validation_schema = PiecesDensityConfig
 
     _toggle_req_signal = pyqtSignal(str)
-    _time_source_changed_signal = pyqtSignal(bool)
+    _time_source_changed_signal = pyqtSignal(bool, str)
 
     def __init__(self, config: PiecesDensityConfig):
         super().__init__("pieces-density-widget")
@@ -454,7 +454,9 @@ class PiecesDensityWidget(BaseWidget):
             self._overlay.show()
             self._overlay.lower()
 
-    def _on_time_source_changed(self, use_obs: bool):
+    def _on_time_source_changed(self, use_obs: bool, screen_name: str):
+        if screen_name != self.screen_name:
+            return
         self._use_obs_time = use_obs
         self._fetch_data()
 
