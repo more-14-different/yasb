@@ -825,8 +825,8 @@ class WorkspaceLayoutPreview(QFrame):
 
     def _get_row_icon_padding_horizontal(self) -> int:
         try:
-            from core.bar_helper import ThemeState
-            stylesheet = ThemeState.stylesheet()
+            from core.bar_helper import GlobalState
+            stylesheet = GlobalState.stylesheet()
             if not stylesheet:
                 return 4
 
