@@ -209,14 +209,21 @@ class FetchWorker(QThread):
 
         try:
             if self.use_obs_time:
-                # 1. OBS WebSocket Query
+                # 1. OBS WebSocket Query - always disconnect to avoid connection leaks
+                obs_client = None
                 try:
-                    obs_client = obs.ReqClient(host=self.config.obs_host, port=self.config.obs_port, password=self.config.obs_password)
+                    obs_client = obs.ReqClient(host=self.config.obs_host, port=self.config.obs_port, password=self.config.obs_password, timeout=5)
                     status = obs_client.get_stream_status()
                 except Exception as e:
                     self.data_fetched.emit([], True, 0.0, f"Waiting for OBS Connection ({str(e)})")
                     return
-                
+                finally:
+                    if obs_client is not None:
+                        try:
+                            obs_client.disconnect()
+                        except Exception:
+                            pass
+
                 is_streaming = status.output_active
                 if not is_streaming:
                     self.data_fetched.emit([], True, 0.0, "Waiting for OBS Stream to start...")
