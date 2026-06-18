@@ -7,7 +7,7 @@ import re
 class PiecesToggleWidget(BaseWidget):
     validation_schema = PiecesToggleConfig
     
-    _state_changed_signal = pyqtSignal(bool)
+    _state_changed_signal = pyqtSignal(bool, str)
     
     def __init__(self, config: PiecesToggleConfig):
         super().__init__(class_name=f"pieces-toggle-widget {config.class_name}")
@@ -114,10 +114,13 @@ class PiecesToggleWidget(BaseWidget):
         self._update_labels()
 
     def _toggle_pieces(self):
-        # Emit event to tell PiecesDensityWidget to toggle
-        self._event_service.emit_event("toggle_pieces_widget")
+        # Route the toggle request only to the pieces widget on the same screen.
+        self._event_service.emit_event("toggle_pieces_widget", self.screen_name)
         
-    def _on_state_changed(self, is_on: bool):
+    def _on_state_changed(self, is_on: bool, screen_name: str):
+        if screen_name != self.screen_name:
+            return
+
         self._is_on = is_on
         self._update_labels()
         

@@ -303,7 +303,7 @@ class PiecesDensityWidget(BaseWidget):
     """
     validation_schema = PiecesDensityConfig
 
-    _toggle_req_signal = pyqtSignal()
+    _toggle_req_signal = pyqtSignal(str)
     _time_source_changed_signal = pyqtSignal(bool)
 
     def __init__(self, config: PiecesDensityConfig):
@@ -458,7 +458,10 @@ class PiecesDensityWidget(BaseWidget):
         self._use_obs_time = use_obs
         self._fetch_data()
 
-    def _toggle_pieces_state(self):
+    def _toggle_pieces_state(self, screen_name: str):
+        if screen_name != self.screen_name:
+            return
+
         self._is_active = not self._is_active
         if self._is_active:
             self._timer.start(self.config.poll_interval_sec * 1000)
@@ -470,7 +473,7 @@ class PiecesDensityWidget(BaseWidget):
             if self._overlay.isVisible():
                 self._overlay.hide()
 
-        self._event_service.emit_event("pieces_widget_state_changed", self._is_active)
+        self._event_service.emit_event("pieces_widget_state_changed", self._is_active, self.screen_name)
 
     def showEvent(self, event):
         super().showEvent(event)
