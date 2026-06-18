@@ -53,10 +53,6 @@ class DensityOverlay(QFrame):
         self.config = config
         
         # Set up window flags for a floating overlay that sits below the bar but above desktop
-        # WARNING: DO NOT ADD WindowStaysOnTopHint! 
-        # If we add it, Qt will constantly fight our SetWindowPos Win32 calls and 
-        # occasionally raise the heatmap ABOVE the bar, causing it to overlap 
-        # transparent komorebi icons and widgets!
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.Tool
@@ -221,7 +217,6 @@ class FetchWorker(QThread):
                 try:
                     obs_client = obs.ReqClient(host=self.config.obs_host, port=self.config.obs_port, password=self.config.obs_password, timeout=5)
                     status = obs_client.get_stream_status()
-                    stats = obs_client.get_stats()
                 except Exception as e:
                     self.data_fetched.emit([], True, 0.0, f"Waiting for OBS Connection ({str(e)})", self.use_obs_time)
                     return
@@ -237,20 +232,17 @@ class FetchWorker(QThread):
                     self.data_fetched.emit([], True, 0.0, "Waiting for OBS Stream to start...", self.use_obs_time)
                     return
 
-                if hasattr(stats, 'render_total_frames') and getattr(stats, 'active_fps', 0) > 0:
-                    total_duration_sec = int(stats.render_total_frames / stats.active_fps)
+                duration_str = status.output_timecode # e.g. "00:12:34.567"
+                # Parse duration safely
+                parts = duration_str.split(':')
+                if len(parts) >= 3:
+                    h = int(parts[0])
+                    m = int(parts[1])
+                    s_parts = parts[2].split('.')
+                    s = int(s_parts[0])
+                    total_duration_sec = h * 3600 + m * 60 + s
                 else:
-                    duration_str = status.output_timecode # e.g. "00:12:34.567"
-                    # Parse duration safely
-                    parts = duration_str.split(':')
-                    if len(parts) >= 3:
-                        h = int(parts[0])
-                        m = int(parts[1])
-                        s_parts = parts[2].split('.')
-                        s = int(s_parts[0])
-                        total_duration_sec = h * 3600 + m * 60 + s
-                    else:
-                        total_duration_sec = 0
+                    total_duration_sec = 0
 
                 stream_start_time = time.time() - total_duration_sec
             else:
@@ -293,8 +285,7 @@ class FetchWorker(QThread):
 
             # Connect in read-only mode
             uri = f"file:{db_path}?mode=ro"
-            conn = sqlite3.connect(uri, uri=True)
-            try:
+            with sqlite3.connect(uri, uri=True) as conn:
                 c = conn.cursor()
                 c.execute("SELECT created_at FROM vectors WHERE created_at >= ?", (int(stream_start_time),))
                 rows = c.fetchall()
@@ -304,8 +295,6 @@ class FetchWorker(QThread):
                     idx = int(offset / bucket_interval)
                     if 0 <= idx < num_buckets:
                         raw_buckets[idx] += 1
-            finally:
-                conn.close()
 
             # 4. Apply 10-min sliding window (±5 mins) integration
             buckets = [0] * num_buckets
@@ -313,7 +302,6 @@ class FetchWorker(QThread):
                 start_idx = max(0, i - 5)
                 end_idx = min(num_buckets, i + 6)
                 buckets[i] = sum(raw_buckets[start_idx:end_idx])
-
 
             self.data_fetched.emit(buckets, True, stream_start_time, "", self.use_obs_time)
 
@@ -365,11 +353,6 @@ class PiecesDensityWidget(BaseWidget):
         self._hover_timer.timeout.connect(self._poll_hover)
         self._hover_timer.start()
 
-    def _enforce_z_order(self):
-        if self.isVisible():
-            self.lower()
-        self._place_overlay_below_bar()
-
     def _place_overlay_below_bar(self, allow_hidden: bool = False):
         if not self._overlay or not self._overlay.isVisible():
             if not allow_hidden:
@@ -387,21 +370,13 @@ class PiecesDensityWidget(BaseWidget):
 
         SetWindowPos(overlay_hwnd, bar_hwnd, 0, 0, 0, 0, SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE)
 
-    def _sync_overlay_with_bar(self):
-        self._update_overlay_geometry()
-        self._enforce_z_order()
-
     def _show_overlay_below_bar(self):
         self._update_overlay_geometry()
         self._place_overlay_below_bar(allow_hidden=True)
         self._overlay.show()
-        self._enforce_z_order()
+        self._place_overlay_below_bar()
 
     def _poll_hover(self):
-        # The heatmap must remain the bottom-most visible YASB layer while enabled.
-        # Qt/Win32 show/topmost operations can reorder windows after the initial show.
-        self._enforce_z_order()
-
         if not self._overlay or not self._overlay.isVisible() or not self.config.show_tooltip or not self._overlay.is_streaming:
             if getattr(self._overlay, 'hover_idx', None) is not None:
                 self._overlay.hover_idx = None
@@ -460,7 +435,6 @@ class PiecesDensityWidget(BaseWidget):
 
         self._worker = FetchWorker(self.config, self._use_obs_time)
         self._worker.data_fetched.connect(self._on_data_fetched)
-        self._worker.finished.connect(self._worker.deleteLater)
         # Clear the Python reference once the thread finishes so the guard
         # above never sees a stale (deleted) C++ object again.
         self._worker.finished.connect(lambda: setattr(self, "_worker", None))
@@ -483,7 +457,8 @@ class PiecesDensityWidget(BaseWidget):
             if not self._overlay.isVisible():
                 self._show_overlay_below_bar()
             else:
-                self._sync_overlay_with_bar()
+                self._update_overlay_geometry()
+                self._place_overlay_below_bar()
             self._overlay.update()
         else:
             if self._overlay.isVisible():
@@ -529,7 +504,6 @@ class PiecesDensityWidget(BaseWidget):
         self._is_active = not self._is_active
         if self._is_active:
             self._timer.start(self.config.poll_interval_sec * 1000)
-            self._enforce_z_order()
             self._fetch_data()
         else:
             self._timer.stop()
@@ -547,8 +521,8 @@ class PiecesDensityWidget(BaseWidget):
         # Connect to bar animation signals to stay in sync
         bar_window = self.window()
         if hasattr(bar_window, "animation_tick") and not getattr(self, "_connected_anim", False):
-            bar_window.animation_tick.connect(self._sync_overlay_with_bar)
-            bar_window.animation_finished.connect(self._sync_overlay_with_bar)
+            bar_window.animation_tick.connect(self._update_overlay_geometry)
+            bar_window.animation_finished.connect(self._update_overlay_geometry)
             if hasattr(bar_window, "opacity_tick"):
                 bar_window.opacity_tick.connect(self._overlay.setWindowOpacity)
             self._connected_anim = True
