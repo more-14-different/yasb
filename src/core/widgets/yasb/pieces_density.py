@@ -3,12 +3,14 @@ import time
 import math
 import os
 import sqlite3
-import weakref
 from datetime import datetime
 
 from PyQt6.QtCore import QTimer, Qt, QPointF, QRectF, QThread, pyqtSignal, QEvent, QPoint
 from PyQt6.QtGui import QPainter, QPainterPath, QLinearGradient, QColor, QBrush, QCursor, QPen
-from PyQt6.QtWidgets import QFrame, QApplication, QToolTip
+from PyQt6.QtWidgets import QFrame, QToolTip
+from win32con import SWP_NOACTIVATE
+
+from core.utils.win32.bindings import SetWindowPos
 
 from core.widgets.base import BaseWidget
 from core.validation.widgets.yasb.pieces_density import PiecesDensityConfig
@@ -60,6 +62,7 @@ class DensityOverlay(QFrame):
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         
         # Internal state
         self.stream_start_time = 0
@@ -315,9 +318,6 @@ class PiecesDensityWidget(BaseWidget):
     """
     validation_schema = PiecesDensityConfig
 
-    _instances: "weakref.WeakSet[PiecesDensityWidget]" = weakref.WeakSet()
-    _z_order_timer: QTimer | None = None
-
     _toggle_req_signal = pyqtSignal(str)
     _time_source_changed_signal = pyqtSignal(bool, str)
 
@@ -333,8 +333,6 @@ class PiecesDensityWidget(BaseWidget):
         self._use_obs_time = True
         self._overlay = DensityOverlay(self, self.config)
         self._worker = None
-        PiecesDensityWidget._instances.add(self)
-        self._ensure_z_order_timer()
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._fetch_data)
@@ -348,7 +346,7 @@ class PiecesDensityWidget(BaseWidget):
         self._time_source_changed_signal.connect(self._on_time_source_changed)
 
         # Drop to the bottom of the bar's Z-order to prevent covering other widgets
-        self._enforce_z_order()
+        self.lower()
 
         # Polling for hover without triggering Qt's window raising on mouse hover
         self._hover_timer = QTimer(self)
@@ -356,44 +354,29 @@ class PiecesDensityWidget(BaseWidget):
         self._hover_timer.timeout.connect(self._poll_hover)
         self._hover_timer.start()
 
-    @classmethod
-    def _ensure_z_order_timer(cls):
-        if cls._z_order_timer is not None:
-            return
-
-        app = QApplication.instance()
-        cls._z_order_timer = QTimer(app)
-        cls._z_order_timer.setInterval(50)
-        cls._z_order_timer.timeout.connect(cls._enforce_all_z_order)
-        cls._z_order_timer.start()
-
-    @classmethod
-    def _enforce_all_z_order(cls):
-        for instance in list(cls._instances):
-            try:
-                instance._enforce_z_order()
-            except RuntimeError:
-                continue
-
-    def _schedule_z_order_refresh(self):
-        for delay_ms in (0, 50, 100, 250):
-            QTimer.singleShot(delay_ms, self._enforce_z_order)
-
-    def _enforce_z_order(self):
-        if self.isVisible():
-            self.lower()
-
+    def _place_overlay_below_bar(self, allow_hidden: bool = False):
         if not self._overlay or not self._overlay.isVisible():
-            return
+            if not allow_hidden:
+                return
 
         bar_window = self.window()
         if not bar_window:
             return
 
-        # show()/raise() on either the overlay or the bar can reorder topmost
-        # windows asynchronously, so always re-assert the steady-state layering.
-        self._overlay.lower()
-        self._overlay.stackUnder(bar_window)
+        try:
+            overlay_hwnd = int(self._overlay.winId())
+            bar_hwnd = int(bar_window.winId())
+        except RuntimeError:
+            return
+
+        geo = self._overlay.geometry()
+        SetWindowPos(overlay_hwnd, bar_hwnd, geo.x(), geo.y(), geo.width(), geo.height(), SWP_NOACTIVATE)
+
+    def _show_overlay_below_bar(self):
+        self._update_overlay_geometry()
+        self._place_overlay_below_bar(allow_hidden=True)
+        self._overlay.show()
+        self._place_overlay_below_bar()
 
     def _poll_hover(self):
         if not self._overlay or not self._overlay.isVisible() or not self.config.show_tooltip or not self._overlay.is_streaming:
@@ -473,10 +456,11 @@ class PiecesDensityWidget(BaseWidget):
         self._overlay.error_msg = error_msg
         
         if is_streaming:
-            self._update_overlay_geometry()
             if not self._overlay.isVisible():
-                self._overlay.show()
-            self._schedule_z_order_refresh()
+                self._show_overlay_below_bar()
+            else:
+                self._update_overlay_geometry()
+                self._place_overlay_below_bar()
             self._overlay.update()
         else:
             if self._overlay.isVisible():
@@ -507,9 +491,7 @@ class PiecesDensityWidget(BaseWidget):
         if self._overlay.isVisible():
             self._overlay.hide()
         else:
-            self._update_overlay_geometry()
-            self._overlay.show()
-            self._schedule_z_order_refresh()
+            self._show_overlay_below_bar()
 
     def _on_time_source_changed(self, use_obs: bool, screen_name: str):
         if screen_name != self.screen_name:
@@ -525,7 +507,6 @@ class PiecesDensityWidget(BaseWidget):
         if self._is_active:
             self._timer.start(self.config.poll_interval_sec * 1000)
             self._fetch_data()
-            self._schedule_z_order_refresh()
         else:
             self._timer.stop()
             if self._worker and self._worker.isRunning():
@@ -537,7 +518,7 @@ class PiecesDensityWidget(BaseWidget):
 
     def showEvent(self, event):
         super().showEvent(event)
-        self._schedule_z_order_refresh()
+        self.lower()
         
         # Connect to bar animation signals to stay in sync
         bar_window = self.window()
@@ -552,7 +533,7 @@ class PiecesDensityWidget(BaseWidget):
         QTimer.singleShot(100, self._fetch_data)
         
         # Ensure overlay stays under the bar window when the bar is shown again
-        self._schedule_z_order_refresh()
+        self._place_overlay_below_bar()
 
     def hideEvent(self, event):
         super().hideEvent(event)
