@@ -710,7 +710,10 @@ class WorkspaceLayoutPreview(QFrame):
         self._active = False
         self._preview_failed = False
         self._current_canvas_size = QSize()
-        self._overlay = QFrame()
+        
+        # Pass parent_widget so this Tool window is "owned" by the yasb bar.
+        # Windows OS strictly guarantees owned windows are ALWAYS drawn above their owners.
+        self._overlay = QFrame(parent_widget)
         self._overlay.setProperty("class", "layout-preview")
         self._overlay.setWindowFlag(Qt.WindowType.Tool)
         self._overlay.setWindowFlag(Qt.WindowType.FramelessWindowHint)
