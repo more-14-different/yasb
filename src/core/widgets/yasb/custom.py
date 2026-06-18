@@ -47,14 +47,18 @@ class CustomWorker(QObject):
                 shell=self.use_shell,
                 encoding=self.encoding,
             )
-            output = proc.stdout.read()
-            if self.return_type == "json":
-                try:
-                    exec_data = json.loads(output)
-                except json.JSONDecodeError:
-                    exec_data = None
-            else:
-                exec_data = output.decode("utf-8").strip()
+            try:
+                output = proc.stdout.read()
+                if self.return_type == "json":
+                    try:
+                        exec_data = json.loads(output)
+                    except json.JSONDecodeError:
+                        exec_data = None
+                else:
+                    exec_data = output.decode("utf-8").strip()
+            finally:
+                proc.stdout.close()
+                proc.wait()
 
         if self._is_running:
             try:
@@ -171,6 +175,10 @@ class CustomWidget(BaseWidget):
         if self._exec_cmd:
             if self._worker:
                 self._worker.stop()
+                try:
+                    self._worker.data_ready.disconnect(self._handle_exec_data)
+                except (TypeError, RuntimeError):
+                    pass
 
             self._worker = CustomWorker(
                 self._exec_cmd,
@@ -179,7 +187,7 @@ class CustomWidget(BaseWidget):
                 self.config.exec_options.return_format,
                 self.config.exec_options.hide_empty,
             )
-            worker_thread = threading.Thread(target=self._worker.run)
+            worker_thread = threading.Thread(target=self._worker.run, daemon=True)
             self._worker.data_ready.connect(self._handle_exec_data)
             self._worker.finished.connect(self._worker.deleteLater)
             worker_thread.start()
