@@ -37,28 +37,60 @@ class CustomWorker(QObject):
         self._is_running = False
 
     def run(self):
+        import os
         exec_data = None
         if self.cmd and self._is_running:
-            proc = subprocess.Popen(
-                self.cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                creationflags=subprocess.CREATE_NO_WINDOW,
-                shell=self.use_shell,
-                encoding=self.encoding,
-            )
-            try:
-                output = proc.stdout.read()
-                if self.return_type == "json":
-                    try:
-                        exec_data = json.loads(output)
-                    except json.JSONDecodeError:
-                        exec_data = None
-                else:
-                    exec_data = output.decode("utf-8").strip()
-            finally:
-                proc.stdout.close()
-                proc.wait()
+            is_file_read = False
+            file_path = None
+            
+            if isinstance(self.cmd, str):
+                cmd_str = self.cmd.strip()
+                if cmd_str.lower().startswith("type "):
+                    file_path = cmd_str[5:].strip(' "\'')
+                    is_file_read = True
+                elif cmd_str.lower().startswith("cat "):
+                    file_path = cmd_str[4:].strip(' "\'')
+                    is_file_read = True
+            elif isinstance(self.cmd, list) and len(self.cmd) >= 2:
+                if self.cmd[0].lower() in ["type", "cat"]:
+                    file_path = self.cmd[1].strip(' "\'')
+                    is_file_read = True
+
+            if is_file_read and file_path and os.path.isfile(file_path):
+                try:
+                    with open(file_path, "r", encoding=self.encoding or "utf-8") as f:
+                        output = f.read()
+                    
+                    if self.return_type == "json":
+                        try:
+                            exec_data = json.loads(output)
+                        except json.JSONDecodeError:
+                            exec_data = None
+                    else:
+                        exec_data = output.strip()
+                except Exception:
+                    pass
+            else:
+                proc = subprocess.Popen(
+                    self.cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                    shell=self.use_shell,
+                    encoding=self.encoding,
+                )
+                try:
+                    output = proc.stdout.read()
+                    if self.return_type == "json":
+                        try:
+                            exec_data = json.loads(output)
+                        except json.JSONDecodeError:
+                            exec_data = None
+                    else:
+                        exec_data = output.decode("utf-8").strip() if isinstance(output, bytes) else output.strip()
+                finally:
+                    proc.stdout.close()
+                    proc.wait()
 
         if self._is_running:
             try:

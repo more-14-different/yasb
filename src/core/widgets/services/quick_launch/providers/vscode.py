@@ -114,10 +114,12 @@ class VSCodeProvider(BaseProvider):
         try:
             uri = f"file:{self._state_file_path}?mode=ro"
             conn = sqlite3.connect(uri, uri=True)
-            cursor = conn.cursor()
-            cursor.execute("SELECT value FROM ItemTable WHERE key = 'history.recentlyOpenedPathsList'")
-            row = cursor.fetchone()
-            conn.close()
+            try:
+                cursor = conn.cursor()
+                cursor.execute("SELECT value FROM ItemTable WHERE key = 'history.recentlyOpenedPathsList'")
+                row = cursor.fetchone()
+            finally:
+                conn.close()
 
             if row and row[0]:
                 data = json.loads(row[0])

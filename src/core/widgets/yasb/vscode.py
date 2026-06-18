@@ -53,28 +53,30 @@ class VSCodeWidget(BaseWidget):
     def _load_recent_workspaces(self) -> list[dict]:
         try:
             conn = sqlite3.connect(self._state_file_path)
-            cursor = conn.cursor()
-            cursor.execute("SELECT value FROM ItemTable WHERE key = 'history.recentlyOpenedPathsList'")
-            result = cursor.fetchone()
-            result_list = []
-            if result:
-                paths_data = json.loads(result[0]).get("entries", [])
-                for path in paths_data:
-                    if isinstance(path, dict):
-                        if path.get("folderUri"):
-                            folder_path = self._uri_to_windows_path(path.get("folderUri"))
-                            if os.path.exists(folder_path):
-                                result_list.append({"folder": folder_path})
-                        if path.get("fileUri"):
-                            file_path = self._uri_to_windows_path(path.get("fileUri"))
-                            if os.path.exists(file_path):
-                                result_list.append({"file": file_path})
-                    else:
-                        logging.error("Unexpected entry type: %s", type(path))
-            else:
-                logging.error("No data found in %s", self._state_file_path)
-            conn.close()
-            return result_list
+            try:
+                cursor = conn.cursor()
+                cursor.execute("SELECT value FROM ItemTable WHERE key = 'history.recentlyOpenedPathsList'")
+                result = cursor.fetchone()
+                result_list = []
+                if result:
+                    paths_data = json.loads(result[0]).get("entries", [])
+                    for path in paths_data:
+                        if isinstance(path, dict):
+                            if path.get("folderUri"):
+                                folder_path = self._uri_to_windows_path(path.get("folderUri"))
+                                if os.path.exists(folder_path):
+                                    result_list.append({"folder": folder_path})
+                            if path.get("fileUri"):
+                                file_path = self._uri_to_windows_path(path.get("fileUri"))
+                                if os.path.exists(file_path):
+                                    result_list.append({"file": file_path})
+                        else:
+                            logging.error("Unexpected entry type: %s", type(path))
+                else:
+                    logging.error("No data found in %s", self._state_file_path)
+                return result_list
+            finally:
+                conn.close()
         except Exception as e:
             logging.error("Error: %s", e)
             return []

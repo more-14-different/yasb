@@ -286,7 +286,8 @@ class FetchWorker(QThread):
 
             # Connect in read-only mode
             uri = f"file:{db_path}?mode=ro"
-            with sqlite3.connect(uri, uri=True) as conn:
+            conn = sqlite3.connect(uri, uri=True)
+            try:
                 c = conn.cursor()
                 c.execute("SELECT created_at FROM vectors WHERE created_at >= ?", (int(stream_start_time),))
                 rows = c.fetchall()
@@ -296,6 +297,8 @@ class FetchWorker(QThread):
                     idx = int(offset / bucket_interval)
                     if 0 <= idx < num_buckets:
                         raw_buckets[idx] += 1
+            finally:
+                conn.close()
 
             # 4. Apply 10-min sliding window (±5 mins) integration
             buckets = [0] * num_buckets
@@ -441,6 +444,7 @@ class PiecesDensityWidget(BaseWidget):
 
         self._worker = FetchWorker(self.config, self._use_obs_time)
         self._worker.data_fetched.connect(self._on_data_fetched)
+        self._worker.finished.connect(self._worker.deleteLater)
         # Clear the Python reference once the thread finishes so the guard
         # above never sees a stale (deleted) C++ object again.
         self._worker.finished.connect(lambda: setattr(self, "_worker", None))
