@@ -1,4 +1,5 @@
 import logging
+import threading
 import time
 import math
 import os
@@ -325,6 +326,10 @@ class PiecesDensityWidget(BaseWidget):
 
     _toggle_req_signal = pyqtSignal(str)
     _time_source_changed_signal = pyqtSignal(bool, str)
+    # Persistent signal — created once per widget instance, never per poll.
+    # threading.Thread calls signal.emit() from the background thread;
+    # PyQt6 automatically queues the call to the main thread.
+    _fetch_result_signal = pyqtSignal(list, bool, float, str, bool)
 
     def __init__(self, config: PiecesDensityConfig):
         super().__init__("pieces-density-widget")
@@ -337,7 +342,9 @@ class PiecesDensityWidget(BaseWidget):
         self._is_active = True
         self._use_obs_time = True
         self._overlay = DensityOverlay(self, self.config)
-        self._worker = None
+        self._worker: threading.Thread | None = None
+        # Connect persistent signal once — main-thread delivery guaranteed by Qt
+        self._fetch_result_signal.connect(self._on_data_fetched)
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._fetch_data)
@@ -428,22 +435,96 @@ class PiecesDensityWidget(BaseWidget):
                 QToolTip.hideText()
 
     def _fetch_data(self):
-        # Don't overlap fetches.  Guard isRunning() with try/except because
-        # deleteLater() destroys the underlying C++ object while Python's
-        # self._worker reference may still be alive, causing:
-        #   RuntimeError: wrapped C/C++ object of type FetchWorker has been deleted
-        try:
-            if self._worker and self._worker.isRunning():
-                return
-        except RuntimeError:
-            # C++ object already deleted; treat as no active worker
-            self._worker = None
+        # Skip if the previous fetch thread is still alive
+        if self._worker is not None and self._worker.is_alive():
+            return
 
-        self._worker = FetchWorker(self.config, self._use_obs_time)
-        self._worker.data_fetched.connect(self._on_data_fetched)
-        # Clear the Python reference once the thread finishes so the guard
-        # above never sees a stale (deleted) C++ object again.
-        self._worker.finished.connect(lambda: setattr(self, "_worker", None))
+        # Capture locals so the thread closure holds no reference to self
+        config = self.config
+        use_obs_time = self._use_obs_time
+        signal = self._fetch_result_signal
+
+        def _run():
+            """Runs entirely in a daemon thread; no Qt objects created here."""
+            if not HAS_DEPS:
+                return
+            try:
+                if use_obs_time:
+                    obs_client = None
+                    try:
+                        obs_client = obs.ReqClient(
+                            host=config.obs_host, port=config.obs_port,
+                            password=config.obs_password, timeout=5)
+                        status = obs_client.get_stream_status()
+                    except Exception as e:
+                        signal.emit([], True, 0.0, f"Waiting for OBS Connection ({e})", use_obs_time)
+                        return
+                    finally:
+                        if obs_client is not None:
+                            try: obs_client.disconnect()
+                            except Exception: pass
+
+                    if not status.output_active:
+                        signal.emit([], True, 0.0, "Waiting for OBS Stream to start...", use_obs_time)
+                        return
+
+                    parts = status.output_timecode.split(':')
+                    if len(parts) >= 3:
+                        h, m = int(parts[0]), int(parts[1])
+                        s = int(parts[2].split('.')[0])
+                        total_duration_sec = h * 3600 + m * 60 + s
+                    else:
+                        total_duration_sec = 0
+                    stream_start_time = time.time() - total_duration_sec
+                else:
+                    try:
+                        import psutil
+                        stream_start_time = psutil.boot_time()
+                        total_duration_sec = time.time() - stream_start_time
+                    except Exception as e:
+                        signal.emit([], True, 0.0, f"Waiting for Boot Time ({e})", use_obs_time)
+                        return
+
+                bucket_interval = 60
+                num_buckets = max(math.ceil(total_duration_sec / bucket_interval), 1)
+                raw_buckets = [0] * num_buckets
+
+                localappdata = os.environ.get("LOCALAPPDATA", "")
+                db_path = os.path.join(
+                    localappdata, "Mesh Intelligent Technologies, Inc",
+                    "Pieces OS", "com.pieces.os", "production",
+                    "Pieces", "vector_db", "workstreamEvents.sqlite")
+
+                if not os.path.exists(db_path):
+                    signal.emit([], True, 0.0, f"Pieces OS database not found at: {db_path}", use_obs_time)
+                    return
+
+                uri = f"file:{db_path}?mode=ro"
+                with sqlite3.connect(uri, uri=True) as conn:
+                    c = conn.cursor()
+                    c.execute("SELECT created_at FROM vectors WHERE created_at >= ?",
+                              (int(stream_start_time),))
+                    for row in c.fetchall():
+                        idx = int((row[0] - stream_start_time) / bucket_interval)
+                        if 0 <= idx < num_buckets:
+                            raw_buckets[idx] += 1
+
+                buckets = [
+                    sum(raw_buckets[max(0, i - 5):min(num_buckets, i + 6)])
+                    for i in range(num_buckets)
+                ]
+                first_visible = next((i for i, v in enumerate(buckets) if v > 0), 0)
+                if first_visible > 0:
+                    buckets = buckets[first_visible:]
+                    stream_start_time += first_visible * bucket_interval
+
+                signal.emit(buckets, True, stream_start_time, "", use_obs_time)
+
+            except Exception as e:
+                logging.error(f"Error fetching Pieces/OBS data: {e}")
+                signal.emit([], True, 0.0, f"Error: {e}", use_obs_time)
+
+        self._worker = threading.Thread(target=_run, daemon=True)
         self._worker.start()
 
     def _on_data_fetched(self, buckets: list[int], is_streaming: bool, start_time: float, error_msg: str, was_obs_time: bool):

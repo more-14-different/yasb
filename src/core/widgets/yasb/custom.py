@@ -4,7 +4,7 @@ import shlex
 import subprocess
 import threading
 
-from PyQt6.QtCore import QObject, pyqtSignal
+from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import QLabel
 
 from core.utils.tooltip import set_tooltip
@@ -13,63 +13,9 @@ from core.validation.widgets.yasb.custom import CustomConfig
 from core.widgets.base import BaseWidget
 
 
-class CustomWorker(QObject):
-    finished = pyqtSignal()
-    data_ready = pyqtSignal(object)
-
-    def __init__(
-        self,
-        cmd: list[str] | None,
-        use_shell: bool,
-        encoding: str | None,
-        return_type: str,
-        hide_empty: bool,
-    ):
-        super().__init__()
-        self.cmd = cmd
-        self.use_shell = use_shell
-        self.encoding = encoding
-        self.return_type = return_type
-        self.hide_empty = hide_empty
-        self._is_running = True
-
-    def stop(self):
-        self._is_running = False
-
-    def run(self):
-        exec_data = None
-        if self.cmd and self._is_running:
-            proc = subprocess.Popen(
-                self.cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                creationflags=subprocess.CREATE_NO_WINDOW,
-                shell=self.use_shell,
-                encoding=self.encoding,
-            )
-            try:
-                output = proc.stdout.read()
-                if self.return_type == "json":
-                    try:
-                        exec_data = json.loads(output)
-                    except json.JSONDecodeError:
-                        exec_data = None
-                else:
-                    exec_data = output.decode("utf-8").strip()
-            finally:
-                proc.stdout.close()
-                proc.wait()
-
-        if self._is_running:
-            try:
-                self.data_ready.emit(exec_data)
-                self.finished.emit()
-            except RuntimeError:
-                pass
-
-
 class CustomWidget(BaseWidget):
     validation_schema = CustomConfig
+    _data_ready_signal = pyqtSignal(object)
 
     def __init__(self, config: CustomConfig):
         super().__init__(config.exec_options.run_interval, class_name=f"custom-widget {config.class_name}")
@@ -77,7 +23,9 @@ class CustomWidget(BaseWidget):
         self._exec_data: dict | str | None = None
         self._exec_cmd = self._build_exec_cmd(self.config.exec_options.run_cmd, self.config.exec_options.use_shell)
         self._show_alt_label = False
-        self._worker = None  # Keep reference to worker for cleanup
+        self._worker: threading.Thread | None = None
+
+        self._data_ready_signal.connect(self._handle_exec_data)
 
         # Construct container
         self._init_container()
@@ -173,24 +121,43 @@ class CustomWidget(BaseWidget):
 
     def _exec_callback(self):
         if self._exec_cmd:
-            if self._worker:
-                self._worker.stop()
+            # Skip if a previous execution is still running
+            if self._worker and self._worker.is_alive():
+                return
+
+            def _run():
+                exec_data = None
                 try:
-                    self._worker.data_ready.disconnect(self._handle_exec_data)
-                except (TypeError, RuntimeError):
+                    proc = subprocess.Popen(
+                        self._exec_cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.DEVNULL,
+                        creationflags=subprocess.CREATE_NO_WINDOW,
+                        shell=self.config.exec_options.use_shell,
+                        encoding=self.config.exec_options.encoding,
+                    )
+                    try:
+                        output = proc.stdout.read()
+                        if self.config.exec_options.return_format == "json":
+                            try:
+                                exec_data = json.loads(output)
+                            except json.JSONDecodeError:
+                                exec_data = None
+                        else:
+                            exec_data = output.decode("utf-8").strip()
+                    finally:
+                        proc.stdout.close()
+                        proc.wait()
+                except Exception:
+                    pass
+                # Deliver result back to main thread via the persistent signal
+                try:
+                    self._data_ready_signal.emit(exec_data)
+                except RuntimeError:
                     pass
 
-            self._worker = CustomWorker(
-                self._exec_cmd,
-                self.config.exec_options.use_shell,
-                self.config.exec_options.encoding,
-                self.config.exec_options.return_format,
-                self.config.exec_options.hide_empty,
-            )
-            worker_thread = threading.Thread(target=self._worker.run, daemon=True)
-            self._worker.data_ready.connect(self._handle_exec_data)
-            self._worker.finished.connect(self._worker.deleteLater)
-            worker_thread.start()
+            self._worker = threading.Thread(target=_run, daemon=True)
+            self._worker.start()
         else:
             self._update_label()
 
