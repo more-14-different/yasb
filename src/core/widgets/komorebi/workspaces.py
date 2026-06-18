@@ -5,7 +5,7 @@ from typing import Literal
 
 from PIL import Image
 from PyQt6.QtCore import QPoint, QRect, QSize, QTimer, Qt, pyqtSignal
-from PyQt6.QtGui import QCursor, QImage, QMouseEvent, QPixmap
+from PyQt6.QtGui import QCursor, QImage, QMouseEvent, QPixmap, QColor, QPainter
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QWidget
 from win32con import HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE
 
