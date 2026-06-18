@@ -195,7 +195,7 @@ class DensityOverlay(QFrame):
 
 
 class FetchWorker(QThread):
-    data_fetched = pyqtSignal(list, bool, float, str) # buckets, is_streaming, start_time, error_msg
+    data_fetched = pyqtSignal(list, bool, float, str, bool) # buckets, is_streaming, start_time, error_msg, was_obs_time
 
     def __init__(self, config: PiecesDensityConfig, use_obs_time: bool):
         super().__init__()
@@ -215,7 +215,7 @@ class FetchWorker(QThread):
                     obs_client = obs.ReqClient(host=self.config.obs_host, port=self.config.obs_port, password=self.config.obs_password, timeout=5)
                     status = obs_client.get_stream_status()
                 except Exception as e:
-                    self.data_fetched.emit([], True, 0.0, f"Waiting for OBS Connection ({str(e)})")
+                    self.data_fetched.emit([], True, 0.0, f"Waiting for OBS Connection ({str(e)})", self.use_obs_time)
                     return
                 finally:
                     if obs_client is not None:
@@ -226,7 +226,7 @@ class FetchWorker(QThread):
 
                 is_streaming = status.output_active
                 if not is_streaming:
-                    self.data_fetched.emit([], True, 0.0, "Waiting for OBS Stream to start...")
+                    self.data_fetched.emit([], True, 0.0, "Waiting for OBS Stream to start...", self.use_obs_time)
                     return
 
                 duration_str = status.output_timecode # e.g. "00:12:34.567"
@@ -250,8 +250,12 @@ class FetchWorker(QThread):
                     total_duration_sec = time.time() - stream_start_time
                     is_streaming = True
                 except Exception as e:
-                    self.data_fetched.emit([], True, 0.0, f"Waiting for Boot Time ({str(e)})")
+                    self.data_fetched.emit([], True, 0.0, f"Waiting for Boot Time ({str(e)})", self.use_obs_time)
                     return
+
+            # Honour cancellation request before the (potentially large) SQLite query
+            if not self._is_running:
+                return
 
             # 2. Raw Bucket sampling (1 min intervals)
             bucket_interval = 60 # Force 1-minute base buckets
@@ -273,7 +277,7 @@ class FetchWorker(QThread):
             )
 
             if not os.path.exists(db_path):
-                self.data_fetched.emit([], True, 0.0, f"Pieces OS database not found at: {db_path}")
+                self.data_fetched.emit([], True, 0.0, f"Pieces OS database not found at: {db_path}", self.use_obs_time)
                 return
 
             # Connect in read-only mode
@@ -296,11 +300,11 @@ class FetchWorker(QThread):
                 end_idx = min(num_buckets, i + 6)
                 buckets[i] = sum(raw_buckets[start_idx:end_idx])
 
-            self.data_fetched.emit(buckets, True, stream_start_time, "")
+            self.data_fetched.emit(buckets, True, stream_start_time, "", self.use_obs_time)
 
         except Exception as e:
             logging.error(f"Error fetching Pieces/OBS data: {e}")
-            self.data_fetched.emit([], True, 0.0, f"Error: {str(e)}")
+            self.data_fetched.emit([], True, 0.0, f"Error: {str(e)}", self.use_obs_time)
 
 
 class PiecesDensityWidget(BaseWidget):
@@ -406,10 +410,18 @@ class PiecesDensityWidget(BaseWidget):
 
         self._worker = FetchWorker(self.config, self._use_obs_time)
         self._worker.data_fetched.connect(self._on_data_fetched)
+        # deleteLater ensures Qt cleans up the C++ thread object only after all
+        # signals are processed, preventing use-after-free when self._worker is
+        # replaced before the thread's finished signal has been fully dispatched.
+        self._worker.finished.connect(self._worker.deleteLater)
         self._worker.start()
 
-    def _on_data_fetched(self, buckets: list[int], is_streaming: bool, start_time: float, error_msg: str):
+    def _on_data_fetched(self, buckets: list[int], is_streaming: bool, start_time: float, error_msg: str, was_obs_time: bool):
         if not getattr(self, "_is_active", True):
+            return
+        # Discard stale result: time source was toggled while the worker was running.
+        # The next timer tick will re-fetch with the correct source.
+        if was_obs_time != self._use_obs_time:
             return
 
         self._overlay.buckets = buckets
