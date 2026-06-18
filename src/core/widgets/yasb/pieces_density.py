@@ -8,7 +8,7 @@ from datetime import datetime
 from PyQt6.QtCore import QTimer, Qt, QPointF, QRectF, QThread, pyqtSignal, QEvent, QPoint
 from PyQt6.QtGui import QPainter, QPainterPath, QLinearGradient, QColor, QBrush, QCursor, QPen
 from PyQt6.QtWidgets import QFrame, QToolTip
-from win32con import SWP_NOACTIVATE
+from win32con import SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE
 
 from core.utils.win32.bindings import SetWindowPos
 
@@ -369,8 +369,7 @@ class PiecesDensityWidget(BaseWidget):
         except RuntimeError:
             return
 
-        geo = self._overlay.geometry()
-        SetWindowPos(overlay_hwnd, bar_hwnd, geo.x(), geo.y(), geo.width(), geo.height(), SWP_NOACTIVATE)
+        SetWindowPos(overlay_hwnd, bar_hwnd, 0, 0, 0, 0, SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE)
 
     def _show_overlay_below_bar(self):
         self._update_overlay_geometry()
