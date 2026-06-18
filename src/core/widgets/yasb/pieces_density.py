@@ -471,7 +471,13 @@ class PiecesDensityWidget(BaseWidget):
         else:
             self._update_overlay_geometry()
             self._overlay.show()
-            self._overlay.lower()
+            # Use stackUnder(bar_window) to place the overlay below the bar window
+            # in the OS Z-order. self._overlay.lower() only lowers it to the bottom
+            # of the entire desktop stack, which does NOT guarantee it stays under
+            # the bar window when Qt reactivates the overlay on show().
+            bar_window = self.window()
+            if bar_window:
+                self._overlay.stackUnder(bar_window)
 
     def _on_time_source_changed(self, use_obs: bool, screen_name: str):
         if screen_name != self.screen_name:
