@@ -112,29 +112,30 @@ class PiecesToggleWidget(BaseWidget):
                     label.show()
             return widgets
 
+        def create_toggle_row(mouse_handler: Callable[[QMouseEvent], None], alignment: Qt.AlignmentFlag) -> tuple[list[QLabel], list[QLabel]]:
+            frame = QFrame()
+            layout = QHBoxLayout(frame)
+            layout.setSpacing(0)
+            layout.setContentsMargins(0, 0, -4, 0)
+            layout.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            
+            widgets = process_content(self.config.label, mouse_handler)
+            widgets_alt = process_content(self.config.label_alt, mouse_handler, True)
+            
+            for w in widgets + widgets_alt:
+                layout.addWidget(w)
+            self._widget_container_layout.addWidget(frame, alignment=alignment)
+            return widgets, widgets_alt
+
         # Top toggle (Time Source)
-        top_frame = QFrame()
-        top_layout = QHBoxLayout(top_frame)
-        top_layout.setSpacing(0)
-        top_layout.setContentsMargins(0, 0, -4, 0)
-        top_layout.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self._time_widgets = process_content(self.config.label, self._handle_time_mouse_event)
-        self._time_widgets_alt = process_content(self.config.label_alt, self._handle_time_mouse_event, True)
-        for w in self._time_widgets + self._time_widgets_alt:
-            top_layout.addWidget(w)
-        self._widget_container_layout.addWidget(top_frame, alignment=Qt.AlignmentFlag.AlignTop)
+        self._time_widgets, self._time_widgets_alt = create_toggle_row(
+            self._handle_time_mouse_event, Qt.AlignmentFlag.AlignTop
+        )
 
         # Bottom toggle (Pieces Diagram)
-        bottom_frame = QFrame()
-        bottom_layout = QHBoxLayout(bottom_frame)
-        bottom_layout.setSpacing(0)
-        bottom_layout.setContentsMargins(0, 0, -4, 0)
-        bottom_layout.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self._pieces_widgets = process_content(self.config.label, self._handle_pieces_mouse_event)
-        self._pieces_widgets_alt = process_content(self.config.label_alt, self._handle_pieces_mouse_event, True)
-        for w in self._pieces_widgets + self._pieces_widgets_alt:
-            bottom_layout.addWidget(w)
-        self._widget_container_layout.addWidget(bottom_frame, alignment=Qt.AlignmentFlag.AlignBottom)
+        self._pieces_widgets, self._pieces_widgets_alt = create_toggle_row(
+            self._handle_pieces_mouse_event, Qt.AlignmentFlag.AlignBottom
+        )
 
     def _ignore_container_mouse_release(self, event: QMouseEvent):
         event.ignore()

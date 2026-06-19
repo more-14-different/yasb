@@ -18,14 +18,10 @@ from core.validation.widgets.yasb.pieces_density import PiecesDensityConfig
 # Try importing the required packages
 try:
     import obsws_python as obs
-    import pieces_os_client
-    from pieces_os_client.api.workstream_events_api import WorkstreamEventsApi
-    from pieces_os_client.api_client import ApiClient
-    from pieces_os_client.configuration import Configuration
     HAS_DEPS = True
 except ImportError:
     HAS_DEPS = False
-    logging.warning("obsws-python or pieces_os_client not installed. PiecesDensityWidget will be disabled.")
+    logging.warning("obsws-python not installed. OBS stream tracking will fail.")
 
 
 def parse_color(color_str: str) -> QColor:
@@ -66,7 +62,6 @@ class DensityOverlay(QFrame):
         # Internal state
         self.stream_start_time = 0
         self.buckets: list[int] = []
-        self.bucket_interval = 60 # Fixed to 1 minute
         self.is_streaming = False
         self.error_msg = ""
         self.hover_idx = None
