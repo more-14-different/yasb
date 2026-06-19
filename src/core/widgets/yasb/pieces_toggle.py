@@ -1,8 +1,35 @@
-from PyQt6.QtCore import pyqtSignal, Qt
+from PyQt6.QtCore import pyqtSignal, Qt, QPoint, QTimer
+from PyQt6.QtGui import QPainter, QColor, QMouseEvent, QCursor
 from PyQt6.QtWidgets import QVBoxLayout, QHBoxLayout, QFrame, QLabel
 from core.validation.widgets.yasb.pieces_toggle import PiecesToggleConfig
 from core.widgets.base import BaseWidget
 import re
+
+class PiecesToggleIcon(QLabel):
+    def __init__(self, text, parent_widget, is_top=False):
+        super().__init__(text)
+        self.parent_widget = parent_widget
+        self.is_top = is_top
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def paintEvent(self, event):
+        from PyQt6.QtGui import QPainter, QColor
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor(0, 0, 0, 1))
+        painter.end()
+        super().paintEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent):
+        if event.button() == Qt.MouseButton.LeftButton:
+            if self.is_top:
+                self.parent_widget._toggle_time_source()
+            else:
+                self.parent_widget._run_callback(self.parent_widget.callback_left)
+        elif event.button() == Qt.MouseButton.MiddleButton:
+            self.parent_widget._run_callback(self.parent_widget.callback_middle)
+        elif event.button() == Qt.MouseButton.RightButton:
+            self.parent_widget._run_callback(self.parent_widget.callback_right)
+        event.accept()
 
 class PiecesToggleWidget(BaseWidget):
     validation_schema = PiecesToggleConfig
@@ -31,6 +58,7 @@ class PiecesToggleWidget(BaseWidget):
         self._pieces_widgets_alt = []
         
         self._build_two_toggles()
+
         
         self.register_callback("toggle_pieces", self._toggle_pieces)
         
@@ -45,7 +73,7 @@ class PiecesToggleWidget(BaseWidget):
         self._update_labels()
         
     def _build_two_toggles(self):
-        def process_content(content: str, is_alt: bool = False) -> list[QLabel]:
+        def process_content(content: str, is_alt: bool = False, is_top: bool = False) -> list[QLabel]:
             label_parts = re.split(r"(<span.*?>.*?</span>)", content)
             label_parts = [part for part in label_parts if part]
             widgets: list[QLabel] = []
@@ -58,7 +86,7 @@ class PiecesToggleWidget(BaseWidget):
                     class_name = re.search(r'class=(["\'])([^"\']+?)\1', part)
                     class_result = class_name.group(2) if class_name else "icon"
                     icon = re.sub(r"<span.*?>|</span>", "", part).strip()
-                    label = QLabel(icon)
+                    label = PiecesToggleIcon(icon, self, is_top)
                     label.setProperty("class", class_result)
                 else:
                     label = QLabel(part)
@@ -78,8 +106,8 @@ class PiecesToggleWidget(BaseWidget):
         top_layout.setSpacing(0)
         top_layout.setContentsMargins(0, 0, -4, 0)
         top_layout.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self._time_widgets = process_content(self.config.label, False)
-        self._time_widgets_alt = process_content(self.config.label_alt, True)
+        self._time_widgets = process_content(self.config.label, False, is_top=True)
+        self._time_widgets_alt = process_content(self.config.label_alt, True, is_top=True)
         for w in self._time_widgets + self._time_widgets_alt:
             top_layout.addWidget(w)
         self._widget_container_layout.addWidget(top_frame, alignment=Qt.AlignmentFlag.AlignTop)
@@ -90,24 +118,16 @@ class PiecesToggleWidget(BaseWidget):
         bottom_layout.setSpacing(0)
         bottom_layout.setContentsMargins(0, 0, -4, 0)
         bottom_layout.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self._pieces_widgets = process_content(self.config.label, False)
-        self._pieces_widgets_alt = process_content(self.config.label_alt, True)
+        self._pieces_widgets = process_content(self.config.label, False, is_top=False)
+        self._pieces_widgets_alt = process_content(self.config.label_alt, True, is_top=False)
         for w in self._pieces_widgets + self._pieces_widgets_alt:
             bottom_layout.addWidget(w)
         self._widget_container_layout.addWidget(bottom_frame, alignment=Qt.AlignmentFlag.AlignBottom)
 
     def _handle_mouse_events(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
-            # Top half for time source toggle, bottom half for pieces toggle
-            if event.pos().y() < self.height() / 2:
-                self._toggle_time_source()
-            else:
-                self._run_callback(self.callback_left)
-        elif event.button() == Qt.MouseButton.MiddleButton:
-            self._run_callback(self.callback_middle)
-        elif event.button() == Qt.MouseButton.RightButton:
-            self._run_callback(self.callback_right)
-                
+        # Ignore clicks on the capsule outside the icons so it doesn't trigger BaseWidget's callback
+        event.ignore()
+
     def _toggle_time_source(self):
         self._time_is_on = not self._time_is_on
         self._event_service.emit_event("pieces_time_source_changed", self._time_is_on, self.screen_name)
@@ -134,3 +154,4 @@ class PiecesToggleWidget(BaseWidget):
             widget.setVisible(self._is_on)
         for widget in self._pieces_widgets_alt:
             widget.setVisible(not self._is_on)
+
