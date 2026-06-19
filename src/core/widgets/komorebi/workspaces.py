@@ -392,6 +392,10 @@ class WorkspaceAppIconLabel(QLabel):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
 
+        # Minimal opaque fill so Qt doesn't composite garbage beneath the tile
+        # and to ensure the transparent part of the icon is clickable
+        painter.fillRect(self.rect(), QColor(0, 0, 0, 1))
+
         button = self.parent_button
         is_workspace_hovered = False
         is_workspace_pending = False
