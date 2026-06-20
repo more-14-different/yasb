@@ -295,13 +295,10 @@ class WorkspaceButtonWithIcons(WorkspaceButtonMixin, QFrame):
         self._show_row_icons(icons_list)
         self.text_label.show()
 
-        # Force layout to recalculate immediately to prevent lagging negative spacing.
-        # Skip when the parent is doing a batch refresh – it will run a single
-        # container-level layout pass after all buttons have been updated.
-        if not getattr(self.parent_widget, '_batch_layout_mode', False):
-            self.button_layout.invalidate()
-            self.button_layout.activate()
-            self.updateGeometry()
+        # Force layout to recalculate immediately to prevent lagging negative spacing
+        self.button_layout.invalidate()
+        self.button_layout.activate()
+        self.updateGeometry()
 
     def update_icon_by_hwnd(self, hwnd: int):
         if any(icon_entry["hwnd"] == hwnd for icon_entry in self.icons):
@@ -1401,7 +1398,6 @@ class WorkspaceWidget(BaseWidget):
         self._workspace_container.setLayout(self._workspace_container_layout)
         self._workspace_container.setProperty("class", "widget-container")
         self._workspace_container.hide()
-        self._batch_layout_mode = False
         self.widget_layout.addWidget(self._offline_text)
         self.widget_layout.addWidget(self._workspace_container)
 
@@ -1635,19 +1631,19 @@ class WorkspaceWidget(BaseWidget):
 
                 QTimer.singleShot(16, self._finalize_pending_cursor_move)
             if self._workspace_app_icons_enabled:
-                # --- Batch layout update: collect indexes first, update once ---
-                _icons_dirty = set()
                 try:
                     if event["type"] in ["ToggleFloat"]:
-                        if self._curr_workspace_index is not None:
-                            _icons_dirty.add(self._curr_workspace_index)
+                        self._workspace_buttons[self._curr_workspace_index].update_icons()
                     if event["type"] == KomorebiEvent.FocusChange.value and self._curr_workspace_index is not None:
-                        _icons_dirty.add(self._curr_workspace_index)
+                        self._workspace_buttons[self._curr_workspace_index].update_icons()
                     if event["type"] in self._workspace_icon_refresh_events:
-                        _icons_dirty.update(range(len(self._komorebi_workspaces)))
+                        target_indexes = range(len(self._komorebi_workspaces))
+                        for i in target_indexes:
+                            self._workspace_buttons[i].update_icons()
+                        QTimer.singleShot(30, self._refresh_all_workspace_icons)
                     if active_workspace_changed:
-                        _icons_dirty.add(self._prev_workspace_index)
-                        _icons_dirty.add(self._curr_workspace_index)
+                        self._workspace_buttons[self._prev_workspace_index].update_icons()
+                        self._workspace_buttons[self._curr_workspace_index].update_icons()
                     for i in range(len(self._komorebi_workspaces)):
                         layout_signature_changed = (
                             i < len(self._prev_workspace_layout_signatures)
@@ -1658,18 +1654,13 @@ class WorkspaceWidget(BaseWidget):
                             self._prev_num_windows_in_workspaces[i] != self._curr_num_windows_in_workspaces[i]
                             or layout_signature_changed
                         ):
-                            _icons_dirty.add(i)
+                            self._workspace_buttons[i].update_icons()
                         elif event["type"] in [KomorebiEvent.TitleUpdate.value]:
                             hwnd = event["content"][1]["hwnd"]
                             self._queue_title_update_icon_refresh(i, hwnd)
                 except (IndexError, TypeError):
                     pass
-                if _icons_dirty:
-                    self._batch_refresh_workspace_icons(_icons_dirty)
-                # Deferred follow-up refresh for events that need a second pass
-                # (e.g. Destroy/Hide where komorebi state may settle after a delay)
-                if event["type"] in self._workspace_icon_refresh_events:
-                    QTimer.singleShot(30, self._refresh_all_workspace_icons)
+                QTimer.singleShot(0, self._refresh_all_workspace_icons)
 
             if event["type"] == KomorebiEvent.MoveWorkspaceToMonitorNumber.value:
                 if event["content"] != self._komorebi_screen["index"]:
@@ -2025,27 +2016,13 @@ class WorkspaceWidget(BaseWidget):
 
         pending_refreshes = self._pending_title_update_icon_hwnds
         self._pending_title_update_icon_hwnds = {}
-        dirty_indexes = set()
-        self._batch_layout_mode = True
-        try:
-            for workspace_index, hwnds in pending_refreshes.items():
-                try:
-                    workspace_button = self._workspace_buttons[workspace_index]
-                except (IndexError, TypeError):
-                    continue
-                for hwnd in hwnds:
-                    workspace_button.update_icon_by_hwnd(hwnd)
-                dirty_indexes.add(workspace_index)
-        finally:
-            self._batch_layout_mode = False
-        # Single layout pass for all affected buttons
-        for i in dirty_indexes:
-            if 0 <= i < len(self._workspace_buttons):
-                self._workspace_buttons[i].button_layout.invalidate()
-        if dirty_indexes:
-            self._workspace_container_layout.invalidate()
-            self._workspace_container_layout.activate()
-            self._workspace_container.updateGeometry()
+        for workspace_index, hwnds in pending_refreshes.items():
+            try:
+                workspace_button = self._workspace_buttons[workspace_index]
+            except (IndexError, TypeError):
+                continue
+            for hwnd in hwnds:
+                workspace_button.update_icon_by_hwnd(hwnd)
 
     def _get_workspace_new_status(self, workspace) -> WorkspaceStatus:
         if self._curr_workspace_index == workspace["index"]:
@@ -2374,33 +2351,10 @@ class WorkspaceWidget(BaseWidget):
         if not self._workspace_app_icons_enabled:
             return
         try:
-            self._batch_refresh_workspace_icons(range(len(self._workspace_buttons)))
+            for workspace_button in self._workspace_buttons:
+                workspace_button.update_icons()
         except Exception:
             logging.exception("Failed to refresh workspace icons")
-
-    def _batch_refresh_workspace_icons(self, indexes) -> None:
-        """Update icons for the given workspace indexes in a single layout pass.
-
-        Sets ``_batch_layout_mode`` so that individual ``update_icons()`` calls
-        skip their per-button ``layout.invalidate()`` / ``activate()`` /
-        ``updateGeometry()``.  After all buttons have been updated, a single
-        container-level layout pass is triggered.
-        """
-        self._batch_layout_mode = True
-        try:
-            for i in indexes:
-                if 0 <= i < len(self._workspace_buttons):
-                    self._workspace_buttons[i].update_icons()
-        finally:
-            self._batch_layout_mode = False
-        # Single layout pass for all affected buttons
-        for i in indexes:
-            if 0 <= i < len(self._workspace_buttons):
-                btn = self._workspace_buttons[i]
-                btn.button_layout.invalidate()
-        self._workspace_container_layout.invalidate()
-        self._workspace_container_layout.activate()
-        self._workspace_container.updateGeometry()
 
     def _sync_all_layout_preview_overlays(self) -> None:
         if not self._workspace_app_icons_enabled:
