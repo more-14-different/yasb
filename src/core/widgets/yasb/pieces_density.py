@@ -170,7 +170,11 @@ class DensityOverlay(QFrame):
                 if self.hover_idx is not None and (self.hover_idx - 5 <= i <= self.hover_idx + 5):
                     is_hovered = True
                 
-                show_minor_ticks = n <= 360  # 6 hours max for minor ticks
+                # Determine which minor ticks to show based on duration
+                if n > 720:
+                    is_minor_tick = (dt.minute == 30)
+                else:
+                    is_minor_tick = (dt.minute % 10 == 0)
                 
                 # Major tick on the hour (e.g. 14:00)
                 if dt.minute == 0:
@@ -183,7 +187,7 @@ class DensityOverlay(QFrame):
                     # draw text slightly above
                     painter.setPen(QColor(255, 255, 255, 255 if is_hovered else 200))
                     painter.drawText(QPointF(x + 2, h - 12), dt.strftime("%H:00"))
-                elif show_minor_ticks and dt.minute % 10 == 0:
+                elif is_minor_tick:
                     pen_minor = QPen(QColor(255, 255, 255, 200 if is_hovered else 60))
                     pen_minor.setWidthF(1.5 if is_hovered else 1.0)
                     painter.setPen(pen_minor)
