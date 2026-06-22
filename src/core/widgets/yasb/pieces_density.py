@@ -170,6 +170,8 @@ class DensityOverlay(QFrame):
                 if self.hover_idx is not None and (self.hover_idx - 5 <= i <= self.hover_idx + 5):
                     is_hovered = True
                 
+                show_minor_ticks = n <= 360  # 6 hours max for minor ticks
+                
                 # Major tick on the hour (e.g. 14:00)
                 if dt.minute == 0:
                     pen_major = QPen(QColor(255, 255, 255, 255 if is_hovered else 150))
@@ -181,7 +183,7 @@ class DensityOverlay(QFrame):
                     # draw text slightly above
                     painter.setPen(QColor(255, 255, 255, 255 if is_hovered else 200))
                     painter.drawText(QPointF(x + 2, h - 12), dt.strftime("%H:00"))
-                elif dt.minute % 10 == 0:
+                elif show_minor_ticks and dt.minute % 10 == 0:
                     pen_minor = QPen(QColor(255, 255, 255, 200 if is_hovered else 60))
                     pen_minor.setWidthF(1.5 if is_hovered else 1.0)
                     painter.setPen(pen_minor)
@@ -228,20 +230,17 @@ class FetchWorker(QThread):
                     self.data_fetched.emit([], True, 0.0, "Waiting for OBS Stream to start...", self.use_obs_time)
                     return
 
-                if hasattr(stats, 'render_total_frames') and getattr(stats, 'active_fps', 0) > 0:
-                    total_duration_sec = int(stats.render_total_frames / stats.active_fps)
+                duration_str = status.output_timecode # e.g. "00:12:34.567"
+                # Parse duration safely
+                parts = duration_str.split(':')
+                if len(parts) >= 3:
+                    h = int(parts[0])
+                    m = int(parts[1])
+                    s_parts = parts[2].split('.')
+                    s = int(s_parts[0])
+                    total_duration_sec = h * 3600 + m * 60 + s
                 else:
-                    duration_str = status.output_timecode # e.g. "00:12:34.567"
-                    # Parse duration safely
-                    parts = duration_str.split(':')
-                    if len(parts) >= 3:
-                        h = int(parts[0])
-                        m = int(parts[1])
-                        s_parts = parts[2].split('.')
-                        s = int(s_parts[0])
-                        total_duration_sec = h * 3600 + m * 60 + s
-                    else:
-                        total_duration_sec = 0
+                    total_duration_sec = 0
 
                 stream_start_time = time.time() - total_duration_sec
             else:
@@ -258,6 +257,11 @@ class FetchWorker(QThread):
             # Honour cancellation request before the (potentially large) SQLite query
             if not self._is_running:
                 return
+
+            # Safeguard: cap maximum duration to 24 hours (86400 seconds) to prevent massive memory/CPU usage
+            if total_duration_sec > 86400:
+                total_duration_sec = 86400
+                stream_start_time = time.time() - 86400
 
             # 2. Raw Bucket sampling (1 min intervals)
             bucket_interval = 60 # Force 1-minute base buckets
