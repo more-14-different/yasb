@@ -201,10 +201,12 @@ class DensityOverlay(QFrame):
 class FetchWorker(QThread):
     data_fetched = pyqtSignal(list, bool, float, str, bool) # buckets, is_streaming, start_time, error_msg, was_obs_time
 
-    def __init__(self, config: PiecesDensityConfig, use_obs_time: bool):
+    def __init__(self, config: PiecesDensityConfig, use_obs_time: bool, known_start_time: float = 0.0, last_streaming_time: float = 0.0):
         super().__init__()
         self.config = config
         self.use_obs_time = use_obs_time
+        self.known_start_time = known_start_time
+        self.last_streaming_time = last_streaming_time
         self._is_running = True
 
     def run(self):
@@ -229,24 +231,49 @@ class FetchWorker(QThread):
                         except Exception:
                             pass
 
-                is_streaming = status.output_active
+                is_streaming = getattr(status, 'output_active', False) or getattr(status, 'output_reconnecting', False)
                 if not is_streaming:
-                    self.data_fetched.emit([], True, 0.0, "Waiting for OBS Stream to start...", self.use_obs_time)
+                    self.data_fetched.emit([], False, 0.0, "Waiting for OBS Stream to start...", self.use_obs_time)
                     return
 
-                duration_str = status.output_timecode # e.g. "00:12:34.567"
-                # Parse duration safely
-                parts = duration_str.split(':')
-                if len(parts) >= 3:
-                    h = int(parts[0])
-                    m = int(parts[1])
-                    s_parts = parts[2].split('.')
-                    s = int(s_parts[0])
-                    total_duration_sec = h * 3600 + m * 60 + s
-                else:
-                    total_duration_sec = 0
+                duration_str = getattr(status, 'output_timecode', "") # e.g. "00:12:34.567"
+                total_duration_sec = 0
+                if duration_str:
+                    # Parse duration safely
+                    parts = duration_str.split(':')
+                    if len(parts) >= 3:
+                        try:
+                            h = int(parts[0])
+                            m = int(parts[1])
+                            s_parts = parts[2].split('.')
+                            s = int(s_parts[0])
+                            total_duration_sec = h * 3600 + m * 60 + s
+                        except ValueError:
+                            pass
 
-                stream_start_time = time.time() - total_duration_sec
+                if total_duration_sec > 0:
+                    calculated_start_time = time.time() - total_duration_sec
+                else:
+                    calculated_start_time = self.known_start_time if self.known_start_time > 0 else time.time()
+
+                stream_start_time = calculated_start_time
+                if self.known_start_time > 0:
+                    # If calculated start time is more than 30s after our known start time, 
+                    # OBS timecode likely reset (e.g., auto-reconnect after VPN drop).
+                    if calculated_start_time > self.known_start_time + 30:
+                        # If we saw streaming activity within the last 5 minutes, treat as a single session
+                        if time.time() - self.last_streaming_time < 300:
+                            stream_start_time = self.known_start_time
+                    elif calculated_start_time < self.known_start_time - 30:
+                        # Start time moved backwards, keep the older one? Or accept new?
+                        # Accept new one if it's somehow earlier.
+                        pass
+                    else:
+                        stream_start_time = self.known_start_time
+                
+                # IMPORTANT: recalculate duration based on the final stream_start_time
+                # otherwise the end time of the graph will be wrong if we preserved an older start time.
+                total_duration_sec = time.time() - stream_start_time
             else:
                 # Use boot time
                 try:
@@ -348,6 +375,8 @@ class PiecesDensityWidget(BaseWidget):
         self._use_obs_time = True
         self._overlay = DensityOverlay(self, self.config)
         self._worker = None
+        self._stream_start_time = 0.0
+        self._last_streaming_time = 0.0
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._fetch_data)
@@ -449,7 +478,7 @@ class PiecesDensityWidget(BaseWidget):
             # C++ object already deleted; treat as no active worker
             self._worker = None
 
-        self._worker = FetchWorker(self.config, self._use_obs_time)
+        self._worker = FetchWorker(self.config, self._use_obs_time, self._stream_start_time, self._last_streaming_time)
         self._worker.data_fetched.connect(self._on_data_fetched)
         self._worker.finished.connect(self._worker.deleteLater)
         # Clear the Python reference once the thread finishes so the guard
@@ -471,6 +500,8 @@ class PiecesDensityWidget(BaseWidget):
         self._overlay.error_msg = error_msg
         
         if is_streaming:
+            self._stream_start_time = start_time
+            self._last_streaming_time = time.time()
             if not self._overlay.isVisible():
                 self._show_overlay_below_bar()
             else:
@@ -512,6 +543,7 @@ class PiecesDensityWidget(BaseWidget):
         if screen_name != self.screen_name:
             return
         self._use_obs_time = use_obs
+        self._stream_start_time = 0.0  # Reset known start time when switching modes
         self._fetch_data()
 
     def _toggle_pieces_state(self, screen_name: str):
