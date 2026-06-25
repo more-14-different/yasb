@@ -155,28 +155,22 @@ class CustomWidget(BaseWidget):
 
     def _update_label(self):
         active_widgets = self._widgets_alt if self._show_alt_label else self._widgets
-        active_label_content = self.config.label_alt if self._show_alt_label else self.config.label
-        label_parts = re.split("(<span.*?>.*?</span>)", active_label_content)
-        widget_index = 0
-        try:
-            for part in label_parts:
-                part = part.strip()
-                if part and widget_index < len(active_widgets) and isinstance(active_widgets[widget_index], QLabel):
-                    if "<span" in part and "</span>" in part:
-                        icon = re.sub(r"<span.*?>|</span>", "", part).strip()
-                        active_widgets[widget_index].setText(icon)
+        active_parsed = self._parsed_label_alt if self._show_alt_label else self._parsed_label
+        for widget, parsed in zip(active_widgets, active_parsed):
+            if parsed["is_icon"]:
+                widget.setText(parsed["text"])
+            else:
+                part = parsed["text"]
+                try:
+                    widget.setText(self._truncate_label(part.format(data=self._exec_data)))
+                except Exception:
+                    widget.setText(self._truncate_label(part))
+                    
+                if self.config.exec_options.hide_empty:
+                    if self._exec_data:
+                        self.setVisible(True)
                     else:
-                        active_widgets[widget_index].setText(self._truncate_label(part.format(data=self._exec_data)))
-                    if self.config.exec_options.hide_empty:
-                        if self._exec_data:
-                            self.setVisible(True)
-                            # active_widgets[widget_index].show()
-                        else:
-                            self.setVisible(False)
-                            # active_widgets[widget_index].hide()
-                    widget_index += 1
-        except Exception:
-            active_widgets[widget_index].setText(self._truncate_label(part))
+                        self.setVisible(False)
 
         # Update tooltip if enabled
         self._update_tooltip()

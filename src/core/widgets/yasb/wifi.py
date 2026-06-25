@@ -74,23 +74,22 @@ class WifiWidget(BaseWidget):
         self._update_label()
 
     def _create_dynamically_label(self, content: str, content_alt: str, is_ethernet: bool = False):
-        def process_content(content: str, is_alt: bool = False, is_ethernet: bool = False) -> list[QLabel]:
-            label_parts = re.split("(<span.*?>.*?</span>)", content)  # Filters out empty parts before entering the loop
-            label_parts = [part for part in label_parts if part]
+        from core.utils.utilities import parse_label_template
+        def process_content(content: str, is_alt: bool = False, is_ethernet: bool = False) -> tuple[list[QLabel], list[dict]]:
+            parsed_parts = parse_label_template(content)
             widgets: list[QLabel] = []
-            for part in label_parts:
-                part = part.strip()  # Remove any leading/trailing whitespace
-                if not part:
-                    continue
-                if "<span" in part and "</span>" in part:
-                    class_name = re.search(r'class=(["\'])([^"\']+?)\1', part)
-                    class_result = class_name.group(2) if class_name else "icon"
-                    icon = re.sub(r"<span.*?>|</span>", "", part).strip()
-                    label = QLabel(icon)
-                    label.setProperty("class", class_result)
+            for parsed in parsed_parts:
+                is_icon = parsed["is_icon"]
+                text = parsed["text"]
+                class_name = parsed["class_name"]
+
+                if is_icon:
+                    label = QLabel(text)
+                    label.setProperty("class", class_name)
                 else:
-                    label = QLabel(part)
+                    label = QLabel(text)
                     label.setProperty("class", "label alt" if is_alt else "label")
+                
                 label.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 self._widget_container_layout.addWidget(label)
                 widgets.append(label)
@@ -98,14 +97,14 @@ class WifiWidget(BaseWidget):
                     label.hide()
                 else:
                     label.show()
-            return widgets
+            return widgets, parsed_parts
 
         if is_ethernet:
-            self._widgets_ethernet = process_content(content, is_ethernet=True)
-            self._widgets_ethernet_alt = process_content(content_alt, is_alt=True, is_ethernet=True)
+            self._widgets_ethernet, self._parsed_ethernet = process_content(content, is_ethernet=True)
+            self._widgets_ethernet_alt, self._parsed_ethernet_alt = process_content(content_alt, is_alt=True, is_ethernet=True)
         else:
-            self._widgets = process_content(content)
-            self._widgets_alt = process_content(content_alt, is_alt=True)
+            self._widgets, self._parsed_label = process_content(content)
+            self._widgets_alt, self._parsed_label_alt = process_content(content_alt, is_alt=True)
 
     def _on_wifi_info_result(self, wifi_info: WiFiInfo):
         """Handle WiFi info result from worker thread."""
@@ -145,31 +144,22 @@ class WifiWidget(BaseWidget):
         self._display_correct_label()
         if self._ethernet_active:
             active_widgets = self._widgets_ethernet_alt if self._show_alt_label else self._widgets_ethernet
-            active_label_content = (
-                self.config.ethernet_label_alt if self._show_alt_label else self.config.ethernet_label
-            )
+            active_parsed = self._parsed_ethernet_alt if self._show_alt_label else self._parsed_ethernet
         else:
             active_widgets = self._widgets_alt if self._show_alt_label else self._widgets
-            active_label_content = self.config.label_alt if self._show_alt_label else self.config.label
+            active_parsed = self._parsed_label_alt if self._show_alt_label else self._parsed_label
 
-        label_parts = re.split("(<span.*?>.*?</span>)", active_label_content)
-        label_parts = [part for part in label_parts if part]
-        widget_index = 0
         label_options = {
             "{wifi_icon}": wifi_icon,
             "{wifi_name}": wifi_name,
             "{wifi_strength}": wifi_strength,
             "{ip_addr}": ip_addr,
         }
-        for part in label_parts:
-            part = part.strip()
-            if part:
-                formatted_text = part
-                for option, value in label_options.items():
-                    formatted_text = formatted_text.replace(option, str(value))
-                if widget_index < len(active_widgets):
-                    active_widgets[widget_index].setText(formatted_text)
-                widget_index += 1
+        for widget, parsed in zip(active_widgets, active_parsed):
+            formatted_text = parsed["text"]
+            for option, value in label_options.items():
+                formatted_text = formatted_text.replace(option, str(value))
+            widget.setText(formatted_text)
 
     def _get_wifi_icon(self, strength: int) -> str:
         if strength >= 80:

@@ -62,10 +62,7 @@ class DiskWidget(BaseWidget):
 
     def _update_label(self):
         active_widgets = self._widgets_alt if self._show_alt_label else self._widgets
-        active_label_content = self.config.label_alt if self._show_alt_label else self.config.label
-        label_parts = re.split(r"(<span.*?>.*?</span>)", active_label_content)
-        label_parts = [part for part in label_parts if part]
-        widget_index = 0
+        active_parsed = self._parsed_label_alt if self._show_alt_label else self._parsed_label
 
         disk_space = self._get_space()
         percent_value = float(disk_space["used"]["percent"].rstrip("%")) if disk_space else 0
@@ -79,27 +76,21 @@ class DiskWidget(BaseWidget):
 
             self.progress_widget.set_value(percent_value)
 
-        for part in label_parts:
-            part = part.strip()
-            if part and widget_index < len(active_widgets) and isinstance(active_widgets[widget_index], QLabel):
-                if "<span" in part and "</span>" in part:
-                    # Ensure the icon is correctly set
-                    icon = re.sub(r"<span.*?>|</span>", "", part).strip()
-                    active_widgets[widget_index].setText(icon)
-                else:
-                    # Update label with formatted content
-                    label_class = "label alt" if self._show_alt_label else "label"
-                    formatted_text = (
-                        part.format(space=disk_space, volume_label=self.config.volume_label.upper())
-                        if disk_space
-                        else part
-                    )
-                    active_widgets[widget_index].setText(formatted_text)
-                    target_class = f"{label_class} status-{self._get_disk_threshold(percent_value)}"
-                    if active_widgets[widget_index].property("class") != target_class:
-                        active_widgets[widget_index].setProperty("class", target_class)
-                        refresh_widget_style(active_widgets[widget_index])
-                widget_index += 1
+        for widget, parsed in zip(active_widgets, active_parsed):
+            if parsed["is_icon"]:
+                widget.setText(parsed["text"])
+            else:
+                label_class = "label alt" if self._show_alt_label else "label"
+                formatted_text = (
+                    parsed["text"].format(space=disk_space, volume_label=self.config.volume_label.upper())
+                    if disk_space
+                    else parsed["text"]
+                )
+                widget.setText(formatted_text)
+                target_class = f"{label_class} status-{self._get_disk_threshold(percent_value)}"
+                if widget.property("class") != target_class:
+                    widget.setProperty("class", target_class)
+                    refresh_widget_style(widget)
 
     def _get_volume_label(self, drive_letter: str) -> str | None:
         if not self.config.group_label.show_label_name:

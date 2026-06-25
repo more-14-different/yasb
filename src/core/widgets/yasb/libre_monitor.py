@@ -223,20 +223,15 @@ class LibreHardwareMonitorWidget(BaseWidget):
             info["value"] = self._data.get("status", "")
 
         active_widgets = self._widgets_alt if self._show_alt_label else self._widgets
-        active_label_content = self.config.label_alt if self._show_alt_label else self.config.label
-        label_parts = re.split("(<span.*?>.*?</span>)", active_label_content)
-        label_parts = [part for part in label_parts if part]
-        widget_index = 0
-        for part in label_parts:
-            part = part.strip()
-            if part and widget_index < len(active_widgets) and isinstance(active_widgets[widget_index], QLabel):
-                if "<span" in part and "</span>" in part:
-                    icon = re.sub(r"<span.*?>|</span>", "", part).strip()
-                    active_widgets[widget_index].setText(icon)
-                else:
-                    formatted_text = part.format(info=info) if info else part
-                    active_widgets[widget_index].setText(formatted_text)
-                widget_index += 1
+        active_parsed = self._parsed_label_alt if self._show_alt_label else self._parsed_label
+        for widget, parsed in zip(active_widgets, active_parsed):
+            if parsed["is_icon"]:
+                widget.setText(parsed["text"])
+            else:
+                part = parsed["text"]
+                formatted_text = part.format(info=info) if info else part
+                widget.setText(formatted_text)
+
 
         # Update popup menu if it's visible
         if self._is_menu_visible():

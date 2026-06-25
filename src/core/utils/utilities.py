@@ -42,6 +42,29 @@ def is_valid_percentage_str(s: str) -> bool:
     return s.endswith("%") and len(s) <= 4 and s[:-1].isdigit()
 
 
+def parse_label_template(content: str) -> list[dict]:
+    """
+    Parses a string containing <span class="...">icon</span> into its constituent parts.
+    Returns a list of dicts with keys: is_icon, text, class_name
+    """
+    import re
+    label_parts = re.split(r"(<span.*?>.*?</span>)", content)
+    result = []
+    for part in label_parts:
+        part = part.strip()
+        if not part:
+            continue
+        is_icon = "<span" in part and "</span>" in part
+        if is_icon:
+            class_name_match = re.search(r'class=(["\'])([^"\']+?)\1', part)
+            class_name = class_name_match.group(2) if class_name_match else "icon"
+            text = re.sub(r"<span.*?>|</span>", "", part).strip()
+            result.append({"is_icon": True, "text": text, "class_name": class_name})
+        else:
+            result.append({"is_icon": False, "text": part, "class_name": ""})
+    return result
+
+
 def get_screen_by_name(screen_name: str) -> QScreen | None:
     screens = QApplication.screens()
     for scr in screens:

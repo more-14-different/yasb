@@ -154,29 +154,31 @@ class BaseWidget(QWidget):
         content_alt: str | None = None,
         label_placeholder: str | None = None,
         hide_icons: bool = False,
+        label_factory: Callable[[str, bool], QLabel] | None = None,
     ):
-        def process_content(content: str, is_alt: bool = False) -> list[QLabel]:
-            label_parts = re.split(r"(<span.*?>.*?</span>)", content)
-            label_parts = [part for part in label_parts if part]
+        from core.utils.utilities import parse_label_template
+        def process_content(content: str, is_alt: bool = False) -> tuple[list[QLabel], list[dict]]:
+            parsed_parts = parse_label_template(content)
             widgets: list[QLabel] = []
-            for part in label_parts:
-                part = part.strip()
-                if not part:
-                    continue
-                is_icon = "<span" in part and "</span>" in part
+            for parsed in parsed_parts:
+                is_icon = parsed["is_icon"]
+                text = parsed["text"]
+                class_name = parsed["class_name"]
+                
+                if label_factory:
+                    label = label_factory(text, is_icon)
+                else:
+                    label = QLabel(text)
+                
                 if is_icon:
-                    class_name = re.search(r'class=(["\'])([^"\']+?)\1', part)
-                    class_result = class_name.group(2) if class_name else "icon"
-                    icon = re.sub(r"<span.*?>|</span>", "", part).strip()
-                    label = QLabel(icon)
-                    label.setProperty("class", class_result)
+                    label.setProperty("class", class_name)
                     if hide_icons:
                         label.hide()
                 else:
-                    label = QLabel(part)
                     label.setProperty("class", "label alt" if is_alt else "label")
                     if label_placeholder is not None:
                         label.setText(label_placeholder)
+                
                 label.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 self._widget_container_layout.addWidget(label)
                 widgets.append(label)
@@ -184,8 +186,9 @@ class BaseWidget(QWidget):
                     label.hide()
                 elif not (is_icon and hide_icons):
                     label.show()
-            return widgets
+            return widgets, parsed_parts
 
-        self._widgets = process_content(content)
+        self._widgets, self._parsed_label = process_content(content)
+        self._parsed_label_alt = []
         if content_alt:
-            self._widgets_alt = process_content(content_alt, is_alt=True)
+            self._widgets_alt, self._parsed_label_alt = process_content(content_alt, is_alt=True)

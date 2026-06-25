@@ -151,10 +151,7 @@ class MemoryWidget(BaseWidget):
         """Update label using shared memory data."""
 
         active_widgets = self._widgets_alt if self._show_alt_label else self._widgets
-        active_label_content = self.config.label_alt if self._show_alt_label else self.config.label
-        label_parts = re.split("(<span.*?>.*?</span>)", active_label_content)
-        label_parts = [part for part in label_parts if part]
-        widget_index = 0
+        active_parsed = self._parsed_label_alt if self._show_alt_label else self._parsed_label
 
         _round = lambda value: round(value) if self.config.hide_decimal else value
         _naturalsize = lambda value: naturalsize(value, True, True, "%.0f" if self.config.hide_decimal else "%.1f")
@@ -179,24 +176,21 @@ class MemoryWidget(BaseWidget):
                 )
             self.progress_widget.set_value(virtual_mem.percent)
 
-        for part in label_parts:
-            part = part.strip()
-            for fmt_str, value in label_options.items():
-                part = part.replace(fmt_str, str(value))
+        for widget, parsed in zip(active_widgets, active_parsed):
+            if parsed["is_icon"]:
+                widget.setText(parsed["text"])
+            else:
+                part = parsed["text"]
+                for fmt_str, value in label_options.items():
+                    part = part.replace(fmt_str, str(value))
+                widget.setText(part)
+                # Set memory threshold as property
+                label_class = "label alt" if self._show_alt_label else "label"
+                new_class = f"{label_class} status-{self._get_virtual_memory_threshold(virtual_mem.percent)}"
+                if widget.property("class") != new_class:
+                    widget.setProperty("class", new_class)
+                    refresh_widget_style(widget)
 
-            if part and widget_index < len(active_widgets) and isinstance(active_widgets[widget_index], QLabel):
-                if "<span" in part and "</span>" in part:
-                    icon = re.sub(r"<span.*?>|</span>", "", part).strip()
-                    active_widgets[widget_index].setText(icon)
-                else:
-                    active_widgets[widget_index].setText(part)
-                    # Set memory threshold as property
-                    label_class = "label alt" if self._show_alt_label else "label"
-                    new_class = f"{label_class} status-{self._get_virtual_memory_threshold(virtual_mem.percent)}"
-                    if active_widgets[widget_index].property("class") != new_class:
-                        active_widgets[widget_index].setProperty("class", new_class)
-                        refresh_widget_style(active_widgets[widget_index])
-                widget_index += 1
 
     def _toggle_label(self):
         self._show_alt_label = not self._show_alt_label

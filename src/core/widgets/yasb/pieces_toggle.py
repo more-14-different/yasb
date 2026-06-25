@@ -81,27 +81,24 @@ class PiecesToggleWidget(BaseWidget):
         self._update_labels()
         
     def _build_two_toggles(self):
+        from core.utils.utilities import parse_label_template
         def process_content(
             content: str,
             mouse_handler: Callable[[QMouseEvent], None],
             is_alt: bool = False,
         ) -> list[QLabel]:
-            label_parts = re.split(r"(<span.*?>.*?</span>)", content)
-            label_parts = [part for part in label_parts if part]
+            parsed_parts = parse_label_template(content)
             widgets: list[QLabel] = []
-            for part in label_parts:
-                part = part.strip()
-                if not part:
-                    continue
-                is_icon = "<span" in part and "</span>" in part
+            for parsed in parsed_parts:
+                is_icon = parsed["is_icon"]
+                text = parsed["text"]
+                class_name = parsed["class_name"]
+
                 if is_icon:
-                    class_name = re.search(r'class=(["\'])([^"\']+?)\1', part)
-                    class_result = class_name.group(2) if class_name else "icon"
-                    icon = re.sub(r"<span.*?>|</span>", "", part).strip()
-                    label = _ClickableLayerLabel(icon, mouse_handler)
-                    label.setProperty("class", class_result)
+                    label = _ClickableLayerLabel(text, mouse_handler)
+                    label.setProperty("class", class_name)
                 else:
-                    label = _ClickableLayerLabel(part, mouse_handler)
+                    label = _ClickableLayerLabel(text, mouse_handler)
                     label.setProperty("class", "label alt" if is_alt else "label")
                 
                 label.setAlignment(Qt.AlignmentFlag.AlignCenter)

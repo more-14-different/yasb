@@ -128,10 +128,7 @@ class GpuWidget(BaseWidget):
         }
 
         active_widgets = self._widgets_alt if self._show_alt_label else self._widgets
-        active_label_content = self.config.label_alt if self._show_alt_label else self.config.label
-        label_parts = re.split("(<span.*?>.*?</span>)", active_label_content)
-        label_parts = [part for part in label_parts if part]
-        widget_index = 0
+        active_parsed = self._parsed_label_alt if self._show_alt_label else self._parsed_label
 
         if self.config.progress_bar.enabled and self.progress_widget:
             if self._widget_container_layout.indexOf(self.progress_widget) == -1:
@@ -141,21 +138,19 @@ class GpuWidget(BaseWidget):
                 )
             self.progress_widget.set_value(gpu_data.utilization)
 
-        for part in label_parts:
-            part = part.strip()
-            if part and widget_index < len(active_widgets) and isinstance(active_widgets[widget_index], QLabel):
-                if "<span" in part and "</span>" in part:
-                    icon = re.sub(r"<span.*?>|</span>", "", part).strip()
-                    active_widgets[widget_index].setText(icon)
-                else:
-                    label_class = "label alt" if self._show_alt_label else "label"
-                    formatted_text = part.format(info=gpu_info)
-                    active_widgets[widget_index].setText(formatted_text)
-                    new_class = f"{label_class} status-{self._get_gpu_threshold(gpu_data.utilization)}"
-                    if active_widgets[widget_index].property("class") != new_class:
-                        active_widgets[widget_index].setProperty("class", new_class)
-                        refresh_widget_style(active_widgets[widget_index])
-                widget_index += 1
+        for widget, parsed in zip(active_widgets, active_parsed):
+            if parsed["is_icon"]:
+                widget.setText(parsed["text"])
+            else:
+                part = parsed["text"]
+                label_class = "label alt" if self._show_alt_label else "label"
+                formatted_text = part.format(info=gpu_info)
+                widget.setText(formatted_text)
+                new_class = f"{label_class} status-{self._get_gpu_threshold(gpu_data.utilization)}"
+                if widget.property("class") != new_class:
+                    widget.setProperty("class", new_class)
+                    refresh_widget_style(widget)
+
 
     def _get_gpu_threshold(self, utilization: float) -> str:
         if utilization <= self.config.gpu_thresholds.low:

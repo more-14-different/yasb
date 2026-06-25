@@ -529,7 +529,7 @@ class PiecesDensityWidget(BaseWidget):
         h = self.config.widget_height - 15
         
         # We want the bottom of our overlay to touch the bottom of the yasb bar,
-        # plus an additional 31px downwards (35px earlier, moved up 4px)
+        # plus an additional 31px downwards.
         y = bar_geo.y() + bar_geo.height() - h + 31
         
         self._overlay.setGeometry(x, y, w, h)

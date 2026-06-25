@@ -208,12 +208,8 @@ class TrafficWidget(BaseWidget):
 
     def _update_label_with_data(self, shared_data):
         """Update label with provided data"""
-        active_widgets = self._widgets_alt if self._show_alt_label else self._widgets  # type: ignore
-        active_label_content = self.config.label_alt if self._show_alt_label else self.config.label
-
-        label_parts = re.split("(<span.*?>.*?</span>)", active_label_content)
-        label_parts = [part for part in label_parts if part]
-        widget_index = 0
+        active_widgets = self._widgets_alt if self._show_alt_label else self._widgets
+        active_parsed = self._parsed_label_alt if self._show_alt_label else self._parsed_label
 
         label_options = [
             ("{upload_speed}", shared_data["upload_speed"]),
@@ -226,35 +222,29 @@ class TrafficWidget(BaseWidget):
             ("{alltime_downloaded}", shared_data["alltime_downloaded"]),
         ]
 
-        for part in label_parts:
-            part = part.strip()
-            for option, value in label_options:
-                part = part.replace(option, str(value))
-
-            if part and widget_index < len(active_widgets) and isinstance(active_widgets[widget_index], QLabel):
-                if "<span" in part and "</span>" in part:
-                    icon = re.sub(r"<span.*?>|</span>", "", part).strip()
-                    active_widgets[widget_index].setText(icon)
-                else:
-                    active_widgets[widget_index].setText(part)
+        for widget, parsed in zip(active_widgets, active_parsed):
+            if parsed["is_icon"]:
+                widget.setText(parsed["text"])
+            else:
+                part = parsed["text"]
+                for option, value in label_options:
+                    part = part.replace(option, str(value))
+                widget.setText(part)
 
                 # Update CSS class based on internet connection status
-                current_class = active_widgets[widget_index].property("class") or ""
+                current_class = widget.property("class") or ""
                 if not self._is_internet_connected:
                     if "offline" not in current_class:
                         new_class = f"{current_class} offline".strip()
-                        active_widgets[widget_index].setProperty("class", new_class)
-                        refresh_widget_style(active_widgets[widget_index])
-
+                        widget.setProperty("class", new_class)
+                        refresh_widget_style(widget)
                 else:
                     # Remove offline class if connected
                     if "offline" in current_class:
                         new_class = current_class.replace("offline", "").strip()
                         new_class = " ".join(new_class.split())
-                        active_widgets[widget_index].setProperty("class", new_class)
-                        refresh_widget_style(active_widgets[widget_index])
-
-                widget_index += 1
+                        widget.setProperty("class", new_class)
+                        refresh_widget_style(widget)
 
     def _on_connection_changed(self, is_connected: bool):
         """Handle internet connection status changes"""

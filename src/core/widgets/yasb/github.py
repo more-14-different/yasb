@@ -151,45 +151,26 @@ class GithubWidget(BaseWidget):
         self._update_label()
 
     def _create_dynamically_label(self, content: str, content_alt: str) -> None:
-        def process_content(content: str, is_alt: bool = False) -> list[QLabel]:
-            label_parts = [part for part in re.split("(<span.*?>.*?</span>)", content) if part]
-            widgets: list[QLabel] = []
-            for part in label_parts:
-                part = part.strip()  # Remove any leading/trailing whitespace
-                if not part:
-                    continue
-                if "<span" in part and "</span>" in part:
-                    class_name = re.search(r'class=(["\'])([^"\']+?)\1', part)
-                    class_result = class_name.group(2) if class_name else "icon"
-                    icon = re.sub(r"<span.*?>|</span>", "", part).strip()
-                    label = NotificationLabel(
-                        icon,
-                        corner=self.config.notification_dot.corner,
-                        color=self.config.notification_dot.color,
-                        margin=self.config.notification_dot.margin,
-                    )
-                    label.setProperty("class", class_result)
-                    if is_alt:
-                        self._notification_label_alt = label
-                    else:
-                        self._notification_label = label
+        def label_factory(text: str, is_icon: bool) -> QLabel:
+            if is_icon:
+                label = NotificationLabel(
+                    text,
+                    corner=self.config.notification_dot.corner,
+                    color=self.config.notification_dot.color,
+                    margin=self.config.notification_dot.margin,
+                )
+                if self._notification_label is None:
+                    self._notification_label = label
                 else:
-                    label = QLabel(part)
-                    label.setProperty("class", "label")
-                label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                    self._notification_label_alt = label
+                return label
+            else:
+                label = QLabel(text)
                 if not self.github_token and self.config.tooltip:
                     set_tooltip(label, "Error: Token not configured")
-                self._widget_container_layout.addWidget(label)
+                return label
 
-                widgets.append(label)
-                if is_alt:
-                    label.hide()
-                else:
-                    label.show()
-            return widgets
-
-        self._widgets = process_content(content)
-        self._widgets_alt = process_content(content_alt, is_alt=True)
+        self.build_widget_label(content, content_alt, label_factory=label_factory)
 
     def _on_data_update(self, _notifications: list[Any]) -> None:
         QTimer.singleShot(0, self._update_label)
@@ -204,9 +185,7 @@ class GithubWidget(BaseWidget):
                 return
 
         active_widgets = self._widgets_alt if self._show_alt_label else self._widgets
-        active_label_content = self.config.label_alt if self._show_alt_label else self.config.label
-        # Split label content and filter out empty parts
-        label_parts = [part.strip() for part in re.split(r"(<span.*?>.*?</span>)", active_label_content) if part]
+        active_parsed = self._parsed_label_alt if self._show_alt_label else self._parsed_label
 
         # Setting the notification dot if enabled and the label exists
         if self.config.notification_dot.enabled:
@@ -215,31 +194,24 @@ class GithubWidget(BaseWidget):
             if self._show_alt_label and self._notification_label_alt is not None:
                 self._notification_label_alt.show_dot(notification_count > 0)
 
-        for widget_index, part in enumerate(label_parts):
-            if widget_index >= len(active_widgets):
-                continue
-
-            current_widget = active_widgets[widget_index]
-            icon = ""
-
-            if "<span" in part and "</span>" in part:
-                icon = re.sub(r"<span.*?>|</span>", "", part).strip()
-                current_widget.setText(icon)
+        for widget, parsed in zip(active_widgets, active_parsed):
+            if parsed["is_icon"]:
+                widget.setText(parsed["text"])
                 if self.config.tooltip:
-                    set_tooltip(current_widget, f"Notifications {notification_count}")
+                    set_tooltip(widget, f"Notifications {notification_count}")
                 # Update class based on notification count
-                current_classes = current_widget.property("class").split()
+                current_classes = widget.property("class").split()
                 notification_class = "new-notification"
                 if notification_count > 0:
-                    current_classes.append(notification_class)
+                    if notification_class not in current_classes:
+                        current_classes.append(notification_class)
                 else:
                     current_classes = [cls for cls in current_classes if cls != notification_class]
-                current_widget.setProperty("class", " ".join(current_classes))
-
+                widget.setProperty("class", " ".join(current_classes))
             else:
-                formatted_text = part.format(data=notification_count)
-                current_widget.setText(formatted_text)
-            refresh_widget_style(current_widget)
+                formatted_text = parsed["text"].format(data=notification_count)
+                widget.setText(formatted_text)
+            refresh_widget_style(widget)
 
     def mark_as_read(self, notification_id: str, container_label: QFrame) -> None:
         # Update in GitHubDataManager and sync with GitHub API

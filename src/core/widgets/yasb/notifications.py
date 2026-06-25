@@ -79,42 +79,26 @@ class NotificationsWidget(BaseWidget):
             return
 
         active_widgets = self._widgets_alt if self._show_alt_label else self._widgets
-        active_label_content = self.config.label_alt if self._show_alt_label else self.config.label
+        active_parsed = self._parsed_label_alt if self._show_alt_label else self._parsed_label
 
-        if self._notification_count > 0:
-            icon = self.config.icons.new
-        else:
-            icon = self.config.icons.default
+        label_options = [("{count}", self._notification_count)]
 
-        label_parts = re.split("(<span.*?>.*?</span>)", active_label_content)
-        label_parts = [part for part in label_parts if part]
-        widget_index = 0
-
-        # Provide replacements for {count} and {icon}
-        label_options = [("{count}", self._notification_count), ("{icon}", icon)]
-
-        for part in label_parts:
-            part = part.strip()
-            for option, value in label_options:
-                part = part.replace(option, str(value))
-
-            if part and widget_index < len(active_widgets) and isinstance(active_widgets[widget_index], QLabel):
-                if "<span" in part and "</span>" in part:
-                    icon = re.sub(r"<span.*?>|</span>", "", part).strip()
-                    active_widgets[widget_index].setText(icon)
-                else:
-                    active_widgets[widget_index].setText(part)
+        for widget, parsed in zip(active_widgets, active_parsed):
+            if parsed["is_icon"]:
+                widget.setText(parsed["text"])
+            else:
+                part = parsed["text"]
+                for option, value in label_options:
+                    part = part.replace(option, str(value))
+                widget.setText(part)
 
                 # Update class based on notification count
-                current_class = active_widgets[widget_index].property("class")
+                current_class = widget.property("class")
                 if self._notification_count > 0:
                     if "new-notification" not in current_class:
                         current_class += " new-notification"
                 else:
                     current_class = current_class.replace(" new-notification", "")
 
-                active_widgets[widget_index].setProperty("class", current_class.strip())
-
-                widget_index += 1
-        for widget in active_widgets:
+                widget.setProperty("class", current_class.strip())
             refresh_widget_style(widget)
