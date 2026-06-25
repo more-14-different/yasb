@@ -209,98 +209,103 @@ class FetchWorker(QThread):
         self.last_streaming_time = last_streaming_time
         self._is_running = True
 
+    def _get_obs_time(self) -> tuple[bool, float, float, str]:
+        """Returns (is_streaming, start_time, duration, error_msg)"""
+        obs_client = None
+        try:
+            obs_client = obs.ReqClient(
+                host=self.config.obs_host,
+                port=self.config.obs_port,
+                password=self.config.obs_password,
+                timeout=5
+            )
+            status = obs_client.get_stream_status()
+        except Exception as e:
+            # When OBS is not connected, we keep is_streaming=True with an error message
+            # so the widget stays visible but shows the error.
+            return True, 0.0, 0.0, f"Waiting for OBS Connection ({str(e)})"
+        finally:
+            if obs_client is not None:
+                try:
+                    obs_client.disconnect()
+                except Exception:
+                    pass
+
+        is_streaming = getattr(status, 'output_active', False) or getattr(status, 'output_reconnecting', False)
+        if not is_streaming:
+            return False, 0.0, 0.0, "Waiting for OBS Stream to start..."
+
+        duration_str = getattr(status, 'output_timecode', "")
+        total_duration_sec = 0
+        if duration_str:
+            parts = duration_str.split(':')
+            if len(parts) >= 3:
+                try:
+                    total_duration_sec = int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2].split('.')[0])
+                except ValueError:
+                    pass
+
+        if total_duration_sec > 0:
+            calculated_start_time = time.time() - total_duration_sec
+        else:
+            calculated_start_time = self.known_start_time if self.known_start_time > 0 else time.time()
+
+        stream_start_time = calculated_start_time
+        if self.known_start_time > 0:
+            # Handle OBS reconnections (which reset output_timecode)
+            if calculated_start_time > self.known_start_time + 30:
+                if time.time() - self.last_streaming_time < 300:
+                    stream_start_time = self.known_start_time
+            elif abs(calculated_start_time - self.known_start_time) <= 30:
+                # Prevent minor time jitter
+                stream_start_time = self.known_start_time
+        
+        total_duration_sec = time.time() - stream_start_time
+        return True, stream_start_time, total_duration_sec, ""
+
+    def _get_boot_time(self) -> tuple[bool, float, float, str]:
+        """Returns (is_streaming, start_time, duration, error_msg)"""
+        try:
+            import psutil
+            stream_start_time = psutil.boot_time()
+            return True, stream_start_time, time.time() - stream_start_time, ""
+        except Exception as e:
+            return True, 0.0, 0.0, f"Waiting for Boot Time ({str(e)})"
+
     def run(self):
         if not HAS_DEPS:
             return
 
         try:
+            # 1. Determine Stream Start Time & Duration based on selected source
             if self.use_obs_time:
-                # 1. OBS WebSocket Query - always disconnect to avoid connection leaks
-                obs_client = None
-                try:
-                    obs_client = obs.ReqClient(host=self.config.obs_host, port=self.config.obs_port, password=self.config.obs_password, timeout=5)
-                    status = obs_client.get_stream_status()
-                    stats = obs_client.get_stats()
-                except Exception as e:
-                    self.data_fetched.emit([], True, 0.0, f"Waiting for OBS Connection ({str(e)})", self.use_obs_time)
-                    return
-                finally:
-                    if obs_client is not None:
-                        try:
-                            obs_client.disconnect()
-                        except Exception:
-                            pass
-
-                is_streaming = getattr(status, 'output_active', False) or getattr(status, 'output_reconnecting', False)
-                if not is_streaming:
-                    self.data_fetched.emit([], False, 0.0, "Waiting for OBS Stream to start...", self.use_obs_time)
-                    return
-
-                duration_str = getattr(status, 'output_timecode', "") # e.g. "00:12:34.567"
-                total_duration_sec = 0
-                if duration_str:
-                    # Parse duration safely
-                    parts = duration_str.split(':')
-                    if len(parts) >= 3:
-                        try:
-                            h = int(parts[0])
-                            m = int(parts[1])
-                            s_parts = parts[2].split('.')
-                            s = int(s_parts[0])
-                            total_duration_sec = h * 3600 + m * 60 + s
-                        except ValueError:
-                            pass
-
-                if total_duration_sec > 0:
-                    calculated_start_time = time.time() - total_duration_sec
-                else:
-                    calculated_start_time = self.known_start_time if self.known_start_time > 0 else time.time()
-
-                stream_start_time = calculated_start_time
-                if self.known_start_time > 0:
-                    # If calculated start time is more than 30s after our known start time, 
-                    # OBS timecode likely reset (e.g., auto-reconnect after VPN drop).
-                    if calculated_start_time > self.known_start_time + 30:
-                        # If we saw streaming activity within the last 5 minutes, treat as a single session
-                        if time.time() - self.last_streaming_time < 300:
-                            stream_start_time = self.known_start_time
-                    elif calculated_start_time < self.known_start_time - 30:
-                        # Start time moved backwards, keep the older one? Or accept new?
-                        # Accept new one if it's somehow earlier.
-                        pass
-                    else:
-                        stream_start_time = self.known_start_time
-                
-                # IMPORTANT: recalculate duration based on the final stream_start_time
-                # otherwise the end time of the graph will be wrong if we preserved an older start time.
-                total_duration_sec = time.time() - stream_start_time
+                is_streaming, stream_start_time, total_duration_sec, err = self._get_obs_time()
             else:
-                # Use boot time
-                try:
-                    import psutil
-                    stream_start_time = psutil.boot_time()
-                    total_duration_sec = time.time() - stream_start_time
-                    is_streaming = True
-                except Exception as e:
-                    self.data_fetched.emit([], True, 0.0, f"Waiting for Boot Time ({str(e)})", self.use_obs_time)
-                    return
+                is_streaming, stream_start_time, total_duration_sec, err = self._get_boot_time()
 
-            # Honour cancellation request before the (potentially large) SQLite query
+            if err:
+                self.data_fetched.emit([], is_streaming, 0.0, err, self.use_obs_time)
+                return
+
+            if not is_streaming:
+                self.data_fetched.emit([], False, 0.0, "", self.use_obs_time)
+                return
+
+            # Honour cancellation request before the SQLite query
             if not self._is_running:
                 return
 
-            # Safeguard: cap maximum duration to 24 hours (86400 seconds) to prevent massive memory/CPU usage
+            # Safeguard: cap maximum duration to 24 hours (86400 seconds)
             if total_duration_sec > 86400:
                 total_duration_sec = 86400
                 stream_start_time = time.time() - 86400
 
             # 2. Raw Bucket sampling (1 min intervals)
-            bucket_interval = 60 # Force 1-minute base buckets
-            num_buckets = math.ceil(total_duration_sec / bucket_interval)
-            num_buckets = max(num_buckets, 1)
+            bucket_interval = 60
+            num_buckets = max(math.ceil(total_duration_sec / bucket_interval), 1)
             raw_buckets = [0] * num_buckets
 
-            # 3. Query the local Pieces OS vector_db sqlite file.
+            # 3. Query the local Pieces OS sqlite file
             localappdata = os.environ.get("LOCALAPPDATA", "")
             db_path = os.path.join(
                 localappdata, 
@@ -314,7 +319,7 @@ class FetchWorker(QThread):
             )
 
             if not os.path.exists(db_path):
-                self.data_fetched.emit([], True, 0.0, f"Pieces OS database not found at: {db_path}", self.use_obs_time)
+                self.data_fetched.emit([], True, 0.0, f"Pieces DB missing at: {db_path}", self.use_obs_time)
                 return
 
             # Connect in read-only mode
@@ -323,24 +328,20 @@ class FetchWorker(QThread):
             try:
                 c = conn.cursor()
                 c.execute("SELECT created_at FROM vectors WHERE created_at >= ?", (int(stream_start_time),))
-                rows = c.fetchall()
-                
-                for row in rows:
-                    created_at = row[0]
-                    offset = created_at - stream_start_time
-                    idx = int(offset / bucket_interval)
+                for row in c.fetchall():
+                    idx = int((row[0] - stream_start_time) / bucket_interval)
                     if 0 <= idx < num_buckets:
                         raw_buckets[idx] += 1
             finally:
                 conn.close()
 
             # 4. Apply 10-min sliding window (±5 mins) integration
-            buckets = [0] * num_buckets
-            for i in range(num_buckets):
-                start_idx = max(0, i - 5)
-                end_idx = min(num_buckets, i + 6)
-                buckets[i] = sum(raw_buckets[start_idx:end_idx])
+            buckets = [
+                sum(raw_buckets[max(0, i - 5):min(num_buckets, i + 6)]) 
+                for i in range(num_buckets)
+            ]
 
+            # 5. Trim leading zero-activity buckets
             first_visible_idx = next((idx for idx, value in enumerate(buckets) if value > 0), 0)
             if first_visible_idx > 0:
                 buckets = buckets[first_visible_idx:]
@@ -349,7 +350,7 @@ class FetchWorker(QThread):
             self.data_fetched.emit(buckets, True, stream_start_time, "", self.use_obs_time)
 
         except Exception as e:
-            logging.error(f"Error fetching Pieces/OBS data: {e}")
+            logging.error(f"Error fetching Pieces data: {e}")
             self.data_fetched.emit([], True, 0.0, f"Error: {str(e)}", self.use_obs_time)
 
 
