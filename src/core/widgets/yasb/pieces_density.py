@@ -246,19 +246,13 @@ class FetchWorker(QThread):
                     pass
 
         if total_duration_sec > 0:
-            calculated_start_time = time.time() - total_duration_sec
-        else:
-            calculated_start_time = self.known_start_time if self.known_start_time > 0 else time.time()
-
-        stream_start_time = calculated_start_time
-        if self.known_start_time > 0:
-            # Handle OBS reconnections (which reset output_timecode)
-            if calculated_start_time > self.known_start_time + 30:
-                if time.time() - self.last_streaming_time < 300:
-                    stream_start_time = self.known_start_time
-            elif abs(calculated_start_time - self.known_start_time) <= 30:
-                # Prevent minor time jitter
+            stream_start_time = time.time() - total_duration_sec
+            
+            # Prevent 1-2 second jitter caused by OBS integer timecode vs time.time() float
+            if self.known_start_time > 0 and abs(stream_start_time - self.known_start_time) <= 2.0:
                 stream_start_time = self.known_start_time
+        else:
+            stream_start_time = time.time()
         
         total_duration_sec = time.time() - stream_start_time
         return True, stream_start_time, total_duration_sec, ""
@@ -341,11 +335,9 @@ class FetchWorker(QThread):
                 for i in range(num_buckets)
             ]
 
-            # 5. Trim leading zero-activity buckets
-            first_visible_idx = next((idx for idx, value in enumerate(buckets) if value > 0), 0)
-            if first_visible_idx > 0:
-                buckets = buckets[first_visible_idx:]
-                stream_start_time += first_visible_idx * bucket_interval
+            # 5. [REMOVED] Do not trim leading zero-activity buckets.
+            # The UI must strictly align with the OBS duration so that the heatmap's time axis 
+            # maps perfectly to the video playback time from the viewer's perspective.
 
             self.data_fetched.emit(buckets, True, stream_start_time, "", self.use_obs_time)
 
