@@ -22,7 +22,8 @@ try:
     HAS_DEPS = True
 except ImportError:
     HAS_DEPS = False
-    logging.warning("obsws-python not installed. OBS stream tracking will fail.")
+    logging.warning(
+        "obsws-python not installed. OBS stream tracking will fail.")
 
 
 def parse_color(color_str: str) -> QColor:
@@ -41,10 +42,13 @@ def parse_color(color_str: str) -> QColor:
                 pass
     return QColor(color_str)
 
+
 class ObsSessionManager:
     """Manages the history of OBS stream start times."""
+
     def __init__(self):
-        self.state_file = os.path.expanduser("~/.config/yasb/obs_sessions.json")
+        self.state_file = os.path.expanduser(
+            "~/.config/yasb/obs_sessions.json")
         self.sessions = []
         self._load()
 
@@ -83,87 +87,180 @@ class ObsSessionManager:
             self.sessions.append(start_time)
             self._save()
 
-class ControlsOverlay(QFrame):
-    """A small overlay with buttons to switch between stream sessions."""
+
+class ControlsOverlayBase(QFrame):
     def __init__(self, widget: "PiecesDensityWidget", parent=None):
         super().__init__(parent)
         self.widget = widget
-        
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.Tool
             | Qt.WindowType.WindowDoesNotAcceptFocus
+            | Qt.WindowType.WindowStaysOnTopHint
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        
         self.layout = QHBoxLayout(self)
         self.layout.setContentsMargins(0, 0, 0, 0)
-        self.layout.setSpacing(5)
-        
-        self.btn_prev = QPushButton("<")
-        self.btn_next = QPushButton(">")
-        self.lbl_info = QLabel("--:--")
-        
-        style = """
+        self.layout.setSpacing(2)
+
+        self.style_str = """
             QPushButton {
-                background-color: rgba(20, 20, 20, 150);
-                color: white;
-                border: 1px solid rgba(255, 255, 255, 50);
+                background-color: rgba(20, 20, 20, 100);
+                color: rgba(255, 255, 255, 200);
+                border: 1px solid rgba(255, 255, 255, 30);
                 border-radius: 4px;
-                padding: 2px 8px;
+                padding: 1px 4px;
+                margin: 0px;
+                font-family: Consolas, monospace;
             }
             QPushButton:hover {
-                background-color: rgba(60, 60, 60, 200);
+                background-color: rgba(60, 60, 60, 150);
+            }
+            QPushButton:disabled {
+                background-color: rgba(10, 10, 10, 50);
+                color: rgba(255, 255, 255, 30);
+                border: 1px solid rgba(255, 255, 255, 10);
             }
             QLabel {
-                color: white;
+                color: rgba(255, 255, 255, 200);
                 font-size: 10px;
-                background-color: rgba(20, 20, 20, 150);
+                background-color: rgba(20, 20, 20, 100);
                 border-radius: 4px;
-                padding: 2px 6px;
+                padding: 1px 4px;
+                margin: 0px;
+                font-family: Consolas, monospace;
+            }
+            QLabel#DateLabel {
+                background-color: rgba(60, 40, 20, 100);
             }
         """
-        self.btn_prev.setStyleSheet(style)
-        self.btn_next.setStyleSheet(style)
-        self.lbl_info.setStyleSheet(style)
-        
+
+
+class ControlsOverlayLeft(ControlsOverlayBase):
+    def __init__(self, widget: "PiecesDensityWidget", parent=None):
+        super().__init__(widget, parent)
+        self.btn_prev = QPushButton("<")
+        self.btn_next = QPushButton(">")
+        self.lbl_date = QLabel()
+        self.lbl_date.setObjectName("DateLabel")
+        self.lbl_time = QLabel("--:--")
+
+        self.btn_prev.setStyleSheet(self.style_str)
+        self.btn_next.setStyleSheet(self.style_str)
+        self.lbl_date.setStyleSheet(self.style_str)
+        self.lbl_time.setStyleSheet(self.style_str)
+
         self.btn_prev.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_next.setCursor(Qt.CursorShape.PointingHandCursor)
-        
+
         self.layout.addWidget(self.btn_prev)
-        self.layout.addWidget(self.lbl_info)
+        self.layout.addWidget(self.lbl_date)
+        self.layout.addWidget(self.lbl_time)
         self.layout.addWidget(self.btn_next)
-        
+
         self.btn_prev.clicked.connect(self.widget._prev_session)
         self.btn_next.clicked.connect(self.widget._next_session)
-        
         self.update_buttons()
 
     def update_buttons(self):
         sessions = self.widget._session_manager.sessions
         idx = self.widget._session_offset
-        
         if not sessions:
-            self.lbl_info.setText("No Session")
+            self.lbl_date.hide()
+            self.lbl_time.setText("No Session")
             self.btn_prev.setEnabled(False)
             self.btn_next.setEnabled(False)
             return
-            
+
         real_idx = len(sessions) - 1 + idx
         self.btn_prev.setEnabled(real_idx > 0)
         self.btn_next.setEnabled(idx < 0)
-        
-        dt = datetime.fromtimestamp(sessions[real_idx])
-        self.lbl_info.setText(dt.strftime("%H:%M:%S"))
+
+        ts = sessions[real_idx]
+        dt = datetime.fromtimestamp(ts)
+        now = datetime.now()
+
+        if now.year != dt.year:
+            date_str = dt.strftime("%y-%m-%d")
+        elif now.month != dt.month or now.day != dt.day:
+            date_str = dt.strftime("%m-%d")
+        else:
+            date_str = ""
+
+        if date_str:
+            self.lbl_date.setText(date_str)
+            self.lbl_date.show()
+        else:
+            self.lbl_date.hide()
+
+        self.lbl_time.setText(dt.strftime("%H:%M"))
+        self.adjustSize()
+
+
+class ControlsOverlayRight(ControlsOverlayBase):
+    def __init__(self, widget: "PiecesDensityWidget", parent=None):
+        super().__init__(widget, parent)
+        self.btn_prev = QPushButton("<")
+        self.btn_next = QPushButton(">")
+        self.lbl_days = QLabel()
+        self.lbl_days.setObjectName("DateLabel")
+        self.lbl_duration = QLabel("--:--")
+
+        self.btn_prev.setStyleSheet(self.style_str)
+        self.btn_next.setStyleSheet(self.style_str)
+        self.lbl_days.setStyleSheet(self.style_str)
+        self.lbl_duration.setStyleSheet(self.style_str)
+
+        self.btn_prev.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_next.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        self.layout.addWidget(self.btn_prev)
+        self.layout.addWidget(self.lbl_days)
+        self.layout.addWidget(self.lbl_duration)
+        self.layout.addWidget(self.btn_next)
+
+        self.btn_prev.clicked.connect(self.widget._prev_session)
+        self.btn_next.clicked.connect(self.widget._next_session)
+        self.update_buttons(0.0)
+
+    def update_buttons(self, duration_sec: float):
+        sessions = self.widget._session_manager.sessions
+        idx = self.widget._session_offset
+        if not sessions:
+            self.lbl_days.hide()
+            self.lbl_duration.setText("--:--")
+            self.btn_prev.setEnabled(False)
+            self.btn_next.setEnabled(False)
+            return
+
+        real_idx = len(sessions) - 1 + idx
+        self.btn_prev.setEnabled(real_idx > 0)
+        self.btn_next.setEnabled(idx < 0)
+
+        days = int(duration_sec // 86400)
+        rem = duration_sec % 86400
+        hours = int(rem // 3600)
+        minutes = int((rem % 3600) // 60)
+
+        if days > 0:
+            self.lbl_days.setText(f"+{days}d")
+            self.lbl_days.show()
+        else:
+            self.lbl_days.hide()
+
+        self.lbl_duration.setText(f"{hours:02d}:{minutes:02d}")
+        self.adjustSize()
+
 
 class DensityOverlay(QFrame):
     """The actual floating overlay window that draws the density heatmap."""
 
     def __init__(self, widget: "PiecesDensityWidget", config: PiecesDensityConfig):
         super().__init__()
+        self.session_end_bound = 0.0
         self.widget = widget
         self.config = config
-        
+
         # Set up window flags for a floating overlay that sits below the bar but above desktop
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
@@ -174,7 +271,7 @@ class DensityOverlay(QFrame):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
-        
+
         # Internal state
         self.stream_start_time = 0
         self.buckets: list[int] = []
@@ -201,13 +298,14 @@ class DensityOverlay(QFrame):
             font = painter.font()
             font.setPointSize(10)
             painter.setFont(font)
-            painter.drawText(QRectF(0, h * 0.75, w, 20), Qt.AlignmentFlag.AlignCenter, self.error_msg)
+            painter.drawText(QRectF(0, h * 0.75, w, 20),
+                             Qt.AlignmentFlag.AlignCenter, self.error_msg)
             return
 
         n = len(self.buckets)
         if self.hover_idx is not None and self.hover_idx >= n:
             self.hover_idx = None
-            
+
         step_x = w / (n - 1) if n > 1 else w
 
         # Draw Hover Highlight (±5 mins)
@@ -215,11 +313,12 @@ class DensityOverlay(QFrame):
             x_min = max(0, self.hover_idx - 5) * step_x
             x_max = min(n - 1, self.hover_idx + 5) * step_x
             # Faint background for the highlighted section
-            painter.fillRect(QRectF(x_min, 0, x_max - x_min, h), QColor(255, 255, 255, 20))
+            painter.fillRect(QRectF(x_min, 0, x_max - x_min, h),
+                             QColor(255, 255, 255, 20))
 
         # Create gradient
         gradient = QLinearGradient(0, h, 0, 0)
-        
+
         gradient.setColorAt(0.0, parse_color(self.config.color_low))
         gradient.setColorAt(0.5, parse_color(self.config.color_mid))
         gradient.setColorAt(1.0, parse_color(self.config.color_high))
@@ -228,15 +327,16 @@ class DensityOverlay(QFrame):
         path.moveTo(0, h)
 
         max_val = max(self.buckets) if self.buckets else 0
-        
+
         # Normalize: Highest point reaches full height
         y_scale = h / max_val if max_val > 0 else 0
 
         # Draw smooth curve
         points = []
         if n > 1 and max_val > 0:
-            points = [QPointF(i * step_x, h - (self.buckets[i] * y_scale)) for i in range(n)]
-            
+            points = [QPointF(i * step_x, h - (self.buckets[i] * y_scale))
+                      for i in range(n)]
+
             path.lineTo(points[0])
             for i in range(n - 1):
                 p1 = points[i]
@@ -267,7 +367,7 @@ class DensityOverlay(QFrame):
                 cp1 = QPointF((p1.x() + p2.x()) / 2, p1.y())
                 cp2 = QPointF((p1.x() + p2.x()) / 2, p2.y())
                 hl_path.cubicTo(cp1, cp2, p2)
-            
+
             pen = QPen(QColor(255, 255, 255, 220))
             pen.setWidthF(1.5)
             painter.strokePath(hl_path, pen)
@@ -277,48 +377,53 @@ class DensityOverlay(QFrame):
             font = painter.font()
             font.setPointSize(8)
             painter.setFont(font)
-            
+
             for i in range(n):
                 ts = self.stream_start_time + i * 60
                 dt = datetime.fromtimestamp(ts)
-                
+
                 is_hovered = False
                 if self.hover_idx is not None and (self.hover_idx - 5 <= i <= self.hover_idx + 5):
                     is_hovered = True
-                
+
                 # Determine which minor ticks to show based on duration
                 if n > 720:
                     is_minor_tick = (dt.minute == 30)
                 else:
                     is_minor_tick = (dt.minute % 10 == 0)
-                
+
                 # Major tick on the hour (e.g. 14:00)
                 if dt.minute == 0:
-                    pen_major = QPen(QColor(255, 255, 255, 255 if is_hovered else 150))
+                    pen_major = QPen(
+                        QColor(255, 255, 255, 255 if is_hovered else 150))
                     pen_major.setWidthF(1.5 if is_hovered else 1.5)
                     painter.setPen(pen_major)
-                    
+
                     x = i * step_x
                     painter.drawLine(QPointF(x, h), QPointF(x, h - 10))
                     # draw text slightly above
-                    painter.setPen(QColor(255, 255, 255, 255 if is_hovered else 200))
-                    painter.drawText(QPointF(x + 2, h - 12), dt.strftime("%H:00"))
+                    painter.setPen(
+                        QColor(255, 255, 255, 255 if is_hovered else 200))
+                    painter.drawText(QPointF(x + 2, h - 12),
+                                     dt.strftime("%H:00"))
                 elif is_minor_tick:
-                    pen_minor = QPen(QColor(255, 255, 255, 200 if is_hovered else 60))
+                    pen_minor = QPen(
+                        QColor(255, 255, 255, 200 if is_hovered else 60))
                     pen_minor.setWidthF(1.5 if is_hovered else 1.0)
                     painter.setPen(pen_minor)
-                    
+
                     x = i * step_x
                     painter.drawLine(QPointF(x, h), QPointF(x, h - 5))
 
 
-
-
 class FetchWorker(QThread):
-    data_fetched = pyqtSignal(list, bool, float, str, bool) # buckets, is_streaming, start_time, error_msg, was_obs_time
+    # buckets, is_streaming, start_time, error_msg, was_obs_time
+    data_fetched = pyqtSignal(list, bool, float, float, str, bool)
 
-    def __init__(self, config: PiecesDensityConfig, use_obs_time: bool, known_start_time: float = 0.0, last_streaming_time: float = 0.0, session_override: float = 0.0, force_session: bool = False):
+    def __init__(self, config: PiecesDensityConfig, use_obs_time: bool, known_start_time: float = 0.0, last_streaming_time: float = 0.0, session_override: float = 0.0, force_session: bool = False, session_end_bound: float = 0.0):
+        self.session_end_bound = session_end_bound
         super().__init__()
+        self.session_end_bound = 0.0
         self.config = config
         self.use_obs_time = use_obs_time
         self.known_start_time = known_start_time
@@ -349,7 +454,8 @@ class FetchWorker(QThread):
                 except Exception:
                     pass
 
-        is_streaming = getattr(status, 'output_active', False) or getattr(status, 'output_reconnecting', False)
+        is_streaming = getattr(status, 'output_active', False) or getattr(
+            status, 'output_reconnecting', False)
         if not is_streaming:
             return False, 0.0, 0.0, "Waiting for OBS Stream to start..."
 
@@ -359,19 +465,20 @@ class FetchWorker(QThread):
             parts = duration_str.split(':')
             if len(parts) >= 3:
                 try:
-                    total_duration_sec = int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2].split('.')[0])
+                    total_duration_sec = int(
+                        parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2].split('.')[0])
                 except ValueError:
                     pass
 
         if total_duration_sec > 0:
             stream_start_time = time.time() - total_duration_sec
-            
+
             # Prevent 1-2 second jitter caused by OBS integer timecode vs time.time() float
             if self.known_start_time > 0 and abs(stream_start_time - self.known_start_time) <= 2.0:
                 stream_start_time = self.known_start_time
         else:
             stream_start_time = time.time()
-        
+
         total_duration_sec = time.time() - stream_start_time
         return True, stream_start_time, total_duration_sec, ""
 
@@ -391,7 +498,7 @@ class FetchWorker(QThread):
         try:
             # 1. Determine Stream Start Time & Duration based on selected source
             if self.force_session and self.session_override > 0:
-                is_streaming = True
+                is_streaming = True  # Treat forced session as currently live
                 stream_start_time = self.session_override
                 total_duration_sec = time.time() - stream_start_time
                 err = ""
@@ -408,7 +515,8 @@ class FetchWorker(QThread):
                         total_duration_sec = time.time() - stream_start_time
 
             if err:
-                self.data_fetched.emit([], is_streaming, 0.0, err, self.use_obs_time)
+                self.data_fetched.emit(
+                    [], is_streaming, 0.0, 0.0, err, self.use_obs_time)
                 return
 
             if not is_streaming:
@@ -426,24 +534,26 @@ class FetchWorker(QThread):
 
             # 2. Raw Bucket sampling (1 min intervals)
             bucket_interval = 60
-            num_buckets = max(math.ceil(total_duration_sec / bucket_interval), 1)
+            num_buckets = max(
+                math.ceil(total_duration_sec / bucket_interval), 1)
             raw_buckets = [0] * num_buckets
 
             # 3. Query the local Pieces OS sqlite file
             localappdata = os.environ.get("LOCALAPPDATA", "")
             db_path = os.path.join(
-                localappdata, 
-                "Mesh Intelligent Technologies, Inc", 
-                "Pieces OS", 
-                "com.pieces.os", 
-                "production", 
-                "Pieces", 
-                "vector_db", 
+                localappdata,
+                "Mesh Intelligent Technologies, Inc",
+                "Pieces OS",
+                "com.pieces.os",
+                "production",
+                "Pieces",
+                "vector_db",
                 "workstreamEvents.sqlite"
             )
 
             if not os.path.exists(db_path):
-                self.data_fetched.emit([], True, 0.0, f"Pieces DB missing at: {db_path}", self.use_obs_time)
+                self.data_fetched.emit(
+                    [], True, 0.0, f"Pieces DB missing at: {db_path}", self.use_obs_time)
                 return
 
             # Connect in read-only mode
@@ -451,7 +561,8 @@ class FetchWorker(QThread):
             conn = sqlite3.connect(uri, uri=True)
             try:
                 c = conn.cursor()
-                c.execute("SELECT created_at FROM vectors WHERE created_at >= ?", (int(stream_start_time),))
+                c.execute("SELECT created_at FROM vectors WHERE created_at >= ?", (int(
+                    stream_start_time),))
                 for row in c.fetchall():
                     idx = int((row[0] - stream_start_time) / bucket_interval)
                     if 0 <= idx < num_buckets:
@@ -461,19 +572,21 @@ class FetchWorker(QThread):
 
             # 4. Apply 10-min sliding window (±5 mins) integration
             buckets = [
-                sum(raw_buckets[max(0, i - 5):min(num_buckets, i + 6)]) 
+                sum(raw_buckets[max(0, i - 5):min(num_buckets, i + 6)])
                 for i in range(num_buckets)
             ]
 
             # 5. [REMOVED] Do not trim leading zero-activity buckets.
-            # The UI must strictly align with the OBS duration so that the heatmap's time axis 
+            # The UI must strictly align with the OBS duration so that the heatmap's time axis
             # maps perfectly to the video playback time from the viewer's perspective.
 
-            self.data_fetched.emit(buckets, True, stream_start_time, "", self.use_obs_time)
+            self.data_fetched.emit(
+                buckets, True, stream_start_time, total_duration_sec, "", self.use_obs_time)
 
         except Exception as e:
             logging.error(f"Error fetching Pieces data: {e}")
-            self.data_fetched.emit([], True, 0.0, f"Error: {str(e)}", self.use_obs_time)
+            self.data_fetched.emit(
+                [], True, 0.0, f"Error: {str(e)}", self.use_obs_time)
 
 
 class PiecesDensityWidget(BaseWidget):
@@ -499,7 +612,8 @@ class PiecesDensityWidget(BaseWidget):
         self._overlay = DensityOverlay(self, self.config)
         self._session_manager = ObsSessionManager()
         self._session_offset = 0
-        self._controls = ControlsOverlay(self)
+        self._controls_left = ControlsOverlayLeft(self)
+        self._controls_right = ControlsOverlayRight(self)
         self._worker = None
         self._stream_start_time = 0.0
         self._last_streaming_time = 0.0
@@ -509,10 +623,12 @@ class PiecesDensityWidget(BaseWidget):
         self._timer.start(self.config.poll_interval_sec * 1000)
         self.register_callback("toggle_pieces_density", self._toggle_overlay)
 
-        self._event_service.register_event("toggle_pieces_widget", self._toggle_req_signal)
+        self._event_service.register_event(
+            "toggle_pieces_widget", self._toggle_req_signal)
         self._toggle_req_signal.connect(self._toggle_pieces_state)
 
-        self._event_service.register_event("pieces_time_source_changed", self._time_source_changed_signal)
+        self._event_service.register_event(
+            "pieces_time_source_changed", self._time_source_changed_signal)
         self._time_source_changed_signal.connect(self._on_time_source_changed)
 
         # Drop to the bottom of the bar's Z-order to prevent covering other widgets
@@ -535,11 +651,18 @@ class PiecesDensityWidget(BaseWidget):
 
         try:
             overlay_hwnd = int(self._overlay.winId())
+            controls_l_hwnd = int(self._controls_left.winId())
+            controls_r_hwnd = int(self._controls_right.winId())
             bar_hwnd = int(bar_window.winId())
         except RuntimeError:
             return
 
-        SetWindowPos(overlay_hwnd, bar_hwnd, 0, 0, 0, 0, SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE)
+        SetWindowPos(controls_l_hwnd, bar_hwnd, 0, 0, 0, 0,
+                     SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE)
+        SetWindowPos(controls_r_hwnd, controls_l_hwnd, 0, 0, 0,
+                     0, SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE)
+        SetWindowPos(overlay_hwnd, controls_r_hwnd, 0, 0, 0, 0,
+                     SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE)
 
     def _show_overlay_below_bar(self):
         self._update_overlay_geometry()
@@ -557,16 +680,17 @@ class PiecesDensityWidget(BaseWidget):
 
         cursor_pos = QCursor.pos()
         geo = self._overlay.geometry()
-        
+
         if geo.contains(cursor_pos):
             w = self._overlay.width()
             if w <= 0:
                 return
 
             if self._overlay.error_msg:
-                QToolTip.showText(cursor_pos, f"Error: {self._overlay.error_msg}")
+                QToolTip.showText(
+                    cursor_pos, f"Error: {self._overlay.error_msg}")
                 return
-                
+
             if not self._overlay.buckets:
                 QToolTip.showText(cursor_pos, "0 Events")
                 return
@@ -574,8 +698,9 @@ class PiecesDensityWidget(BaseWidget):
             # Map mouse global X to time bucket
             local_x = cursor_pos.x() - geo.x()
             bucket_index = int((local_x / w) * len(self._overlay.buckets))
-            bucket_index = min(max(bucket_index, 0), len(self._overlay.buckets) - 1)
-            
+            bucket_index = min(max(bucket_index, 0),
+                               len(self._overlay.buckets) - 1)
+
             if getattr(self._overlay, 'hover_idx', None) != bucket_index:
                 self._overlay.hover_idx = bucket_index
                 self._overlay.update()
@@ -584,7 +709,7 @@ class PiecesDensityWidget(BaseWidget):
             ts = self._overlay.stream_start_time + bucket_index * 60
             dt_str = datetime.fromtimestamp(ts).strftime("%H:%M")
             tooltip_text = f"{dt_str} | Events (±5m): {val}"
-            
+
             QToolTip.showText(cursor_pos, tooltip_text)
         else:
             if getattr(self._overlay, 'hover_idx', None) is not None:
@@ -605,15 +730,19 @@ class PiecesDensityWidget(BaseWidget):
             self._worker = None
 
         override_time = 0.0
+        end_bound = 0.0
         sessions = self._session_manager.sessions
         if sessions:
             real_idx = len(sessions) - 1 + self._session_offset
             if 0 <= real_idx < len(sessions):
                 override_time = sessions[real_idx]
-                
+                if real_idx + 1 < len(sessions):
+                    end_bound = sessions[real_idx + 1]
+
         force_session = self._session_offset < 0
 
-        self._worker = FetchWorker(self.config, self._use_obs_time, self._stream_start_time, self._last_streaming_time, override_time, force_session)
+        self._worker = FetchWorker(self.config, self._use_obs_time, self._stream_start_time,
+                                   self._last_streaming_time, override_time, force_session, end_bound)
         self._worker.data_fetched.connect(self._on_data_fetched)
         self._worker.finished.connect(self._worker.deleteLater)
         # Clear the Python reference once the thread finishes so the guard
@@ -621,7 +750,7 @@ class PiecesDensityWidget(BaseWidget):
         self._worker.finished.connect(lambda: setattr(self, "_worker", None))
         self._worker.start()
 
-    def _on_data_fetched(self, buckets: list[int], is_streaming: bool, start_time: float, error_msg: str, was_obs_time: bool):
+    def _on_data_fetched(self, buckets: list[int], is_streaming: bool, start_time: float, total_duration_sec: float, error_msg: str, was_obs_time: bool):
         if not getattr(self, "_is_active", True):
             return
         # Discard stale result: time source was toggled while the worker was running.
@@ -631,20 +760,22 @@ class PiecesDensityWidget(BaseWidget):
 
         if is_streaming and self._session_offset == 0:
             self._session_manager.record_start_time(start_time)
-            
-        self._controls.update_buttons()
+
+        self._controls_left.update_buttons()
+        self._controls_right.update_buttons(0.0)
 
         self._overlay.buckets = buckets
         self._overlay.is_streaming = is_streaming
         self._overlay.stream_start_time = start_time
         self._overlay.error_msg = error_msg
-        
+
         if is_streaming:
             self._stream_start_time = start_time
             self._last_streaming_time = time.time()
             if not self._overlay.isVisible():
                 self._show_overlay_below_bar()
-                self._controls.show()
+                self._controls_left.show()
+                self._controls_right.show()
             else:
                 self._update_overlay_geometry()
                 self._place_overlay_below_bar()
@@ -652,7 +783,8 @@ class PiecesDensityWidget(BaseWidget):
         else:
             if self._overlay.isVisible():
                 self._overlay.hide()
-                self._controls.hide()
+                self._controls_left.hide()
+                self._controls_right.hide()
 
     def _update_overlay_geometry(self):
         """Align the overlay with the yasb bar."""
@@ -662,47 +794,56 @@ class PiecesDensityWidget(BaseWidget):
             return
 
         bar_geo = bar_window.geometry()
-        
+
         # Width matches the bar, height is configured, x matches bar x
         x = bar_geo.x()
         w = bar_geo.width()
         # Height reduced by 15px
         h = self.config.widget_height - 15
-        
+
         # We want the bottom of our overlay to touch the bottom of the yasb bar,
         # plus an additional 31px downwards.
         y = bar_geo.y() + bar_geo.height() - h + 31
-        
+
         self._overlay.setGeometry(x, y, w, h)
-        
-        cw = 120
-        ch = 25
-        # Place at left 1/4, top edge matches overlay top edge
-        controls_x = x + int(w * 0.25)
-        self._controls.setGeometry(controls_x, y, cw, ch)
-        self._controls.raise_()
+
+        self._controls_left.adjustSize()
+        cw_l = self._controls_left.width()
+        ch_l = self._controls_left.height()
+        self._controls_left.setGeometry(x + 5, y + h - ch_l - 5, cw_l, ch_l)
+
+        self._controls_right.adjustSize()
+        cw_r = self._controls_right.width()
+        ch_r = self._controls_right.height()
+        self._controls_right.setGeometry(
+            x + w - cw_r - 5, y + h - ch_r - 5, cw_r, ch_r)
 
     def _toggle_overlay(self):
         if self._overlay.isVisible():
             self._overlay.hide()
-            self._controls.hide()
+            self._controls_left.hide()
+            self._controls_right.hide()
         else:
             self._show_overlay_below_bar()
-            self._controls.show()
+            self._controls_left.show()
+            self._controls_right.show()
 
     def _prev_session(self):
         sessions = self._session_manager.sessions
-        if not sessions: return
+        if not sessions:
+            return
         max_prev = -(len(sessions) - 1)
         if self._session_offset > max_prev:
             self._session_offset -= 1
-            self._controls.update_buttons()
+            self._controls_left.update_buttons()
+            self._controls_right.update_buttons(0.0)
             self._fetch_data()
 
     def _next_session(self):
         if self._session_offset < 0:
             self._session_offset += 1
-            self._controls.update_buttons()
+            self._controls_left.update_buttons()
+            self._controls_right.update_buttons(0.0)
             self._fetch_data()
 
     def _on_time_source_changed(self, use_obs: bool, screen_name: str):
@@ -726,27 +867,33 @@ class PiecesDensityWidget(BaseWidget):
                 self._worker._is_running = False
             if self._overlay.isVisible():
                 self._overlay.hide()
-                self._controls.hide()
+                self._controls_left.hide()
+                self._controls_right.hide()
 
-        self._event_service.emit_event("pieces_widget_state_changed", self._is_active, self.screen_name)
+        self._event_service.emit_event(
+            "pieces_widget_state_changed", self._is_active, self.screen_name)
 
     def showEvent(self, event):
         super().showEvent(event)
         self.lower()
-        
+
         # Connect to bar animation signals to stay in sync
         bar_window = self.window()
         if hasattr(bar_window, "animation_tick") and not getattr(self, "_connected_anim", False):
             bar_window.animation_tick.connect(self._update_overlay_geometry)
-            bar_window.animation_finished.connect(self._update_overlay_geometry)
+            bar_window.animation_finished.connect(
+                self._update_overlay_geometry)
             if hasattr(bar_window, "opacity_tick"):
                 bar_window.opacity_tick.connect(self._overlay.setWindowOpacity)
-                bar_window.opacity_tick.connect(self._controls.setWindowOpacity)
+                bar_window.opacity_tick.connect(
+                    self._controls_left.setWindowOpacity)
+                bar_window.opacity_tick.connect(
+                    self._controls_right.setWindowOpacity)
             self._connected_anim = True
 
         # Initial geometry update and fetch
         QTimer.singleShot(100, self._fetch_data)
-        
+
         # Ensure overlay stays under the bar window when the bar is shown again
         self._place_overlay_below_bar()
 
@@ -754,4 +901,5 @@ class PiecesDensityWidget(BaseWidget):
         super().hideEvent(event)
         if self._overlay:
             self._overlay.hide()
-            self._controls.hide()
+            self._controls_left.hide()
+            self._controls_right.hide()

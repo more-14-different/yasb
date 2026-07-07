@@ -6,17 +6,31 @@ import requests
 import re
 from datetime import datetime
 
-import obsws_python as obs
+# Try importing the required packages
+try:
+    import obsws_python as obs
+except ImportError:
+    obs = None
 
 LOG_FILE = os.path.expanduser("~/.config/yasb/timeline_events.jsonl")
 
-def log_event(event_type, priority, timestamp=None, details=None):
+PRIORITIES = {
+    "High": "🔴",
+    "Medium": "🟡",
+    "Low": "🟢",
+    "Trace": "⚪"
+}
+
+def log_event(event_type: str, priority: str, timestamp: float = None, details: dict = None):
     if timestamp is None:
         timestamp = time.time()
         
+    dt_str = datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
+    emoji = PRIORITIES.get(priority, "⚪")
+    
     entry = {
         "timestamp": timestamp,
-        "datetime": datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S"),
+        "datetime": dt_str,
         "event_type": event_type,
         "priority": priority,
     }
@@ -27,15 +41,19 @@ def log_event(event_type, priority, timestamp=None, details=None):
         os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
         with open(LOG_FILE, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        print(f"[{entry['datetime']}] [{priority}] {event_type} {details or ''}")
-    except Exception as e:
-        print(f"Failed to log event: {e}")
+            
+        color_code = "\033[91m" if priority == "High" else "\033[93m" if priority == "Medium" else "\033[92m"
+        reset = "\033[0m"
+        details_str = f" - {json.dumps(details, ensure_ascii=False)}" if details else ""
+        print(f"[{dt_str}] {color_code}{emoji} [{priority}]{reset} {event_type}{details_str}")
+    except Exception:
+        pass
 
 
-def get_youtube_start_time(url):
+def get_youtube_start_time(url: str):
     try:
         headers = {"User-Agent": "Mozilla/5.0"}
-        response = requests.get(url, headers=headers, timeout=10)
+        response = requests.get(url, headers=headers, timeout=5)
         if response.status_code != 200:
             return None
         match = re.search(r'ytInitialPlayerResponse\s*=\s*({.+?});(?:var|</script>)', response.text)
@@ -56,105 +74,91 @@ def get_youtube_start_time(url):
 
 
 def main():
-    print(f"Starting Timeline Event Logger. Logging to {LOG_FILE}")
+    print(f"🚀 Starting Timeline Event Logger (Optimized)")
+    print(f"📁 Log File: {LOG_FILE}\n")
     
-    # Configuration
-    # Read yasb config for OBS password if needed, or hardcode here.
     OBS_PASSWORD = "tsJvXCzzCGFdgxoq"
     YT_URL = "https://www.youtube.com/channel/UC-lHJZR3Gqxm24_Vd_AJ5Yw/live"
     
-    # State tracking
-    last_boot_time = psutil.boot_time()
-    log_event("computer_startup", "High", timestamp=last_boot_time)
-    
+    # States
     is_obs_running = False
     is_obs_streaming = False
     is_obs_reconnecting = False
-    
     last_yt_start = None
-    yt_check_counter = 0
-    
     obs_client = None
 
+    # Init
+    log_event("computer_startup", "High", timestamp=psutil.boot_time())
+
+    # Polling loops decoupled
+    loop_count = 0
+    
     while True:
         try:
-            now = time.time()
-            
-            # 1. OBS Process Status
-            obs_proc_found = False
-            for p in psutil.process_iter(['name']):
-                if p.info['name'] and 'obs64.exe' in p.info['name'].lower():
-                    obs_proc_found = True
-                    break
-                    
-            if obs_proc_found and not is_obs_running:
-                is_obs_running = True
-                log_event("obs_process_start", "Low")
-            elif not obs_proc_found and is_obs_running:
-                is_obs_running = False
-                is_obs_streaming = False
-                is_obs_reconnecting = False
-                obs_client = None
-                log_event("obs_process_exit", "Low")
-
-            # 2. OBS WebSocket Status
-            if is_obs_running:
-                try:
-                    if not obs_client:
-                        obs_client = obs.ReqClient(password=OBS_PASSWORD, timeout=3)
-                    
-                    status = obs_client.get_stream_status()
-                    active = getattr(status, 'output_active', False)
-                    reconnecting = getattr(status, 'output_reconnecting', False)
-                    timecode = getattr(status, 'output_timecode', "")
-                    
-                    if active and not is_obs_streaming:
-                        is_obs_streaming = True
-                        log_event("obs_stream_start", "Medium", details={"timecode": timecode})
+            # --- 1. Every 10 seconds: OBS Monitor ---
+            if loop_count % 2 == 0:
+                obs_proc_found = any('obs64.exe' in p.name().lower() for p in psutil.process_iter(['name']))
                         
-                    if not active and is_obs_streaming:
-                        if reconnecting:
-                            if not is_obs_reconnecting:
+                if obs_proc_found and not is_obs_running:
+                    is_obs_running = True
+                    log_event("obs_process_start", "Low")
+                elif not obs_proc_found and is_obs_running:
+                    is_obs_running = False
+                    is_obs_streaming = False
+                    is_obs_reconnecting = False
+                    obs_client = None
+                    log_event("obs_process_exit", "Low")
+
+                if is_obs_running and obs:
+                    try:
+                        if not obs_client:
+                            obs_client = obs.ReqClient(password=OBS_PASSWORD, timeout=3)
+                        
+                        status = obs_client.get_stream_status()
+                        active = getattr(status, 'output_active', False)
+                        reconnecting = getattr(status, 'output_reconnecting', False)
+                        
+                        if active and not is_obs_streaming:
+                            is_obs_streaming = True
+                            log_event("obs_stream_start", "Medium")
+                            
+                        if not active and is_obs_streaming:
+                            if reconnecting and not is_obs_reconnecting:
                                 is_obs_reconnecting = True
                                 log_event("obs_stream_interruption", "Low")
-                        else:
+                            elif not reconnecting:
+                                is_obs_streaming = False
+                                is_obs_reconnecting = False
+                                log_event("obs_stream_stop", "Medium")
+                                
+                        if active and not reconnecting and is_obs_reconnecting:
+                            is_obs_reconnecting = False
+                            log_event("obs_stream_reconnect", "Low")
+
+                    except Exception as e:
+                        obs_client = None
+                        if is_obs_streaming:
                             is_obs_streaming = False
                             is_obs_reconnecting = False
-                            log_event("obs_stream_stop", "Medium")
-                            
-                    if active and not reconnecting and is_obs_reconnecting:
-                        is_obs_reconnecting = False
-                        log_event("obs_stream_reconnect", "Low")
+                            log_event("obs_stream_stop", "Medium", details={"reason": "websocket_error"})
 
-                except Exception as e:
-                    # WebSocket disconnected or failed
-                    obs_client = None
-                    if is_obs_streaming:
-                        is_obs_streaming = False
-                        is_obs_reconnecting = False
-                        log_event("obs_stream_stop", "Medium", details={"reason": "websocket_error", "error": str(e)})
-
-            # 3. YouTube Stream Status (Poll every 60 seconds)
-            if yt_check_counter % 12 == 0:
+            # --- 2. Every 120 seconds: YouTube Monitor ---
+            if loop_count % 24 == 0:
                 yt_start = get_youtube_start_time(YT_URL)
-                
                 if yt_start and not last_yt_start:
                     log_event("youtube_stream_start", "High", timestamp=yt_start)
                     last_yt_start = yt_start
                 elif yt_start and last_yt_start and abs(yt_start - last_yt_start) > 60:
-                    # Stream restarted on YouTube
                     log_event("youtube_stream_start", "High", timestamp=yt_start, details={"note": "restarted"})
                     last_yt_start = yt_start
                 elif not yt_start and last_yt_start:
                     log_event("youtube_stream_stop", "High")
                     last_yt_start = None
                     
-            yt_check_counter += 1
+        except Exception:
+            pass
             
-        except Exception as main_e:
-            print(f"Main loop error: {main_e}")
-            
-        # Sleep 5 seconds
+        loop_count += 1
         time.sleep(5)
 
 if __name__ == "__main__":
