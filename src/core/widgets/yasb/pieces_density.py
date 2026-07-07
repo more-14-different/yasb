@@ -3,11 +3,12 @@ import time
 import math
 import os
 import sqlite3
+import json
 from datetime import datetime
 
 from PyQt6.QtCore import QTimer, Qt, QPointF, QRectF, QThread, pyqtSignal, QEvent, QPoint
 from PyQt6.QtGui import QPainter, QPainterPath, QLinearGradient, QColor, QBrush, QCursor, QPen
-from PyQt6.QtWidgets import QFrame, QToolTip
+from PyQt6.QtWidgets import QFrame, QToolTip, QPushButton, QHBoxLayout, QLabel
 from win32con import SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE
 
 from core.utils.win32.bindings import SetWindowPos
@@ -39,6 +40,121 @@ def parse_color(color_str: str) -> QColor:
             except ValueError:
                 pass
     return QColor(color_str)
+
+class ObsSessionManager:
+    """Manages the history of OBS stream start times."""
+    def __init__(self):
+        self.state_file = os.path.expanduser("~/.config/yasb/obs_sessions.json")
+        self.sessions = []
+        self._load()
+
+    def _load(self):
+        try:
+            if os.path.exists(self.state_file):
+                with open(self.state_file, "r") as f:
+                    self.sessions = json.load(f)
+        except Exception as e:
+            logging.error(f"Failed to load obs sessions: {e}")
+            self.sessions = []
+        self._cleanup()
+
+    def _save(self):
+        try:
+            os.makedirs(os.path.dirname(self.state_file), exist_ok=True)
+            with open(self.state_file, "w") as f:
+                json.dump(self.sessions, f)
+        except Exception as e:
+            logging.error(f"Failed to save obs sessions: {e}")
+
+    def _cleanup(self):
+        now = time.time()
+        filtered = [s for s in self.sessions if now - s <= 129600]
+        if len(filtered) != len(self.sessions):
+            self.sessions = filtered
+            self._save()
+
+    def record_start_time(self, start_time: float):
+        if not self.sessions:
+            self.sessions.append(start_time)
+            self._save()
+            return
+        last_time = self.sessions[-1]
+        if abs(start_time - last_time) > 30:
+            self.sessions.append(start_time)
+            self._save()
+
+class ControlsOverlay(QFrame):
+    """A small overlay with buttons to switch between stream sessions."""
+    def __init__(self, widget: "PiecesDensityWidget", parent=None):
+        super().__init__(parent)
+        self.widget = widget
+        
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.Tool
+            | Qt.WindowType.WindowDoesNotAcceptFocus
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        
+        self.layout = QHBoxLayout(self)
+        self.layout.setContentsMargins(0, 0, 0, 0)
+        self.layout.setSpacing(5)
+        
+        self.btn_prev = QPushButton("<")
+        self.btn_next = QPushButton(">")
+        self.lbl_info = QLabel("--:--")
+        
+        style = """
+            QPushButton {
+                background-color: rgba(20, 20, 20, 150);
+                color: white;
+                border: 1px solid rgba(255, 255, 255, 50);
+                border-radius: 4px;
+                padding: 2px 8px;
+            }
+            QPushButton:hover {
+                background-color: rgba(60, 60, 60, 200);
+            }
+            QLabel {
+                color: white;
+                font-size: 10px;
+                background-color: rgba(20, 20, 20, 150);
+                border-radius: 4px;
+                padding: 2px 6px;
+            }
+        """
+        self.btn_prev.setStyleSheet(style)
+        self.btn_next.setStyleSheet(style)
+        self.lbl_info.setStyleSheet(style)
+        
+        self.btn_prev.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_next.setCursor(Qt.CursorShape.PointingHandCursor)
+        
+        self.layout.addWidget(self.btn_prev)
+        self.layout.addWidget(self.lbl_info)
+        self.layout.addWidget(self.btn_next)
+        
+        self.btn_prev.clicked.connect(self.widget._prev_session)
+        self.btn_next.clicked.connect(self.widget._next_session)
+        
+        self.update_buttons()
+
+    def update_buttons(self):
+        sessions = self.widget._session_manager.sessions
+        idx = self.widget._session_offset
+        
+        if not sessions:
+            self.lbl_info.setText("No Session")
+            self.btn_prev.setEnabled(False)
+            self.btn_next.setEnabled(False)
+            return
+            
+        real_idx = len(sessions) - 1 + idx
+        self.btn_prev.setEnabled(real_idx > 0)
+        self.btn_next.setEnabled(idx < 0)
+        
+        dt = datetime.fromtimestamp(sessions[real_idx])
+        self.lbl_info.setText(dt.strftime("%H:%M:%S"))
 
 class DensityOverlay(QFrame):
     """The actual floating overlay window that draws the density heatmap."""
@@ -201,12 +317,14 @@ class DensityOverlay(QFrame):
 class FetchWorker(QThread):
     data_fetched = pyqtSignal(list, bool, float, str, bool) # buckets, is_streaming, start_time, error_msg, was_obs_time
 
-    def __init__(self, config: PiecesDensityConfig, use_obs_time: bool, known_start_time: float = 0.0, last_streaming_time: float = 0.0):
+    def __init__(self, config: PiecesDensityConfig, use_obs_time: bool, known_start_time: float = 0.0, last_streaming_time: float = 0.0, session_override: float = 0.0, force_session: bool = False):
         super().__init__()
         self.config = config
         self.use_obs_time = use_obs_time
         self.known_start_time = known_start_time
         self.last_streaming_time = last_streaming_time
+        self.session_override = session_override
+        self.force_session = force_session
         self._is_running = True
 
     def _get_obs_time(self) -> tuple[bool, float, float, str]:
@@ -272,10 +390,22 @@ class FetchWorker(QThread):
 
         try:
             # 1. Determine Stream Start Time & Duration based on selected source
-            if self.use_obs_time:
-                is_streaming, stream_start_time, total_duration_sec, err = self._get_obs_time()
+            if self.force_session and self.session_override > 0:
+                is_streaming = True
+                stream_start_time = self.session_override
+                total_duration_sec = time.time() - stream_start_time
+                err = ""
             else:
-                is_streaming, stream_start_time, total_duration_sec, err = self._get_boot_time()
+                if self.use_obs_time:
+                    is_streaming, stream_start_time, total_duration_sec, err = self._get_obs_time()
+                else:
+                    is_streaming, stream_start_time, total_duration_sec, err = self._get_boot_time()
+
+                if is_streaming and self.session_override > 0:
+                    # Snapping to known session to prevent OBS drop/reconnect resets
+                    if abs(stream_start_time - self.session_override) < 900:
+                        stream_start_time = self.session_override
+                        total_duration_sec = time.time() - stream_start_time
 
             if err:
                 self.data_fetched.emit([], is_streaming, 0.0, err, self.use_obs_time)
@@ -367,6 +497,9 @@ class PiecesDensityWidget(BaseWidget):
         self._is_active = True
         self._use_obs_time = True
         self._overlay = DensityOverlay(self, self.config)
+        self._session_manager = ObsSessionManager()
+        self._session_offset = 0
+        self._controls = ControlsOverlay(self)
         self._worker = None
         self._stream_start_time = 0.0
         self._last_streaming_time = 0.0
@@ -471,7 +604,16 @@ class PiecesDensityWidget(BaseWidget):
             # C++ object already deleted; treat as no active worker
             self._worker = None
 
-        self._worker = FetchWorker(self.config, self._use_obs_time, self._stream_start_time, self._last_streaming_time)
+        override_time = 0.0
+        sessions = self._session_manager.sessions
+        if sessions:
+            real_idx = len(sessions) - 1 + self._session_offset
+            if 0 <= real_idx < len(sessions):
+                override_time = sessions[real_idx]
+                
+        force_session = self._session_offset < 0
+
+        self._worker = FetchWorker(self.config, self._use_obs_time, self._stream_start_time, self._last_streaming_time, override_time, force_session)
         self._worker.data_fetched.connect(self._on_data_fetched)
         self._worker.finished.connect(self._worker.deleteLater)
         # Clear the Python reference once the thread finishes so the guard
@@ -487,6 +629,11 @@ class PiecesDensityWidget(BaseWidget):
         if was_obs_time != self._use_obs_time:
             return
 
+        if is_streaming and self._session_offset == 0:
+            self._session_manager.record_start_time(start_time)
+            
+        self._controls.update_buttons()
+
         self._overlay.buckets = buckets
         self._overlay.is_streaming = is_streaming
         self._overlay.stream_start_time = start_time
@@ -497,6 +644,7 @@ class PiecesDensityWidget(BaseWidget):
             self._last_streaming_time = time.time()
             if not self._overlay.isVisible():
                 self._show_overlay_below_bar()
+                self._controls.show()
             else:
                 self._update_overlay_geometry()
                 self._place_overlay_below_bar()
@@ -504,6 +652,7 @@ class PiecesDensityWidget(BaseWidget):
         else:
             if self._overlay.isVisible():
                 self._overlay.hide()
+                self._controls.hide()
 
     def _update_overlay_geometry(self):
         """Align the overlay with the yasb bar."""
@@ -525,12 +674,36 @@ class PiecesDensityWidget(BaseWidget):
         y = bar_geo.y() + bar_geo.height() - h + 31
         
         self._overlay.setGeometry(x, y, w, h)
+        
+        cw = 120
+        ch = 25
+        # Place at left 1/4, top edge matches overlay top edge
+        controls_x = x + int(w * 0.25)
+        self._controls.setGeometry(controls_x, y, cw, ch)
+        self._controls.raise_()
 
     def _toggle_overlay(self):
         if self._overlay.isVisible():
             self._overlay.hide()
+            self._controls.hide()
         else:
             self._show_overlay_below_bar()
+            self._controls.show()
+
+    def _prev_session(self):
+        sessions = self._session_manager.sessions
+        if not sessions: return
+        max_prev = -(len(sessions) - 1)
+        if self._session_offset > max_prev:
+            self._session_offset -= 1
+            self._controls.update_buttons()
+            self._fetch_data()
+
+    def _next_session(self):
+        if self._session_offset < 0:
+            self._session_offset += 1
+            self._controls.update_buttons()
+            self._fetch_data()
 
     def _on_time_source_changed(self, use_obs: bool, screen_name: str):
         if screen_name != self.screen_name:
@@ -553,6 +726,7 @@ class PiecesDensityWidget(BaseWidget):
                 self._worker._is_running = False
             if self._overlay.isVisible():
                 self._overlay.hide()
+                self._controls.hide()
 
         self._event_service.emit_event("pieces_widget_state_changed", self._is_active, self.screen_name)
 
@@ -567,6 +741,7 @@ class PiecesDensityWidget(BaseWidget):
             bar_window.animation_finished.connect(self._update_overlay_geometry)
             if hasattr(bar_window, "opacity_tick"):
                 bar_window.opacity_tick.connect(self._overlay.setWindowOpacity)
+                bar_window.opacity_tick.connect(self._controls.setWindowOpacity)
             self._connected_anim = True
 
         # Initial geometry update and fetch
@@ -579,3 +754,4 @@ class PiecesDensityWidget(BaseWidget):
         super().hideEvent(event)
         if self._overlay:
             self._overlay.hide()
+            self._controls.hide()
