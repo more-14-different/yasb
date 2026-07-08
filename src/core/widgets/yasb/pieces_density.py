@@ -43,48 +43,70 @@ def parse_color(color_str: str) -> QColor:
     return QColor(color_str)
 
 
-class ObsSessionManager:
-    """Manages the history of OBS stream start times."""
+class SessionManager:
+    """Manages the history of session start times, separated by source type."""
+
+    _MIN_VALID_TIMESTAMP = 1_000_000_000  # ~2001-09-09, rejects epoch-zero
 
     def __init__(self):
         self.state_file = os.path.expanduser(
             "~/.config/yasb/obs_sessions.json")
-        self.sessions = []
+        self._data: dict[str, list[float]] = {"obs": [], "boot": []}
         self._load()
 
     def _load(self):
         try:
             if os.path.exists(self.state_file):
                 with open(self.state_file, "r") as f:
-                    self.sessions = json.load(f)
+                    raw = json.load(f)
+                if isinstance(raw, dict) and "obs" in raw:
+                    self._data = {"obs": raw.get("obs", []), "boot": raw.get("boot", [])}
+                elif isinstance(raw, list):
+                    # Auto-migrate old flat-array format: discard invalid entries,
+                    # keep all valid ones under "obs" (legacy default)
+                    valid = [t for t in raw if isinstance(t, (int, float)) and t > self._MIN_VALID_TIMESTAMP]
+                    self._data = {"obs": valid, "boot": []}
+                    self._save()
+                    logging.info(f"Migrated {len(valid)} sessions from legacy format")
         except Exception as e:
-            logging.error(f"Failed to load obs sessions: {e}")
-            self.sessions = []
+            logging.error(f"Failed to load sessions: {e}")
+            self._data = {"obs": [], "boot": []}
         self._cleanup()
 
     def _save(self):
         try:
             os.makedirs(os.path.dirname(self.state_file), exist_ok=True)
             with open(self.state_file, "w") as f:
-                json.dump(self.sessions, f)
+                json.dump(self._data, f)
         except Exception as e:
-            logging.error(f"Failed to save obs sessions: {e}")
+            logging.error(f"Failed to save sessions: {e}")
 
     def _cleanup(self):
         now = time.time()
-        filtered = [s for s in self.sessions if now - s <= 129600]
-        if len(filtered) != len(self.sessions):
-            self.sessions = filtered
+        changed = False
+        for key in ("obs", "boot"):
+            filtered = [s for s in self._data[key] if now - s <= 129600]
+            if len(filtered) != len(self._data[key]):
+                self._data[key] = filtered
+                changed = True
+        if changed:
             self._save()
 
-    def record_start_time(self, start_time: float):
-        if not self.sessions:
-            self.sessions.append(start_time)
+    def get_sessions(self, use_obs: bool) -> list[float]:
+        """Return the session list for the given time source."""
+        return self._data["obs" if use_obs else "boot"]
+
+    def record_start_time(self, start_time: float, use_obs: bool):
+        if start_time <= self._MIN_VALID_TIMESTAMP:
+            return  # Reject epoch-zero and other nonsensical timestamps
+        sessions = self._data["obs" if use_obs else "boot"]
+        if not sessions:
+            sessions.append(start_time)
             self._save()
             return
-        last_time = self.sessions[-1]
+        last_time = sessions[-1]
         if abs(start_time - last_time) > 30:
-            self.sessions.append(start_time)
+            sessions.append(start_time)
             self._save()
 
 
@@ -163,7 +185,7 @@ class ControlsOverlayLeft(ControlsOverlayBase):
         self.update_buttons()
 
     def update_buttons(self):
-        sessions = self.widget._session_manager.sessions
+        sessions = self.widget._session_manager.get_sessions(self.widget._use_obs_time)
         idx = self.widget._session_offset
         if not sessions:
             self.lbl_date.hide()
@@ -224,7 +246,7 @@ class ControlsOverlayRight(ControlsOverlayBase):
         self.update_buttons(0.0)
 
     def update_buttons(self, duration_sec: float):
-        sessions = self.widget._session_manager.sessions
+        sessions = self.widget._session_manager.get_sessions(self.widget._use_obs_time)
         idx = self.widget._session_offset
         if not sessions:
             self.lbl_days.hide()
@@ -610,7 +632,7 @@ class PiecesDensityWidget(BaseWidget):
         self._is_active = True
         self._use_obs_time = True
         self._overlay = DensityOverlay(self, self.config)
-        self._session_manager = ObsSessionManager()
+        self._session_manager = SessionManager()
         self._session_offset = 0
         self._controls_left = ControlsOverlayLeft(self)
         self._controls_right = ControlsOverlayRight(self)
@@ -731,7 +753,7 @@ class PiecesDensityWidget(BaseWidget):
 
         override_time = 0.0
         end_bound = 0.0
-        sessions = self._session_manager.sessions
+        sessions = self._session_manager.get_sessions(self._use_obs_time)
         if sessions:
             real_idx = len(sessions) - 1 + self._session_offset
             if 0 <= real_idx < len(sessions):
@@ -759,10 +781,10 @@ class PiecesDensityWidget(BaseWidget):
             return
 
         if is_streaming and self._session_offset == 0:
-            self._session_manager.record_start_time(start_time)
+            self._session_manager.record_start_time(start_time, was_obs_time)
 
         self._controls_left.update_buttons()
-        self._controls_right.update_buttons(0.0)
+        self._controls_right.update_buttons(total_duration_sec)
 
         self._overlay.buckets = buckets
         self._overlay.is_streaming = is_streaming
@@ -829,7 +851,7 @@ class PiecesDensityWidget(BaseWidget):
             self._controls_right.show()
 
     def _prev_session(self):
-        sessions = self._session_manager.sessions
+        sessions = self._session_manager.get_sessions(self._use_obs_time)
         if not sessions:
             return
         max_prev = -(len(sessions) - 1)
@@ -851,6 +873,7 @@ class PiecesDensityWidget(BaseWidget):
             return
         self._use_obs_time = use_obs
         self._stream_start_time = 0.0  # Reset known start time when switching modes
+        self._session_offset = 0       # Reset navigation to latest session in new mode
         self._fetch_data()
 
     def _toggle_pieces_state(self, screen_name: str):
