@@ -1,29 +1,18 @@
 import logging
-import time
 import math
 import os
 import sqlite3
-import json
+import time
 from datetime import datetime
 
-from PyQt6.QtCore import QTimer, Qt, QPointF, QRectF, QThread, pyqtSignal, QEvent, QPoint
-from PyQt6.QtGui import QPainter, QPainterPath, QLinearGradient, QColor, QBrush, QCursor, QPen
-from PyQt6.QtWidgets import QFrame, QToolTip, QPushButton, QHBoxLayout, QLabel
+from PyQt6.QtCore import QPointF, QRectF, Qt, QThread, QTimer, pyqtSignal
+from PyQt6.QtGui import QBrush, QColor, QCursor, QLinearGradient, QPainter, QPainterPath, QPen
+from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QToolTip
 from win32con import SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE
 
 from core.utils.win32.bindings import SetWindowPos
-
-from core.widgets.base import BaseWidget
 from core.validation.widgets.yasb.pieces_density import PiecesDensityConfig
-
-# Try importing the required packages
-try:
-    import obsws_python as obs
-    HAS_DEPS = True
-except ImportError:
-    HAS_DEPS = False
-    logging.warning(
-        "obsws-python not installed. OBS stream tracking will fail.")
+from core.widgets.base import BaseWidget
 
 
 def parse_color(color_str: str) -> QColor:
@@ -44,74 +33,53 @@ def parse_color(color_str: str) -> QColor:
 
 
 class SessionManager:
-    """Manages the history of session start times, separated by source type."""
+    """Reads canonical livestream and machine intervals from event-logger."""
 
     _MIN_VALID_TIMESTAMP = 1_000_000_000  # ~2001-09-09, rejects epoch-zero
 
-    def __init__(self):
-        self.state_file = os.path.expanduser(
-            "~/.config/yasb/obs_sessions.json")
-        self._data: dict[str, list[float]] = {"obs": [], "boot": []}
-        self._load()
+    def __init__(self, database_path: str):
+        self.database_path = os.path.expandvars(os.path.expanduser(database_path))
 
-    def _load(self):
+    def _connect(self) -> sqlite3.Connection:
+        uri_path = self.database_path.replace("\\", "/")
+        return sqlite3.connect(f"file:{uri_path}?mode=ro", uri=True, timeout=2)
+
+    def _intervals(self, use_obs: bool) -> list[tuple[float, float | None]]:
+        if not os.path.exists(self.database_path):
+            return []
         try:
-            if os.path.exists(self.state_file):
-                with open(self.state_file, "r") as f:
-                    raw = json.load(f)
-                if isinstance(raw, dict) and "obs" in raw:
-                    self._data = {"obs": raw.get("obs", []), "boot": raw.get("boot", [])}
-                elif isinstance(raw, list):
-                    # Auto-migrate old flat-array format: discard invalid entries,
-                    # keep all valid ones under "obs" (legacy default)
-                    valid = [t for t in raw if isinstance(t, (int, float)) and t > self._MIN_VALID_TIMESTAMP]
-                    self._data = {"obs": valid, "boot": []}
-                    self._save()
-                    logging.info(f"Migrated {len(valid)} sessions from legacy format")
-        except Exception as e:
-            logging.error(f"Failed to load sessions: {e}")
-            self._data = {"obs": [], "boot": []}
-        self._cleanup()
-
-    def _save(self):
-        try:
-            os.makedirs(os.path.dirname(self.state_file), exist_ok=True)
-            with open(self.state_file, "w") as f:
-                json.dump(self._data, f)
-        except Exception as e:
-            logging.error(f"Failed to save sessions: {e}")
-
-    def _cleanup(self):
-        now = time.time()
-        changed = False
-        for key in ("obs", "boot"):
-            filtered = [s for s in self._data[key] if now - s <= 129600]
-            if len(filtered) != len(self._data[key]):
-                self._data[key] = filtered
-                changed = True
-        if changed:
-            self._save()
+            with self._connect() as conn:
+                if use_obs:
+                    rows = conn.execute(
+                        "select official_start_at_utc_us, official_end_at_utc_us "
+                        "from livestreams order by official_start_at_utc_us"
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        "select boot_at_utc_us, coalesce(shutdown_at_utc_us, shutdown_upper_bound_utc_us) "
+                        "from machine_sessions order by boot_at_utc_us"
+                    ).fetchall()
+            return [
+                (start_us / 1_000_000, end_us / 1_000_000 if end_us else None)
+                for start_us, end_us in rows
+                if start_us and start_us / 1_000_000 > self._MIN_VALID_TIMESTAMP
+            ]
+        except sqlite3.Error as e:
+            logging.error("Failed to read event-logger sessions: %s", e)
+            return []
 
     def get_sessions(self, use_obs: bool) -> list[float]:
-        """Return the session list for the given time source."""
-        return self._data["obs" if use_obs else "boot"]
+        return [start for start, _ in self._intervals(use_obs)]
 
-    def record_start_time(self, start_time: float, use_obs: bool):
-        if start_time <= self._MIN_VALID_TIMESTAMP:
-            return  # Reject epoch-zero and other nonsensical timestamps
-        sessions = self._data["obs" if use_obs else "boot"]
-        if not sessions:
-            sessions.append(start_time)
-            self._save()
-            return
-        last_time = sessions[-1]
-        if abs(start_time - last_time) > 30:
-            sessions.append(start_time)
-            self._save()
+    def get_session_end(self, use_obs: bool, start_time: float) -> float | None:
+        return next(
+            (end for start, end in self._intervals(use_obs) if abs(start - start_time) < 0.001),
+            None,
+        )
 
 
 class ControlsOverlayBase(QFrame):
-    def __init__(self, widget: "PiecesDensityWidget", parent=None):
+    def __init__(self, widget: PiecesDensityWidget, parent=None):
         super().__init__(parent)
         self.widget = widget
         self.setWindowFlags(
@@ -159,7 +127,7 @@ class ControlsOverlayBase(QFrame):
 
 
 class ControlsOverlayLeft(ControlsOverlayBase):
-    def __init__(self, widget: "PiecesDensityWidget", parent=None):
+    def __init__(self, widget: PiecesDensityWidget, parent=None):
         super().__init__(widget, parent)
         self.btn_prev = QPushButton("<")
         self.btn_next = QPushButton(">")
@@ -220,7 +188,7 @@ class ControlsOverlayLeft(ControlsOverlayBase):
 
 
 class ControlsOverlayRight(ControlsOverlayBase):
-    def __init__(self, widget: "PiecesDensityWidget", parent=None):
+    def __init__(self, widget: PiecesDensityWidget, parent=None):
         super().__init__(widget, parent)
         self.btn_prev = QPushButton("<")
         self.btn_next = QPushButton(">")
@@ -277,7 +245,7 @@ class ControlsOverlayRight(ControlsOverlayBase):
 class DensityOverlay(QFrame):
     """The actual floating overlay window that draws the density heatmap."""
 
-    def __init__(self, widget: "PiecesDensityWidget", config: PiecesDensityConfig):
+    def __init__(self, widget: PiecesDensityWidget, config: PiecesDensityConfig):
         super().__init__()
         self.session_end_bound = 0.0
         self.widget = widget
@@ -443,9 +411,8 @@ class FetchWorker(QThread):
     data_fetched = pyqtSignal(list, bool, float, float, str, bool)
 
     def __init__(self, config: PiecesDensityConfig, use_obs_time: bool, known_start_time: float = 0.0, last_streaming_time: float = 0.0, session_override: float = 0.0, force_session: bool = False, session_end_bound: float = 0.0):
-        self.session_end_bound = session_end_bound
         super().__init__()
-        self.session_end_bound = 0.0
+        self.session_end_bound = session_end_bound
         self.config = config
         self.use_obs_time = use_obs_time
         self.known_start_time = known_start_time
@@ -454,105 +421,23 @@ class FetchWorker(QThread):
         self.force_session = force_session
         self._is_running = True
 
-    def _get_obs_time(self) -> tuple[bool, float, float, str]:
-        """Returns (is_streaming, start_time, duration, error_msg)"""
-        obs_client = None
-        try:
-            obs_client = obs.ReqClient(
-                host=self.config.obs_host,
-                port=self.config.obs_port,
-                password=self.config.obs_password,
-                timeout=5
-            )
-            status = obs_client.get_stream_status()
-        except Exception as e:
-            # When OBS is not connected, we keep is_streaming=True with an error message
-            # so the widget stays visible but shows the error.
-            return True, 0.0, 0.0, f"Waiting for OBS Connection ({str(e)})"
-        finally:
-            if obs_client is not None:
-                try:
-                    obs_client.disconnect()
-                except Exception:
-                    pass
-
-        is_streaming = getattr(status, 'output_active', False) or getattr(
-            status, 'output_reconnecting', False)
-        if not is_streaming:
-            return False, 0.0, 0.0, "Waiting for OBS Stream to start..."
-
-        duration_str = getattr(status, 'output_timecode', "")
-        total_duration_sec = 0
-        if duration_str:
-            parts = duration_str.split(':')
-            if len(parts) >= 3:
-                try:
-                    total_duration_sec = int(
-                        parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2].split('.')[0])
-                except ValueError:
-                    pass
-
-        if total_duration_sec > 0:
-            stream_start_time = time.time() - total_duration_sec
-
-            # Prevent 1-2 second jitter caused by OBS integer timecode vs time.time() float
-            if self.known_start_time > 0 and abs(stream_start_time - self.known_start_time) <= 2.0:
-                stream_start_time = self.known_start_time
-        else:
-            stream_start_time = time.time()
-
-        total_duration_sec = time.time() - stream_start_time
-        return True, stream_start_time, total_duration_sec, ""
-
-    def _get_boot_time(self) -> tuple[bool, float, float, str]:
-        """Returns (is_streaming, start_time, duration, error_msg)"""
-        try:
-            import psutil
-            stream_start_time = psutil.boot_time()
-            return True, stream_start_time, time.time() - stream_start_time, ""
-        except Exception as e:
-            return True, 0.0, 0.0, f"Waiting for Boot Time ({str(e)})"
-
     def run(self):
-        if not HAS_DEPS:
-            return
-
         try:
-            # 1. Determine Stream Start Time & Duration based on selected source
-            if self.force_session and self.session_override > 0:
-                is_streaming = True  # Treat forced session as currently live
-                stream_start_time = self.session_override
-                total_duration_sec = time.time() - stream_start_time
-                err = ""
-            else:
-                if self.use_obs_time:
-                    is_streaming, stream_start_time, total_duration_sec, err = self._get_obs_time()
-                else:
-                    is_streaming, stream_start_time, total_duration_sec, err = self._get_boot_time()
-
-                if is_streaming and self.session_override > 0:
-                    # Snapping to known session to prevent OBS drop/reconnect resets
-                    if abs(stream_start_time - self.session_override) < 900:
-                        stream_start_time = self.session_override
-                        total_duration_sec = time.time() - stream_start_time
-
-            if err:
+            # event-logger is the only provider of interval boundaries.
+            if self.session_override <= 0:
                 self.data_fetched.emit(
-                    [], is_streaming, 0.0, 0.0, err, self.use_obs_time)
+                    [], False, 0.0, 0.0,
+                    f"No canonical interval in {self.config.truth_time_db_path}",
+                    self.use_obs_time)
                 return
 
-            if not is_streaming:
-                self.data_fetched.emit([], False, 0.0, "", self.use_obs_time)
-                return
+            stream_start_time = self.session_override
+            interval_end = self.session_end_bound or time.time()
+            total_duration_sec = max(interval_end - stream_start_time, 0.0)
 
             # Honour cancellation request before the SQLite query
             if not self._is_running:
                 return
-
-            # Safeguard: cap maximum duration to 24 hours (86400 seconds)
-            if total_duration_sec > 86400:
-                total_duration_sec = 86400
-                stream_start_time = time.time() - 86400
 
             # 2. Raw Bucket sampling (1 min intervals)
             bucket_interval = 60
@@ -575,7 +460,7 @@ class FetchWorker(QThread):
 
             if not os.path.exists(db_path):
                 self.data_fetched.emit(
-                    [], True, 0.0, f"Pieces DB missing at: {db_path}", self.use_obs_time)
+                    [], True, 0.0, 0.0, f"Pieces DB missing at: {db_path}", self.use_obs_time)
                 return
 
             # Connect in read-only mode
@@ -583,8 +468,10 @@ class FetchWorker(QThread):
             conn = sqlite3.connect(uri, uri=True)
             try:
                 c = conn.cursor()
-                c.execute("SELECT created_at FROM vectors WHERE created_at >= ?", (int(
-                    stream_start_time),))
+                c.execute(
+                    "SELECT created_at FROM vectors WHERE created_at >= ? AND created_at < ?",
+                    (int(stream_start_time), int(interval_end) + 1),
+                )
                 for row in c.fetchall():
                     idx = int((row[0] - stream_start_time) / bucket_interval)
                     if 0 <= idx < num_buckets:
@@ -606,9 +493,9 @@ class FetchWorker(QThread):
                 buckets, True, stream_start_time, total_duration_sec, "", self.use_obs_time)
 
         except Exception as e:
-            logging.error(f"Error fetching Pieces data: {e}")
+            logging.error("Error fetching Pieces data: %s", e)
             self.data_fetched.emit(
-                [], True, 0.0, f"Error: {str(e)}", self.use_obs_time)
+                [], True, 0.0, 0.0, f"Error: {e}", self.use_obs_time)
 
 
 class PiecesDensityWidget(BaseWidget):
@@ -625,14 +512,10 @@ class PiecesDensityWidget(BaseWidget):
         super().__init__("pieces-density-widget")
         self.config = config
 
-        if not HAS_DEPS:
-            self.hide()
-            return
-
         self._is_active = True
         self._use_obs_time = True
         self._overlay = DensityOverlay(self, self.config)
-        self._session_manager = SessionManager()
+        self._session_manager = SessionManager(config.truth_time_db_path)
         self._session_offset = 0
         self._controls_left = ControlsOverlayLeft(self)
         self._controls_right = ControlsOverlayRight(self)
@@ -758,10 +641,10 @@ class PiecesDensityWidget(BaseWidget):
             real_idx = len(sessions) - 1 + self._session_offset
             if 0 <= real_idx < len(sessions):
                 override_time = sessions[real_idx]
-                if real_idx + 1 < len(sessions):
-                    end_bound = sessions[real_idx + 1]
+                end_bound = self._session_manager.get_session_end(
+                    self._use_obs_time, override_time) or 0.0
 
-        force_session = self._session_offset < 0
+        force_session = override_time > 0
 
         self._worker = FetchWorker(self.config, self._use_obs_time, self._stream_start_time,
                                    self._last_streaming_time, override_time, force_session, end_bound)
@@ -779,9 +662,6 @@ class PiecesDensityWidget(BaseWidget):
         # The next timer tick will re-fetch with the correct source.
         if was_obs_time != self._use_obs_time:
             return
-
-        if is_streaming and self._session_offset == 0:
-            self._session_manager.record_start_time(start_time, was_obs_time)
 
         self._controls_left.update_buttons()
         self._controls_right.update_buttons(total_duration_sec)

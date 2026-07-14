@@ -1,5 +1,3 @@
-from pydantic import Field
-
 from core.validation.widgets.base_model import (
     CallbacksConfig,
     CustomBaseModel,
@@ -14,8 +12,11 @@ class PiecesDensityConfig(CustomBaseModel):
     class_name: str = ""
     # Data Polling
     poll_interval_sec: int = 10
-    
-    # OBS WebSocket configuration
+
+    # Canonical interval provider
+    truth_time_db_path: str = r"E:\MCP\Projects\event-logger\data\truth_time.sqlite3"
+
+    # Retained for backward-compatible user configurations; no longer queried.
     obs_host: str = "localhost"
     obs_port: int = 4455
     obs_password: str = ""
