@@ -1,5 +1,7 @@
 # Media Widget Options
 
+A player control widget that shows you what song or video is currently playing. It displays album art, has inline media buttons (play, pause, skip), scrolls long titles, and opens a popup menu with a progress bar and player controls.
+
 | Option                                | Type      | Default                                                   | Description                                                         |
 | -------------------------             | --------- | ---------                                                 | -------------------------------------                               |
 | `label`                               | string    | `"{artist}{s}{title}"`                                    | The main label format for the media widget.                         |
@@ -232,7 +234,6 @@ media:
 .media-menu .artist {}
 .media-menu .source {}
 .media-menu .btn.play {}
-.media-menu .btn.pause {}
 .media-menu .btn.prev {}
 .media-menu .btn.next {}
 .media-menu .btn.disabled {}

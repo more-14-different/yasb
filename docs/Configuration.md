@@ -45,6 +45,7 @@ Valid options are:
 | `debug`      | boolean  | `false`   | Enable debug mode to see more logs |
 | `update_check`      | boolean  | `true`   | Enable automatic update check. This works only if the application is installed. |
 | `show_systray`      | boolean  | `true`   | Show or hide the YASB system tray icon. |
+| `system_colors`     | boolean  | `false`  | Enable automatic generation of CSS variables from Windows theme colors. |
 | `tooltip`           | object   | [See below](#tooltip-configuration) | Global tooltip configuration. |
 | `komorebi`      | object  | [See below](#komorebi-settings-for-tray-menu)   | Komorebi configuration for tray menu. |
 | `glazewm`      | object  | [See below](#glazewm-settings-for-tray-menu)   | Glazewm configuration for tray menu. |
@@ -112,6 +113,7 @@ tooltip:
 | `enabled`         | boolean | `true`        | Whether the status bar is enabled. |
 | `screens`         | list    | `['*']`       | The screens on which the status bar should be displayed. Use `['*']` for all unassigned screens, `['**']` for all screens (including assigned), or specify screen names like `['DELL P2419H (1)']`. |
 | `class_name`      | string  | `"yasb-bar"`  | The CSS class name for the status bar. |
+| `context_menu`    | boolean | `true`        | Whether to enable the right-click context menu on the status bar. |
 | `alignment`       | object  | [See below](#bar-alignment) | The alignment settings for the status bar. |
 | `blur_effect`     | object  | [See below](#blur-effect-configuration) | The blur effect settings for the status bar. |
 | `window_flags`    | object  | [See below](#window-flags-configuration) | The window flags for the status bar. |
@@ -133,6 +135,15 @@ tooltip:
 |-------------------|---------|---------------|-------------|
 | `position`        | string  | `"top"`       | The position of the status bar, can be `"top"` or `"bottom"` |
 | `align`          | string |  `"center"` | The alignment of the status bar, can be `"left"`, `"center"`, or `"right"` |
+
+### Animation Configuration
+Customize how the status bar transitions when shown or hidden:
+
+| Option     | Type    | Default   | Description |
+|------------|---------|-----------|-------------|
+| `enabled`  | boolean | `true`    | Whether to animate the bar when showing or hiding it. |
+| `duration` | integer | `500`     | The animation duration in milliseconds. |
+| `type`     | string  | `"slide"` | The style of animation to play. Can be `"slide"` (slides from the screen edge) or `"fade"` (fades in/out). |
 
 
 ### Blur Effect Configuration

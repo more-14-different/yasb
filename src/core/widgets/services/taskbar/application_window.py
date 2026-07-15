@@ -1,5 +1,5 @@
 import ctypes
-import logging
+from ctypes import wintypes
 
 import win32api
 import win32con
@@ -8,8 +8,39 @@ import win32gui
 from core.utils.win32.bindings import DwmGetWindowAttribute, IsWindowEnabled
 from core.utils.win32.utils import get_process_info
 
-logger = logging.getLogger("application_window")
-logger.setLevel(logging.WARNING)
+
+class GUID(ctypes.Structure):
+    _fields_ = [
+        ("Data1", ctypes.c_ulong),
+        ("Data2", ctypes.c_ushort),
+        ("Data3", ctypes.c_ushort),
+        ("Data4", ctypes.c_ubyte * 8),
+    ]
+
+
+ole32 = ctypes.windll.ole32
+
+ole32.CoCreateInstance.argtypes = [
+    ctypes.POINTER(GUID),
+    ctypes.c_void_p,
+    ctypes.c_ulong,
+    ctypes.POINTER(GUID),
+    ctypes.POINTER(ctypes.c_void_p),
+]
+ole32.CoCreateInstance.restype = ctypes.c_long
+
+
+# CLSID_VirtualDesktopManager = {aa509086-5ca9-4c25-8f95-589d3c07b48a}
+CLSID_VirtualDesktopManager = GUID(
+    0xAA509086, 0x5CA9, 0x4C25, (ctypes.c_ubyte * 8)(0x8F, 0x95, 0x58, 0x9D, 0x3C, 0x07, 0xB4, 0x8A)
+)
+# IID_IVirtualDesktopManager = {a5cd92ff-29be-454c-8d04-d82879fb3f1b}
+IID_IVirtualDesktopManager = GUID(
+    0xA5CD92FF, 0x29BE, 0x454C, (ctypes.c_ubyte * 8)(0x8D, 0x04, 0xD8, 0x28, 0x79, 0xFB, 0x3F, 0x1B)
+)
+
+GetWindowDesktopId_Proto = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_void_p, wintypes.HWND, ctypes.POINTER(GUID))
+Release_Proto = ctypes.WINFUNCTYPE(ctypes.c_ulong, ctypes.c_void_p)
 
 
 class ApplicationWindow:
@@ -18,55 +49,47 @@ class ApplicationWindow:
     Holds identity (hwnd) and metadata used for filtering and UI state.
     """
 
-    def __init__(
-        self, hwnd, excluded_classes=None, ignored_processes=None, ignored_titles=None, strict_filtering=False
-    ):
+    _vdm_ptr = None
+    _vdm_get_id_func = None
+
+    DEFAULT_IGNORED_PROCESSES = {"SearchHost.exe"}
+
+    DEFAULT_IGNORED_CLASSES = {
+        "Progman",
+        "Shell_TrayWnd",
+        "Shell_SecondaryTrayWnd",
+        "DV2ControlHost",
+        "Windows.UI.Composition.DesktopWindowContentBridge",
+        "ForegroundStaging",
+        "ApplicationManager_DesktopShellWindow",
+        "WorkerW",
+        "Button",  # Windows 10/11 notification buttons
+        "Windows.UI.Input.InputSite.WindowClass",
+        "Windows.Internal.Shell.TabProxyWindow",
+        "Microsoft-Windows-Sts-ComponentHost-Elevated",
+        "SysListView32",
+        "XamlExplorerHostIslandWindow_WASDK",
+        "Microsoft.UI.Content.PopupWindowSiteBridge",
+        "Microsoft.UI.Content.DesktopChildSiteBridge",
+        "SysHeader32",
+        "#32768",
+        "msctls_statusbar32",
+        "DirectUIHWND",
+        "SHELLDLL_DefView",
+    }
+
+    def __init__(self, hwnd):
         self.hwnd = hwnd
         self.title = self._get_title()
         self.class_name = self._get_class_name()
         self.is_active = False
         self.is_flashing = False
-        self._strict_filtering = strict_filtering
-        # Store exclusion lists (combine with defaults if provided)
-        self.excluded_classes = set(excluded_classes) if excluded_classes else set()
-        self.ignored_processes = set(ignored_processes) if ignored_processes else set()
-        self.ignored_titles = set(ignored_titles) if ignored_titles else set()
 
         self.process_name = None
         self.process_pid = 0
         self.process_path = None
 
         self._refresh_process_info()
-
-        # Default ignored processes
-        default_ignored_processes = {"SearchHost.exe"}
-        self.ignored_processes.update(default_ignored_processes)
-
-        # Default system classes to exclusions
-        default_system_classes = {
-            "Progman",
-            "Shell_TrayWnd",
-            "Shell_SecondaryTrayWnd",
-            "DV2ControlHost",
-            "Windows.UI.Composition.DesktopWindowContentBridge",
-            "ForegroundStaging",
-            "ApplicationManager_DesktopShellWindow",
-            "WorkerW",
-            "Button",  # Windows 10/11 notification buttons
-            "Windows.UI.Input.InputSite.WindowClass",
-            "Windows.Internal.Shell.TabProxyWindow",
-            "Microsoft-Windows-Sts-ComponentHost-Elevated",
-            "SysListView32",
-            "XamlExplorerHostIslandWindow_WASDK",
-            "Microsoft.UI.Content.PopupWindowSiteBridge",
-            "Microsoft.UI.Content.DesktopChildSiteBridge",
-            "SysHeader32",
-            "#32768",
-            "msctls_statusbar32",
-            "DirectUIHWND",
-            "SHELLDLL_DefView",
-        }
-        self.excluded_classes.update(default_system_classes)
 
     def as_dict(self):
         # Get monitor handle for this window
@@ -90,6 +113,7 @@ class ApplicationWindow:
             "process_name": self.process_name,
             "process_pid": self.process_pid,
             "process_path": self.process_path,
+            "can_minimize": self.can_minimize(),
         }
 
     def _refresh_process_info(self) -> None:
@@ -189,10 +213,56 @@ class ApplicationWindow:
                 and ((not is_noactivate) or is_appwindow)
                 and (not is_toolwindow)
                 and (not is_deleted)
-                and ((not self._strict_filtering) or self.can_minimize())
             )
         except Exception:
             return False
+
+    def _is_ghost_uwp_app(self) -> bool:
+        """
+        Check if the UWP app is a pre-launched (background ghost).
+        Ghost apps are typically cloaked and NOT assigned to any Virtual Desktop.
+        Real apps on other desktops are cloaked, but ARE assigned to a Virtual Desktop.
+        Ghost apps are the ones that are slow, and Windows has to preload them, like Settings.
+        Note: If we find a real solution for filtering out these apps, we can remove this workaround.
+        """
+        if self.process_name != "ApplicationFrameHost.exe":
+            return False
+
+        if not self._is_cloaked():
+            return False
+
+        try:
+            # Initialize the COM object globally on the first call
+            if ApplicationWindow._vdm_ptr is None:
+                ptr = ctypes.c_void_p()
+                hr = ole32.CoCreateInstance(
+                    ctypes.byref(CLSID_VirtualDesktopManager),
+                    None,
+                    1,
+                    ctypes.byref(IID_IVirtualDesktopManager),
+                    ctypes.byref(ptr),
+                )
+                if hr != 0:
+                    return True
+
+                vtable = ctypes.cast(ptr, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p)))
+                get_id_addr = vtable[0][4]
+                ApplicationWindow._vdm_get_id_func = GetWindowDesktopId_Proto(get_id_addr)
+                ApplicationWindow._vdm_ptr = ptr
+
+            desktop_id = GUID()
+            hr = ApplicationWindow._vdm_get_id_func(
+                ApplicationWindow._vdm_ptr, int(self.hwnd), ctypes.byref(desktop_id)
+            )
+
+            # Binary check for empty GUID (Null Desktop ID)
+            if hr != 0 or bytes(desktop_id) == b"\x00" * 16:
+                return True
+
+            return False
+
+        except Exception:
+            return True
 
     def can_minimize(self) -> bool:
         """Return True if the window has a minimize box and is enabled."""
@@ -219,9 +289,6 @@ class ApplicationWindow:
             if not (self.title or "").strip():
                 return False
 
-            # Cloaked UWP windows should not appear
-            if self._is_cloaked():
-                return False
             # Immersive shell windows should not appear
             if self._is_immersive_shell_window():
                 return False
@@ -229,13 +296,13 @@ class ApplicationWindow:
             if not self.can_add_to_taskbar():
                 return False
 
-            if self.title and self.title in self.ignored_titles:
+            if self.process_name and self.process_name in self.DEFAULT_IGNORED_PROCESSES:
                 return False
 
-            if self.class_name in self.excluded_classes:
+            if self.class_name in self.DEFAULT_IGNORED_CLASSES:
                 return False
 
-            if self.process_name and self.process_name in self.ignored_processes:
+            if self._is_ghost_uwp_app():
                 return False
 
             return True

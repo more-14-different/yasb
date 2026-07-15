@@ -359,10 +359,10 @@ class AutoHideManager(QObject):
         for w in QApplication.topLevelWidgets():
             if w is self.bar_widget or w is self._detection_zone or not w.isVisible():
                 continue
-            # Child of bar (parent chain intact) — e.g. SystrayPopup after losing focus
+            # Child of bar (parent chain intact) - e.g. SystrayPopup after losing focus
             if self._is_child_of_bar(w):
                 return True
-            # Cursor is over it (parent chain severed) — e.g. ThumbnailHost
+            # Cursor is over it (parent chain severed) - e.g. ThumbnailHost
             if w.geometry().contains(cursor_pos):
                 return True
         return False
@@ -818,6 +818,7 @@ class BarContextMenu:
 
     def show(self, position):
         self._menu = QMenu(self.parent)
+        self._menu.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         apply_qmenu_style(self._menu)
         self._menu.setProperty("class", "context-menu dark" if GlobalState.is_dark() else "context-menu")
         self._menu.aboutToHide.connect(self._on_menu_about_to_hide)

@@ -66,7 +66,7 @@ def get_windows_host_arch():
     except AttributeError:
         pass  # API not available
 
-    # Fallback: trust platform.machine() — old enough Windows = definitely x64
+    # Fallback: trust platform.machine() - old enough Windows = definitely x64
     return platform.machine()
 
 
@@ -367,7 +367,11 @@ def apply_qmenu_style(qwidget: QWidget):
         from core.utils.win32.backdrop import enable_blur
 
         # First we need to set Fusion style to remove shadow artifacts
-        qwidget.setStyle(QStyleFactory.create("Fusion"))
+        # Keep a reference so Python GC doesn't destroy the C++ QStyle
+        # while Qt still holds a raw pointer to it (prevents DEP crash).
+        style = QStyleFactory.create("Fusion")
+        qwidget.setStyle(style)
+        qwidget._fusion_style_ref = style
 
         def apply_blur():
             try:
