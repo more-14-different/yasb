@@ -3,7 +3,8 @@ $ErrorActionPreference = "Stop"
 $repoRoot = $PSScriptRoot
 $venvPython = Join-Path $repoRoot ".venv\Scripts\python.exe"
 $mainScript = Join-Path $repoRoot "src\main.py"
-$env:YASB_CONFIG_HOME = "D:\C2D\dotfiles\yasb-dev"
+$configGuard = Join-Path $repoRoot "assert-dev-config.ps1"
+$env:YASB_CONFIG_HOME = & $configGuard
 
 if (-not (Test-Path $venvPython)) {
     throw "Missing venv python: $venvPython"

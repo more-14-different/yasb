@@ -1,7 +1,9 @@
 # Repository Notes
 
 ## Runtime Layout
-- The user keeps active YASB config in `C:\Users\Xcz\.config\yasb`, which is a junction to `D:\C2D\dotfiles\yasb`.
+- Original/Scoop YASB config: `C:\Users\Xcz\.config\yasb\config.yaml`; `C:\Users\Xcz\.config\yasb` is a junction to `D:\C2D\dotfiles\yasb`.
+- Fork/dev YASB config: `D:\C2D\dotfiles\yasb-dev\config.yaml`; this is the config that mounts `pieces_density` and `pieces_toggle`.
+- Fork launch scripts validate that `D:\C2D\dotfiles\yasb-dev\.yasb-config-role` contains `yasb-fork`, then set `YASB_CONFIG_HOME`. When auditing the fork, do not infer its active widgets from the original config under `C:\Users\Xcz\.config\yasb`.
 - Do not overwrite config or theme files when working in this repo unless explicitly asked.
 - Original Scoop YASB remains available at `E:\Scoop\apps\yasb\current\yasb.exe`.
 - Dev build entrypoint is `E:\MCP\Projects\yasb-fork\src\dist\yasb.exe`.
