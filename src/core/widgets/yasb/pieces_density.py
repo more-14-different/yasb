@@ -49,7 +49,8 @@ def ruler_label_baseline(
     collision_tops = [exclusion.top() for exclusion in exclusions if exclusion.intersects(label_rect)]
     if not collision_tops:
         return normal_baseline
-    return min(normal_baseline, min(collision_tops) - font_descent - 3)
+    collision_baseline = min(collision_tops) - font_descent - 3
+    return min(normal_baseline, collision_baseline + 10)
 
 
 def resolve_truth_time_db_path(configured_path: str) -> str:
