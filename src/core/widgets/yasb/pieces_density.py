@@ -13,6 +13,7 @@ from win32con import SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE
 from core.utils.win32.bindings import SetWindowPos
 from core.validation.widgets.yasb.pieces_density import PiecesDensityConfig
 from core.widgets.base import BaseWidget
+from core.widgets.yasb.pieces_time_source import TimeSource
 
 
 def parse_color(color_str: str) -> QColor:
@@ -44,21 +45,12 @@ class SessionManager:
         uri_path = self.database_path.replace("\\", "/")
         return sqlite3.connect(f"file:{uri_path}?mode=ro", uri=True, timeout=2)
 
-    def _intervals(self, use_obs: bool) -> list[tuple[float, float | None]]:
+    def _query_intervals(self, sql: str) -> list[tuple[float, float | None]]:
         if not os.path.exists(self.database_path):
             return []
         try:
             with self._connect() as conn:
-                if use_obs:
-                    rows = conn.execute(
-                        "select official_start_at_utc_us, official_end_at_utc_us "
-                        "from livestreams order by official_start_at_utc_us"
-                    ).fetchall()
-                else:
-                    rows = conn.execute(
-                        "select boot_at_utc_us, coalesce(shutdown_at_utc_us, shutdown_upper_bound_utc_us) "
-                        "from machine_sessions order by boot_at_utc_us"
-                    ).fetchall()
+                rows = conn.execute(sql).fetchall()
             return [
                 (start_us / 1_000_000, end_us / 1_000_000 if end_us else None)
                 for start_us, end_us in rows
@@ -68,12 +60,32 @@ class SessionManager:
             logging.error("Failed to read event-logger sessions: %s", e)
             return []
 
-    def get_sessions(self, use_obs: bool) -> list[float]:
-        return [start for start, _ in self._intervals(use_obs)]
+    def livestream_intervals(self) -> list[tuple[float, float | None]]:
+        return self._query_intervals(
+            "select official_start_at_utc_us, official_end_at_utc_us "
+            "from livestreams order by official_start_at_utc_us"
+        )
 
-    def get_session_end(self, use_obs: bool, start_time: float) -> float | None:
+    def machine_intervals(self) -> list[tuple[float, float | None]]:
+        return self._query_intervals(
+            "select boot_at_utc_us, "
+            "coalesce(shutdown_at_utc_us, shutdown_upper_bound_utc_us) "
+            "from machine_sessions order by boot_at_utc_us"
+        )
+
+    def intervals(self, source: TimeSource) -> list[tuple[float, float | None]]:
+        if source is TimeSource.YOUTUBE_LIVESTREAM:
+            return self.livestream_intervals()
+        if source is TimeSource.MACHINE_SESSION:
+            return self.machine_intervals()
+        raise ValueError(f"Unsupported Pieces time source: {source}")
+
+    def get_sessions(self, source: TimeSource) -> list[float]:
+        return [start for start, _ in self.intervals(source)]
+
+    def get_session_end(self, source: TimeSource, start_time: float) -> float | None:
         return next(
-            (end for start, end in self._intervals(use_obs) if abs(start - start_time) < 0.001),
+            (end for start, end in self.intervals(source) if abs(start - start_time) < 0.001),
             None,
         )
 
@@ -153,7 +165,7 @@ class ControlsOverlayLeft(ControlsOverlayBase):
         self.update_buttons()
 
     def update_buttons(self):
-        sessions = self.widget._session_manager.get_sessions(self.widget._use_obs_time)
+        sessions = self.widget._session_manager.get_sessions(self.widget._time_source)
         idx = self.widget._session_offset
         if not sessions:
             self.lbl_date.hide()
@@ -214,7 +226,7 @@ class ControlsOverlayRight(ControlsOverlayBase):
         self.update_buttons(0.0)
 
     def update_buttons(self, duration_sec: float):
-        sessions = self.widget._session_manager.get_sessions(self.widget._use_obs_time)
+        sessions = self.widget._session_manager.get_sessions(self.widget._time_source)
         idx = self.widget._session_offset
         if not sessions:
             self.lbl_days.hide()
@@ -407,14 +419,14 @@ class DensityOverlay(QFrame):
 
 
 class FetchWorker(QThread):
-    # buckets, is_streaming, start_time, error_msg, was_obs_time
-    data_fetched = pyqtSignal(list, bool, float, float, str, bool)
+    # buckets, has_interval, start_time, duration, error, source
+    data_fetched = pyqtSignal(list, bool, float, float, str, str)
 
-    def __init__(self, config: PiecesDensityConfig, use_obs_time: bool, known_start_time: float = 0.0, last_streaming_time: float = 0.0, session_override: float = 0.0, force_session: bool = False, session_end_bound: float = 0.0):
+    def __init__(self, config: PiecesDensityConfig, time_source: TimeSource, known_start_time: float = 0.0, last_streaming_time: float = 0.0, session_override: float = 0.0, force_session: bool = False, session_end_bound: float = 0.0):
         super().__init__()
         self.session_end_bound = session_end_bound
         self.config = config
-        self.use_obs_time = use_obs_time
+        self.time_source = time_source
         self.known_start_time = known_start_time
         self.last_streaming_time = last_streaming_time
         self.session_override = session_override
@@ -428,7 +440,7 @@ class FetchWorker(QThread):
                 self.data_fetched.emit(
                     [], False, 0.0, 0.0,
                     f"No canonical interval in {self.config.truth_time_db_path}",
-                    self.use_obs_time)
+                    self.time_source.value)
                 return
 
             stream_start_time = self.session_override
@@ -460,7 +472,7 @@ class FetchWorker(QThread):
 
             if not os.path.exists(db_path):
                 self.data_fetched.emit(
-                    [], True, 0.0, 0.0, f"Pieces DB missing at: {db_path}", self.use_obs_time)
+                    [], True, 0.0, 0.0, f"Pieces DB missing at: {db_path}", self.time_source.value)
                 return
 
             # Connect in read-only mode
@@ -485,17 +497,16 @@ class FetchWorker(QThread):
                 for i in range(num_buckets)
             ]
 
-            # 5. [REMOVED] Do not trim leading zero-activity buckets.
-            # The UI must strictly align with the OBS duration so that the heatmap's time axis
-            # maps perfectly to the video playback time from the viewer's perspective.
+            # Keep leading zero-activity buckets so the heatmap remains aligned with the
+            # canonical interval selected from event-logger.
 
             self.data_fetched.emit(
-                buckets, True, stream_start_time, total_duration_sec, "", self.use_obs_time)
+                buckets, True, stream_start_time, total_duration_sec, "", self.time_source.value)
 
         except Exception as e:
             logging.error("Error fetching Pieces data: %s", e)
             self.data_fetched.emit(
-                [], True, 0.0, 0.0, f"Error: {e}", self.use_obs_time)
+                [], True, 0.0, 0.0, f"Error: {e}", self.time_source.value)
 
 
 class PiecesDensityWidget(BaseWidget):
@@ -506,14 +517,14 @@ class PiecesDensityWidget(BaseWidget):
     validation_schema = PiecesDensityConfig
 
     _toggle_req_signal = pyqtSignal(str)
-    _time_source_changed_signal = pyqtSignal(bool, str)
+    _time_source_changed_signal = pyqtSignal(str, str)
 
     def __init__(self, config: PiecesDensityConfig):
         super().__init__("pieces-density-widget")
         self.config = config
 
         self._is_active = True
-        self._use_obs_time = True
+        self._time_source = TimeSource.YOUTUBE_LIVESTREAM
         self._overlay = DensityOverlay(self, self.config)
         self._session_manager = SessionManager(config.truth_time_db_path)
         self._session_offset = 0
@@ -636,17 +647,17 @@ class PiecesDensityWidget(BaseWidget):
 
         override_time = 0.0
         end_bound = 0.0
-        sessions = self._session_manager.get_sessions(self._use_obs_time)
+        sessions = self._session_manager.get_sessions(self._time_source)
         if sessions:
             real_idx = len(sessions) - 1 + self._session_offset
             if 0 <= real_idx < len(sessions):
                 override_time = sessions[real_idx]
                 end_bound = self._session_manager.get_session_end(
-                    self._use_obs_time, override_time) or 0.0
+                    self._time_source, override_time) or 0.0
 
         force_session = override_time > 0
 
-        self._worker = FetchWorker(self.config, self._use_obs_time, self._stream_start_time,
+        self._worker = FetchWorker(self.config, self._time_source, self._stream_start_time,
                                    self._last_streaming_time, override_time, force_session, end_bound)
         self._worker.data_fetched.connect(self._on_data_fetched)
         self._worker.finished.connect(self._worker.deleteLater)
@@ -655,12 +666,12 @@ class PiecesDensityWidget(BaseWidget):
         self._worker.finished.connect(lambda: setattr(self, "_worker", None))
         self._worker.start()
 
-    def _on_data_fetched(self, buckets: list[int], is_streaming: bool, start_time: float, total_duration_sec: float, error_msg: str, was_obs_time: bool):
+    def _on_data_fetched(self, buckets: list[int], is_streaming: bool, start_time: float, total_duration_sec: float, error_msg: str, source_value: str):
         if not getattr(self, "_is_active", True):
             return
         # Discard stale result: time source was toggled while the worker was running.
         # The next timer tick will re-fetch with the correct source.
-        if was_obs_time != self._use_obs_time:
+        if TimeSource.parse(source_value) is not self._time_source:
             return
 
         self._controls_left.update_buttons()
@@ -731,7 +742,7 @@ class PiecesDensityWidget(BaseWidget):
             self._controls_right.show()
 
     def _prev_session(self):
-        sessions = self._session_manager.get_sessions(self._use_obs_time)
+        sessions = self._session_manager.get_sessions(self._time_source)
         if not sessions:
             return
         max_prev = -(len(sessions) - 1)
@@ -748,10 +759,10 @@ class PiecesDensityWidget(BaseWidget):
             self._controls_right.update_buttons(0.0)
             self._fetch_data()
 
-    def _on_time_source_changed(self, use_obs: bool, screen_name: str):
+    def _on_time_source_changed(self, source_value: str, screen_name: str):
         if screen_name != self.screen_name:
             return
-        self._use_obs_time = use_obs
+        self._time_source = TimeSource.parse(source_value)
         self._stream_start_time = 0.0  # Reset known start time when switching modes
         self._session_offset = 0       # Reset navigation to latest session in new mode
         self._fetch_data()

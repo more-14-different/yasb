@@ -16,11 +16,6 @@ class PiecesDensityConfig(CustomBaseModel):
     # Canonical interval provider
     truth_time_db_path: str = r"E:\MCP\Projects\event-logger\data\truth_time.sqlite3"
 
-    # Retained for backward-compatible user configurations; no longer queried.
-    obs_host: str = "localhost"
-    obs_port: int = 4455
-    obs_password: str = ""
-
     # Appearance
     widget_height: int = 100 # Can match the screenshot
     

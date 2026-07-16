@@ -1,11 +1,12 @@
 from collections.abc import Callable
 
-from PyQt6.QtCore import pyqtSignal, Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QMouseEvent, QPainter
-from PyQt6.QtWidgets import QVBoxLayout, QHBoxLayout, QFrame, QLabel
+from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout
+
 from core.validation.widgets.yasb.pieces_toggle import PiecesToggleConfig
 from core.widgets.base import BaseWidget
-import re
+from core.widgets.yasb.pieces_time_source import TimeSource
 
 
 class _ClickableLayerLabel(QLabel):
@@ -47,7 +48,7 @@ class PiecesToggleWidget(BaseWidget):
         super().__init__(class_name=f"pieces-toggle-widget {config.class_name}")
         self.config = config
         self._is_on = True
-        self._time_is_on = True # True = OBS time, False = Boot time
+        self._time_source = TimeSource.YOUTUBE_LIVESTREAM
         
         # Override the base horizontal layout with a vertical layout
         self._widget_container_layout = QVBoxLayout()
@@ -154,8 +155,16 @@ class PiecesToggleWidget(BaseWidget):
             self._run_callback(self.callback_right)
 
     def _toggle_time_source(self):
-        self._time_is_on = not self._time_is_on
-        self._event_service.emit_event("pieces_time_source_changed", self._time_is_on, self.screen_name)
+        self._time_source = (
+            TimeSource.MACHINE_SESSION
+            if self._time_source is TimeSource.YOUTUBE_LIVESTREAM
+            else TimeSource.YOUTUBE_LIVESTREAM
+        )
+        self._event_service.emit_event(
+            "pieces_time_source_changed",
+            self._time_source.value,
+            self.screen_name,
+        )
         self._update_labels()
 
     def _toggle_pieces(self):
@@ -170,10 +179,11 @@ class PiecesToggleWidget(BaseWidget):
         self._update_labels()
         
     def _update_labels(self):
+        uses_livestream = self._time_source is TimeSource.YOUTUBE_LIVESTREAM
         for widget in self._time_widgets:
-            widget.setVisible(self._time_is_on)
+            widget.setVisible(uses_livestream)
         for widget in self._time_widgets_alt:
-            widget.setVisible(not self._time_is_on)
+            widget.setVisible(not uses_livestream)
             
         for widget in self._pieces_widgets:
             widget.setVisible(self._is_on)
