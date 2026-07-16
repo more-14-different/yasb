@@ -4,12 +4,15 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from PyQt6.QtCore import QRectF
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from core.widgets.yasb.pieces_density import (  # noqa: E402
     PiecesDensityWidget,
     SessionManager,
+    ruler_label_baseline,
     selected_session_index,
 )
 
@@ -111,6 +114,20 @@ class RefreshTests(unittest.TestCase):
 
         self.assertTrue(widget._worker.cancelled)
         self.assertTrue(widget._refresh_pending)
+
+
+class RulerLabelTests(unittest.TestCase):
+    def test_label_stays_on_normal_baseline_without_collision(self):
+        label = QRectF(200, 60, 35, 12)
+        exclusions = [QRectF(0, 55, 100, 25)]
+
+        self.assertEqual(ruler_label_baseline(73, label, exclusions, 3), 73)
+
+    def test_only_colliding_label_baseline_moves_above_control(self):
+        label = QRectF(70, 60, 35, 12)
+        exclusions = [QRectF(0, 55, 100, 25)]
+
+        self.assertEqual(ruler_label_baseline(73, label, exclusions, 3), 49)
 
 
 if __name__ == "__main__":

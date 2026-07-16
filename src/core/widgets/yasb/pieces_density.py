@@ -40,6 +40,18 @@ def selected_session_index(sessions: list[float], selected_start: float | None) 
     )
 
 
+def ruler_label_baseline(
+    normal_baseline: float,
+    label_rect: QRectF,
+    exclusions: list[QRectF],
+    font_descent: float,
+) -> float:
+    collision_tops = [exclusion.top() for exclusion in exclusions if exclusion.intersects(label_rect)]
+    if not collision_tops:
+        return normal_baseline
+    return min(normal_baseline, min(collision_tops) - font_descent - 3)
+
+
 def resolve_truth_time_db_path(configured_path: str) -> str:
     """Resolve an explicit path or discover a nearby event-logger database."""
     configured_path = configured_path.strip()
@@ -374,6 +386,21 @@ class DensityOverlay(QFrame):
         self.error_msg = ""
         self.hover_idx = None
 
+    def _control_exclusion_rects(self) -> list[QRectF]:
+        overlay_geometry = self.geometry()
+        exclusions = []
+        for control in (self.widget._controls_left, self.widget._controls_right):
+            geometry = control.geometry()
+            exclusion = QRectF(
+                geometry.x() - overlay_geometry.x(),
+                geometry.y() - overlay_geometry.y(),
+                geometry.width(),
+                geometry.height(),
+            )
+            exclusion.adjust(-4, -4, 4, 4)
+            exclusions.append(exclusion)
+        return exclusions
+
     def paintEvent(self, event):
         if not self.is_streaming:
             return
@@ -472,6 +499,8 @@ class DensityOverlay(QFrame):
             font = painter.font()
             font.setPointSize(8)
             painter.setFont(font)
+            font_metrics = painter.fontMetrics()
+            exclusions = self._control_exclusion_rects()
 
             for i in range(n):
                 ts = self.stream_start_time + i * 60
@@ -496,9 +525,25 @@ class DensityOverlay(QFrame):
 
                     x = i * step_x
                     painter.drawLine(QPointF(x, h), QPointF(x, h - 10))
+                    label = dt.strftime("%H:00")
+                    label_width = font_metrics.horizontalAdvance(label)
+                    label_x = min(max(x + 2, 2), max(w - label_width - 2, 2))
+                    normal_baseline = h - 12
+                    label_rect = QRectF(
+                        label_x,
+                        normal_baseline - font_metrics.ascent(),
+                        label_width,
+                        font_metrics.height(),
+                    )
+                    label_baseline = ruler_label_baseline(
+                        normal_baseline,
+                        label_rect,
+                        exclusions,
+                        font_metrics.descent(),
+                    )
                     painter.setPen(
                         QColor(255, 255, 255, 255 if is_hovered else 200))
-                    painter.drawText(QPointF(x + 2, h - 12), dt.strftime("%H:00"))
+                    painter.drawText(QPointF(label_x, label_baseline), label)
                 elif is_minor_tick:
                     pen_minor = QPen(
                         QColor(255, 255, 255, 200 if is_hovered else 60))
