@@ -18,6 +18,26 @@ from core.widgets.base import BaseWidget
 from core.widgets.yasb.pieces_time_source import TimeSource
 
 TRUTH_TIME_DB_FILENAME = Path("data") / "truth_time.sqlite3"
+TRUTH_TIME_MIN_SCHEMA_VERSION = 2
+TRUTH_TIME_REQUIRED_COLUMNS = {
+    "livestreams": {"official_start_at_utc_us", "official_end_at_utc_us"},
+    "machine_sessions": {"boot_at_utc_us", "shutdown_at_utc_us", "shutdown_upper_bound_utc_us"},
+}
+
+
+class TruthTimeSchemaError(RuntimeError):
+    pass
+
+
+def selected_session_index(sessions: list[float], selected_start: float | None) -> int | None:
+    if not sessions:
+        return None
+    if selected_start is None:
+        return len(sessions) - 1
+    return next(
+        (index for index, start in enumerate(sessions) if abs(start - selected_start) < 0.001),
+        len(sessions) - 1,
+    )
 
 
 def resolve_truth_time_db_path(configured_path: str) -> str:
@@ -76,26 +96,60 @@ class SessionManager:
 
     def __init__(self, database_path: str):
         self.database_path = resolve_truth_time_db_path(database_path)
+        self.last_error = ""
+        self._schema_validated = False
         logging.info("Pieces truth-time database: %s", self.database_path)
 
     def _connect(self) -> sqlite3.Connection:
         uri_path = self.database_path.replace("\\", "/")
         return sqlite3.connect(f"file:{uri_path}?mode=ro", uri=True, timeout=2)
 
+    def _validate_schema(self, conn: sqlite3.Connection) -> None:
+        if self._schema_validated:
+            return
+
+        version = int(conn.execute("pragma user_version").fetchone()[0])
+        if version < TRUTH_TIME_MIN_SCHEMA_VERSION:
+            raise TruthTimeSchemaError(
+                f"event-logger schema v{version} is unsupported; v{TRUTH_TIME_MIN_SCHEMA_VERSION}+ is required"
+            )
+
+        for table, required_columns in TRUTH_TIME_REQUIRED_COLUMNS.items():
+            actual_columns = {row[1] for row in conn.execute(f"pragma table_info({table})")}
+            missing_columns = required_columns - actual_columns
+            if missing_columns:
+                missing = ", ".join(sorted(missing_columns))
+                raise TruthTimeSchemaError(f"event-logger table {table} is missing columns: {missing}")
+
+        self._schema_validated = True
+
+    def _set_error(self, message: str) -> None:
+        if message != self.last_error:
+            logging.error("Failed to read event-logger sessions: %s", message)
+        self.last_error = message
+
     def _query_intervals(self, sql: str) -> list[tuple[float, float | None]]:
         if not os.path.exists(self.database_path):
+            self._set_error(f"event-logger database not found: {self.database_path}")
             return []
+        conn = None
         try:
-            with self._connect() as conn:
-                rows = conn.execute(sql).fetchall()
+            conn = self._connect()
+            self._validate_schema(conn)
+            rows = conn.execute(sql).fetchall()
+            self.last_error = ""
             return [
                 (start_us / 1_000_000, end_us / 1_000_000 if end_us else None)
                 for start_us, end_us in rows
                 if start_us and start_us / 1_000_000 > self._MIN_VALID_TIMESTAMP
             ]
-        except sqlite3.Error as e:
-            logging.error("Failed to read event-logger sessions: %s", e)
+        except (sqlite3.Error, TruthTimeSchemaError) as error:
+            self._schema_validated = False
+            self._set_error(str(error))
             return []
+        finally:
+            if conn is not None:
+                conn.close()
 
     def livestream_intervals(self) -> list[tuple[float, float | None]]:
         return self._query_intervals(
@@ -203,7 +257,6 @@ class ControlsOverlayLeft(ControlsOverlayBase):
 
     def update_buttons(self):
         sessions = self.widget._session_manager.get_sessions(self.widget._time_source)
-        idx = self.widget._session_offset
         if not sessions:
             self.lbl_date.hide()
             self.lbl_time.setText("No Session")
@@ -211,9 +264,11 @@ class ControlsOverlayLeft(ControlsOverlayBase):
             self.btn_next.setEnabled(False)
             return
 
-        real_idx = len(sessions) - 1 + idx
+        real_idx = self.widget._selected_session_index(sessions)
+        if real_idx is None:
+            return
         self.btn_prev.setEnabled(real_idx > 0)
-        self.btn_next.setEnabled(idx < 0)
+        self.btn_next.setEnabled(real_idx < len(sessions) - 1)
 
         ts = sessions[real_idx]
         dt = datetime.fromtimestamp(ts)
@@ -264,7 +319,6 @@ class ControlsOverlayRight(ControlsOverlayBase):
 
     def update_buttons(self, duration_sec: float):
         sessions = self.widget._session_manager.get_sessions(self.widget._time_source)
-        idx = self.widget._session_offset
         if not sessions:
             self.lbl_days.hide()
             self.lbl_duration.setText("--:--")
@@ -272,9 +326,11 @@ class ControlsOverlayRight(ControlsOverlayBase):
             self.btn_next.setEnabled(False)
             return
 
-        real_idx = len(sessions) - 1 + idx
+        real_idx = self.widget._selected_session_index(sessions)
+        if real_idx is None:
+            return
         self.btn_prev.setEnabled(real_idx > 0)
-        self.btn_next.setEnabled(idx < 0)
+        self.btn_next.setEnabled(real_idx < len(sessions) - 1)
 
         days = int(duration_sec // 86400)
         rem = duration_sec % 86400
@@ -317,38 +373,6 @@ class DensityOverlay(QFrame):
         self.is_streaming = False
         self.error_msg = ""
         self.hover_idx = None
-
-    def _control_exclusion_rects(self) -> list[QRectF]:
-        overlay_geometry = self.geometry()
-        exclusions = []
-        for control in (self.widget._controls_left, self.widget._controls_right):
-            geometry = control.geometry()
-            exclusion = QRectF(
-                geometry.x() - overlay_geometry.x(),
-                geometry.y() - overlay_geometry.y(),
-                geometry.width(),
-                geometry.height(),
-            )
-            exclusion.adjust(-4, -4, 4, 4)
-            exclusions.append(exclusion)
-        return exclusions
-
-    @staticmethod
-    def _ruler_baseline(
-        default_baseline: float,
-        tick_x: float,
-        label_rect: QRectF | None,
-        exclusions: list[QRectF],
-    ) -> float:
-        collisions = [
-            exclusion
-            for exclusion in exclusions
-            if exclusion.left() <= tick_x <= exclusion.right()
-            or (label_rect is not None and exclusion.intersects(label_rect))
-        ]
-        if not collisions:
-            return default_baseline
-        return max(min(exclusion.top() for exclusion in collisions) - 3, 15)
 
     def paintEvent(self, event):
         if not self.is_streaming:
@@ -448,8 +472,6 @@ class DensityOverlay(QFrame):
             font = painter.font()
             font.setPointSize(8)
             painter.setFont(font)
-            font_metrics = painter.fontMetrics()
-            exclusions = self._control_exclusion_rects()
 
             for i in range(n):
                 ts = self.stream_start_time + i * 60
@@ -473,21 +495,10 @@ class DensityOverlay(QFrame):
                     painter.setPen(pen_major)
 
                     x = i * step_x
-                    label = dt.strftime("%H:00")
-                    label_width = font_metrics.horizontalAdvance(label)
-                    label_x = min(max(x + 2, 2), max(w - label_width - 2, 2))
-                    normal_label_baseline = h - 12
-                    normal_label_rect = QRectF(
-                        label_x,
-                        normal_label_baseline - font_metrics.ascent(),
-                        label_width,
-                        font_metrics.height(),
-                    )
-                    baseline = self._ruler_baseline(h, x, normal_label_rect, exclusions)
-                    painter.drawLine(QPointF(x, baseline), QPointF(x, baseline - 10))
+                    painter.drawLine(QPointF(x, h), QPointF(x, h - 10))
                     painter.setPen(
                         QColor(255, 255, 255, 255 if is_hovered else 200))
-                    painter.drawText(QPointF(label_x, baseline - 12), label)
+                    painter.drawText(QPointF(x + 2, h - 12), dt.strftime("%H:00"))
                 elif is_minor_tick:
                     pen_minor = QPen(
                         QColor(255, 255, 255, 200 if is_hovered else 60))
@@ -495,15 +506,14 @@ class DensityOverlay(QFrame):
                     painter.setPen(pen_minor)
 
                     x = i * step_x
-                    baseline = self._ruler_baseline(h, x, None, exclusions)
-                    painter.drawLine(QPointF(x, baseline), QPointF(x, baseline - 5))
+                    painter.drawLine(QPointF(x, h), QPointF(x, h - 5))
 
 
 class FetchWorker(QThread):
     # buckets, has_interval, start_time, duration, error, source
     data_fetched = pyqtSignal(list, bool, float, float, str, str)
 
-    def __init__(self, config: PiecesDensityConfig, time_source: TimeSource, known_start_time: float = 0.0, last_streaming_time: float = 0.0, session_override: float = 0.0, force_session: bool = False, session_end_bound: float = 0.0):
+    def __init__(self, config: PiecesDensityConfig, time_source: TimeSource, known_start_time: float = 0.0, last_streaming_time: float = 0.0, session_override: float = 0.0, force_session: bool = False, session_end_bound: float = 0.0, interval_error: str = ""):
         super().__init__()
         self.session_end_bound = session_end_bound
         self.config = config
@@ -512,11 +522,20 @@ class FetchWorker(QThread):
         self.last_streaming_time = last_streaming_time
         self.session_override = session_override
         self.force_session = force_session
+        self.interval_error = interval_error
         self._is_running = True
+
+    def cancel(self):
+        self._is_running = False
 
     def run(self):
         try:
             # event-logger is the only provider of interval boundaries.
+            if self.interval_error:
+                self.data_fetched.emit(
+                    [], True, 0.0, 0.0, self.interval_error, self.time_source.value)
+                return
+
             if self.session_override <= 0:
                 self.data_fetched.emit(
                     [], False, 0.0, 0.0,
@@ -565,7 +584,12 @@ class FetchWorker(QThread):
                     "SELECT created_at FROM vectors WHERE created_at >= ? AND created_at < ?",
                     (stream_start_time, interval_end),
                 )
-                for row in c.fetchall():
+                rows = c.fetchall()
+                if not self._is_running:
+                    return
+                for row in rows:
+                    if not self._is_running:
+                        return
                     idx = int((row[0] - stream_start_time) / bucket_interval)
                     if 0 <= idx < num_buckets:
                         raw_buckets[idx] += 1
@@ -580,6 +604,9 @@ class FetchWorker(QThread):
 
             # Keep leading zero-activity buckets so the heatmap remains aligned with the
             # canonical interval selected from event-logger.
+
+            if not self._is_running:
+                return
 
             self.data_fetched.emit(
                 buckets, True, stream_start_time, total_duration_sec, "", self.time_source.value)
@@ -608,10 +635,11 @@ class PiecesDensityWidget(BaseWidget):
         self._time_source = TimeSource.YOUTUBE_LIVESTREAM
         self._overlay = DensityOverlay(self, self.config)
         self._session_manager = SessionManager(config.truth_time_db_path)
-        self._session_offset = 0
+        self._selected_session_start = None
         self._controls_left = ControlsOverlayLeft(self)
         self._controls_right = ControlsOverlayRight(self)
         self._worker = None
+        self._refresh_pending = False
         self._stream_start_time = 0.0
         self._last_streaming_time = 0.0
 
@@ -730,22 +758,48 @@ class PiecesDensityWidget(BaseWidget):
         end_bound = 0.0
         sessions = self._session_manager.get_sessions(self._time_source)
         if sessions:
-            real_idx = len(sessions) - 1 + self._session_offset
-            if 0 <= real_idx < len(sessions):
+            real_idx = self._selected_session_index(sessions)
+            if real_idx is not None:
                 override_time = sessions[real_idx]
                 end_bound = self._session_manager.get_session_end(
                     self._time_source, override_time) or 0.0
 
         force_session = override_time > 0
+        interval_error = self._session_manager.last_error
 
         self._worker = FetchWorker(self.config, self._time_source, self._stream_start_time,
-                                   self._last_streaming_time, override_time, force_session, end_bound)
+                                   self._last_streaming_time, override_time, force_session, end_bound,
+                                   interval_error)
         self._worker.data_fetched.connect(self._on_data_fetched)
+        self._worker.finished.connect(self._on_worker_finished)
         self._worker.finished.connect(self._worker.deleteLater)
-        # Clear the Python reference once the thread finishes so the guard
-        # above never sees a stale (deleted) C++ object again.
-        self._worker.finished.connect(lambda: setattr(self, "_worker", None))
         self._worker.start()
+
+    def _request_refresh(self):
+        try:
+            if self._worker and self._worker.isRunning():
+                self._worker.cancel()
+                self._refresh_pending = True
+                return
+        except RuntimeError:
+            self._worker = None
+        self._fetch_data()
+
+    def _on_worker_finished(self):
+        self._worker = None
+        if self._refresh_pending and self._is_active:
+            self._refresh_pending = False
+            QTimer.singleShot(0, self._fetch_data)
+
+    def _selected_session_index(self, sessions: list[float]) -> int | None:
+        index = selected_session_index(sessions, self._selected_session_start)
+        if (
+            index is not None
+            and self._selected_session_start is not None
+            and abs(sessions[index] - self._selected_session_start) >= 0.001
+        ):
+            self._selected_session_start = None
+        return index
 
     def _on_data_fetched(self, buckets: list[int], is_streaming: bool, start_time: float, total_duration_sec: float, error_msg: str, source_value: str):
         if not getattr(self, "_is_active", True):
@@ -826,27 +880,30 @@ class PiecesDensityWidget(BaseWidget):
         sessions = self._session_manager.get_sessions(self._time_source)
         if not sessions:
             return
-        max_prev = -(len(sessions) - 1)
-        if self._session_offset > max_prev:
-            self._session_offset -= 1
+        index = self._selected_session_index(sessions)
+        if index is not None and index > 0:
+            self._selected_session_start = sessions[index - 1]
             self._controls_left.update_buttons()
             self._controls_right.update_buttons(0.0)
-            self._fetch_data()
+            self._request_refresh()
 
     def _next_session(self):
-        if self._session_offset < 0:
-            self._session_offset += 1
+        sessions = self._session_manager.get_sessions(self._time_source)
+        index = self._selected_session_index(sessions)
+        if index is not None and index < len(sessions) - 1:
+            next_index = index + 1
+            self._selected_session_start = None if next_index == len(sessions) - 1 else sessions[next_index]
             self._controls_left.update_buttons()
             self._controls_right.update_buttons(0.0)
-            self._fetch_data()
+            self._request_refresh()
 
     def _on_time_source_changed(self, source_value: str, screen_name: str):
         if screen_name != self.screen_name:
             return
         self._time_source = TimeSource.parse(source_value)
         self._stream_start_time = 0.0  # Reset known start time when switching modes
-        self._session_offset = 0       # Reset navigation to latest session in new mode
-        self._fetch_data()
+        self._selected_session_start = None
+        self._request_refresh()
 
     def _toggle_pieces_state(self, screen_name: str):
         if screen_name != self.screen_name:
@@ -855,11 +912,12 @@ class PiecesDensityWidget(BaseWidget):
         self._is_active = not self._is_active
         if self._is_active:
             self._timer.start(self.config.poll_interval_sec * 1000)
-            self._fetch_data()
+            self._request_refresh()
         else:
             self._timer.stop()
+            self._refresh_pending = False
             if self._worker and self._worker.isRunning():
-                self._worker._is_running = False
+                self._worker.cancel()
             if self._overlay.isVisible():
                 self._overlay.hide()
                 self._controls_left.hide()
