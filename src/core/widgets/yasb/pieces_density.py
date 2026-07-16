@@ -2,8 +2,10 @@ import logging
 import math
 import os
 import sqlite3
+import sys
 import time
 from datetime import datetime
+from pathlib import Path
 
 from PyQt6.QtCore import QPointF, QRectF, Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QCursor, QLinearGradient, QPainter, QPainterPath, QPen
@@ -14,6 +16,40 @@ from core.utils.win32.bindings import SetWindowPos
 from core.validation.widgets.yasb.pieces_density import PiecesDensityConfig
 from core.widgets.base import BaseWidget
 from core.widgets.yasb.pieces_time_source import TimeSource
+
+TRUTH_TIME_DB_FILENAME = Path("data") / "truth_time.sqlite3"
+
+
+def resolve_truth_time_db_path(configured_path: str) -> str:
+    """Resolve an explicit path or discover a nearby event-logger database."""
+    configured_path = configured_path.strip()
+    if configured_path and configured_path.casefold() != "auto":
+        return os.path.abspath(os.path.expandvars(os.path.expanduser(configured_path)))
+
+    candidates: list[Path] = []
+    environment_path = os.environ.get("EVENT_LOGGER_DB_PATH", "").strip()
+    if environment_path:
+        return os.path.abspath(os.path.expandvars(os.path.expanduser(environment_path)))
+
+    anchors = (Path(sys.executable).resolve().parent, Path(__file__).resolve().parent, Path.cwd().resolve())
+    for anchor in anchors:
+        for parent in (anchor, *anchor.parents):
+            if parent.name.casefold() == "event-logger":
+                candidates.append(parent / TRUTH_TIME_DB_FILENAME)
+            candidates.append(parent / "event-logger" / TRUTH_TIME_DB_FILENAME)
+
+    local_app_data = os.environ.get("LOCALAPPDATA", "").strip()
+    fallback = Path.cwd() / TRUTH_TIME_DB_FILENAME
+    if local_app_data:
+        fallback = Path(local_app_data) / "event-logger" / TRUTH_TIME_DB_FILENAME
+        candidates.append(fallback)
+
+    unique_candidates = list(dict.fromkeys(path.resolve() for path in candidates))
+    for candidate in unique_candidates:
+        if candidate.is_file():
+            return str(candidate)
+
+    return str(fallback.resolve())
 
 
 def parse_color(color_str: str) -> QColor:
@@ -39,7 +75,8 @@ class SessionManager:
     _MIN_VALID_TIMESTAMP = 1_000_000_000  # ~2001-09-09, rejects epoch-zero
 
     def __init__(self, database_path: str):
-        self.database_path = os.path.expandvars(os.path.expanduser(database_path))
+        self.database_path = resolve_truth_time_db_path(database_path)
+        logging.info("Pieces truth-time database: %s", self.database_path)
 
     def _connect(self) -> sqlite3.Connection:
         uri_path = self.database_path.replace("\\", "/")
@@ -281,6 +318,38 @@ class DensityOverlay(QFrame):
         self.error_msg = ""
         self.hover_idx = None
 
+    def _control_exclusion_rects(self) -> list[QRectF]:
+        overlay_geometry = self.geometry()
+        exclusions = []
+        for control in (self.widget._controls_left, self.widget._controls_right):
+            geometry = control.geometry()
+            exclusion = QRectF(
+                geometry.x() - overlay_geometry.x(),
+                geometry.y() - overlay_geometry.y(),
+                geometry.width(),
+                geometry.height(),
+            )
+            exclusion.adjust(-4, -4, 4, 4)
+            exclusions.append(exclusion)
+        return exclusions
+
+    @staticmethod
+    def _ruler_baseline(
+        default_baseline: float,
+        tick_x: float,
+        label_rect: QRectF | None,
+        exclusions: list[QRectF],
+    ) -> float:
+        collisions = [
+            exclusion
+            for exclusion in exclusions
+            if exclusion.left() <= tick_x <= exclusion.right()
+            or (label_rect is not None and exclusion.intersects(label_rect))
+        ]
+        if not collisions:
+            return default_baseline
+        return max(min(exclusion.top() for exclusion in collisions) - 3, 15)
+
     def paintEvent(self, event):
         if not self.is_streaming:
             return
@@ -379,6 +448,8 @@ class DensityOverlay(QFrame):
             font = painter.font()
             font.setPointSize(8)
             painter.setFont(font)
+            font_metrics = painter.fontMetrics()
+            exclusions = self._control_exclusion_rects()
 
             for i in range(n):
                 ts = self.stream_start_time + i * 60
@@ -402,12 +473,21 @@ class DensityOverlay(QFrame):
                     painter.setPen(pen_major)
 
                     x = i * step_x
-                    painter.drawLine(QPointF(x, h), QPointF(x, h - 10))
-                    # draw text slightly above
+                    label = dt.strftime("%H:00")
+                    label_width = font_metrics.horizontalAdvance(label)
+                    label_x = min(max(x + 2, 2), max(w - label_width - 2, 2))
+                    normal_label_baseline = h - 12
+                    normal_label_rect = QRectF(
+                        label_x,
+                        normal_label_baseline - font_metrics.ascent(),
+                        label_width,
+                        font_metrics.height(),
+                    )
+                    baseline = self._ruler_baseline(h, x, normal_label_rect, exclusions)
+                    painter.drawLine(QPointF(x, baseline), QPointF(x, baseline - 10))
                     painter.setPen(
                         QColor(255, 255, 255, 255 if is_hovered else 200))
-                    painter.drawText(QPointF(x + 2, h - 12),
-                                     dt.strftime("%H:00"))
+                    painter.drawText(QPointF(label_x, baseline - 12), label)
                 elif is_minor_tick:
                     pen_minor = QPen(
                         QColor(255, 255, 255, 200 if is_hovered else 60))
@@ -415,7 +495,8 @@ class DensityOverlay(QFrame):
                     painter.setPen(pen_minor)
 
                     x = i * step_x
-                    painter.drawLine(QPointF(x, h), QPointF(x, h - 5))
+                    baseline = self._ruler_baseline(h, x, None, exclusions)
+                    painter.drawLine(QPointF(x, baseline), QPointF(x, baseline - 5))
 
 
 class FetchWorker(QThread):
@@ -482,7 +563,7 @@ class FetchWorker(QThread):
                 c = conn.cursor()
                 c.execute(
                     "SELECT created_at FROM vectors WHERE created_at >= ? AND created_at < ?",
-                    (int(stream_start_time), int(interval_end) + 1),
+                    (stream_start_time, interval_end),
                 )
                 for row in c.fetchall():
                     idx = int((row[0] - stream_start_time) / bucket_interval)

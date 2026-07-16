@@ -7,6 +7,7 @@
 - Do not overwrite config or theme files when working in this repo unless explicitly asked.
 - Original Scoop YASB remains available at `E:\Scoop\apps\yasb\current\yasb.exe`.
 - Dev build entrypoint is `E:\MCP\Projects\yasb-fork\src\dist\yasb.exe`.
+- `pieces_density.options.truth_time_db_path: "auto"` resolves `EVENT_LOGGER_DB_PATH` first, then discovers a sibling `event-logger` repo, then checks `%LOCALAPPDATA%\event-logger`; use an explicit path only when discovery is inappropriate.
 
 ## Local Build Workflow
 - Preferred local Python is the repo venv at `.venv\Scripts\python.exe`.

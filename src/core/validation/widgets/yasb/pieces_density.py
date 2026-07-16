@@ -14,10 +14,11 @@ class PiecesDensityConfig(CustomBaseModel):
     poll_interval_sec: int = 10
 
     # Canonical interval provider
-    truth_time_db_path: str = r"E:\MCP\Projects\event-logger\data\truth_time.sqlite3"
+    # "auto" checks EVENT_LOGGER_DB_PATH, nearby repositories, then local app data.
+    truth_time_db_path: str = "auto"
 
     # Appearance
-    widget_height: int = 100 # Can match the screenshot
+    widget_height: int = 100  # Can match the screenshot
     
     # Gradient colors for heatmap (cold -> hot)
     color_low: str = "rgba(0, 200, 255, 0.2)"
