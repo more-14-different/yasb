@@ -17,6 +17,7 @@ from core.widgets.yasb.pieces_density import (  # noqa: E402
     format_compact_duration,
     format_compact_time,
     ruler_label_baseline,
+    ruler_label_x,
     selected_session_index,
 )
 
@@ -102,6 +103,7 @@ class CompactTimeFormatTests(unittest.TestCase):
 
     def test_clock_omits_leading_zero_from_hour_but_not_minute(self):
         self.assertEqual(format_compact_time(datetime(2026, 7, 8, 9, 5)), "9:05")
+        self.assertEqual(format_compact_time(datetime(2026, 7, 8, 9, 0)), "9:00")
         self.assertEqual(format_compact_time(datetime(2026, 7, 8, 0, 0)), "0:00")
 
     def test_duration_omits_leading_zero_from_hour_but_not_minute(self):
@@ -135,8 +137,59 @@ class RefreshTests(unittest.TestCase):
         self.assertTrue(widget._worker.cancelled)
         self.assertTrue(widget._refresh_pending)
 
+    def test_session_navigation_preserves_duration_until_refresh_finishes(self):
+        class SessionManagerStub:
+            @staticmethod
+            def get_sessions(_source):
+                return [100.0, 200.0, 300.0]
+
+        class ControlsStub:
+            def __init__(self):
+                self.updates = []
+
+            def update_buttons(self, duration_sec=None):
+                self.updates.append(duration_sec)
+
+        class Widget:
+            _session_manager = SessionManagerStub()
+            _time_source = object()
+            _selected_session_start = 200.0
+            _controls_left = ControlsStub()
+            _controls_right = ControlsStub()
+            refreshes = 0
+
+            def _selected_session_index(self, sessions):
+                return selected_session_index(sessions, self._selected_session_start)
+
+            def _request_refresh(self):
+                self.refreshes += 1
+
+        widget = Widget()
+        PiecesDensityWidget._prev_session(widget)
+
+        self.assertEqual(widget._selected_session_start, 100.0)
+        self.assertEqual(widget._controls_right.updates, [None])
+        self.assertEqual(widget.refreshes, 1)
+
+        PiecesDensityWidget._next_session(widget)
+
+        self.assertEqual(widget._selected_session_start, 200.0)
+        self.assertEqual(widget._controls_right.updates, [None, None])
+        self.assertEqual(widget.refreshes, 2)
+
 
 class RulerLabelTests(unittest.TestCase):
+    def test_colon_is_centered_over_major_tick(self):
+        label_x = ruler_label_x(
+            tick_x=100,
+            hour_width=10,
+            colon_width=4,
+            label_width=26,
+            ruler_width=300,
+        )
+
+        self.assertEqual(label_x + 10 + 4 / 2, 100)
+
     def test_label_stays_on_normal_baseline_without_collision(self):
         label = QRectF(200, 60, 35, 12)
         exclusions = [QRectF(0, 55, 100, 25)]

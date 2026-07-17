@@ -57,6 +57,22 @@ def format_compact_duration(hours: int, minutes: int) -> str:
     return f"{hours}:{minutes:02d}"
 
 
+def ruler_label_x(
+    tick_x: float,
+    hour_width: float,
+    colon_width: float,
+    label_width: float,
+    ruler_width: float,
+    margin: float = 2,
+) -> float:
+    """Place a time label with the colon centered on its major tick."""
+    colon_center = hour_width + colon_width / 2
+    return min(
+        max(tick_x - colon_center, margin),
+        max(ruler_width - label_width - margin, margin),
+    )
+
+
 def ruler_label_baseline(
     normal_baseline: float,
     label_rect: QRectF,
@@ -367,7 +383,7 @@ class ControlsOverlayRight(ControlsOverlayBase):
         self.btn_next.clicked.connect(self.widget._next_session)
         self.update_buttons(0.0)
 
-    def update_buttons(self, duration_sec: float):
+    def update_buttons(self, duration_sec: float | None = None):
         sessions = self.widget._session_manager.get_sessions(self.widget._time_source)
         if not sessions:
             self.lbl_days.hide()
@@ -381,6 +397,12 @@ class ControlsOverlayRight(ControlsOverlayBase):
             return
         self.btn_prev.setEnabled(real_idx > 0)
         self.btn_next.setEnabled(real_idx < len(sessions) - 1)
+
+        # Navigation changes before the replacement data is available. Keep the
+        # previous duration visible during that transition instead of flashing
+        # a synthetic 0:00 value.
+        if duration_sec is None:
+            return
 
         days = int(duration_sec // 86400)
         rem = duration_sec % 86400
@@ -563,9 +585,15 @@ class DensityOverlay(QFrame):
 
                     x = i * step_x
                     painter.drawLine(QPointF(x, h), QPointF(x, h - 10))
-                    label = dt.strftime("%H:00")
+                    label = format_compact_time(dt)
                     label_width = font_metrics.horizontalAdvance(label)
-                    label_x = min(max(x + 2, 2), max(w - label_width - 2, 2))
+                    label_x = ruler_label_x(
+                        x,
+                        font_metrics.horizontalAdvance(str(dt.hour)),
+                        font_metrics.horizontalAdvance(":"),
+                        label_width,
+                        w,
+                    )
                     normal_baseline = h - 12
                     label_rect = QRectF(
                         label_x,
@@ -967,7 +995,7 @@ class PiecesDensityWidget(BaseWidget):
         if index is not None and index > 0:
             self._selected_session_start = sessions[index - 1]
             self._controls_left.update_buttons()
-            self._controls_right.update_buttons(0.0)
+            self._controls_right.update_buttons()
             self._request_refresh()
 
     def _next_session(self):
@@ -977,7 +1005,7 @@ class PiecesDensityWidget(BaseWidget):
             next_index = index + 1
             self._selected_session_start = None if next_index == len(sessions) - 1 else sessions[next_index]
             self._controls_left.update_buttons()
-            self._controls_right.update_buttons(0.0)
+            self._controls_right.update_buttons()
             self._request_refresh()
 
     def _on_time_source_changed(self, source_value: str, screen_name: str):
