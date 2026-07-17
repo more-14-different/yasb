@@ -244,17 +244,17 @@ class ControlsOverlayBase(QFrame):
 
         self.style_str = """
             QPushButton {
-                background-color: rgba(100, 94, 108, 105);
-                color: rgba(243, 239, 242, 215);
-                border: 1px solid rgba(218, 213, 218, 55);
+                background-color: rgba(164, 124, 134, 120);
+                color: rgba(250, 239, 242, 225);
+                border: 1px solid rgba(222, 194, 200, 75);
                 border-radius: 4px;
                 padding: 1px 4px;
                 margin: 0px;
                 font-family: Consolas, monospace;
             }
             QPushButton:hover {
-                background-color: rgba(120, 113, 126, 145);
-                border-color: rgba(229, 225, 228, 95);
+                background-color: rgba(183, 140, 150, 165);
+                border-color: rgba(235, 211, 216, 115);
             }
             QPushButton:disabled {
                 background-color: rgba(48, 49, 52, 125);
