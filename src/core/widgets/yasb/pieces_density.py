@@ -228,74 +228,47 @@ class ControlsOverlayBase(QFrame):
 
         self.style_str = """
             QPushButton {
-                background-color: rgba(58, 55, 72, 190);
-                color: #fffaff;
-                border: 1px solid rgba(255, 255, 255, 55);
+                background-color: rgba(100, 94, 108, 105);
+                color: rgba(243, 239, 242, 215);
+                border: 1px solid rgba(218, 213, 218, 55);
                 border-radius: 4px;
                 padding: 1px 4px;
                 margin: 0px;
                 font-family: Consolas, monospace;
             }
             QPushButton:hover {
-                border-color: rgba(255, 255, 255, 130);
-            }
-            QPushButton#LeftPreviousButton {
-                background-color: rgba(111, 88, 150, 205);
-                color: #fbf3ff;
-            }
-            QPushButton#LeftPreviousButton:hover {
-                background-color: rgba(143, 113, 187, 230);
-            }
-            QPushButton#LeftNextButton {
-                background-color: rgba(153, 83, 116, 205);
-                color: #fff2f8;
-            }
-            QPushButton#LeftNextButton:hover {
-                background-color: rgba(190, 105, 144, 230);
-            }
-            QPushButton#RightPreviousButton {
-                background-color: rgba(52, 124, 103, 205);
-                color: #effff9;
-            }
-            QPushButton#RightPreviousButton:hover {
-                background-color: rgba(68, 158, 131, 230);
-            }
-            QPushButton#RightNextButton {
-                background-color: rgba(60, 109, 157, 205);
-                color: #f0f8ff;
-            }
-            QPushButton#RightNextButton:hover {
-                background-color: rgba(76, 139, 198, 230);
+                background-color: rgba(120, 113, 126, 145);
+                border-color: rgba(229, 225, 228, 95);
             }
             QPushButton:disabled {
-                background-color: rgba(10, 10, 10, 50);
-                color: rgba(255, 255, 255, 30);
-                border: 1px solid rgba(255, 255, 255, 10);
+                background-color: rgba(48, 49, 52, 125);
+                color: rgba(151, 151, 153, 80);
+                border: 1px solid rgba(91, 92, 95, 75);
             }
             QLabel {
-                color: #fffaff;
+                color: rgba(244, 241, 239, 215);
                 font-size: 10px;
-                background-color: rgba(58, 55, 72, 190);
+                background-color: rgba(91, 89, 94, 105);
                 border-radius: 4px;
                 padding: 1px 4px;
                 margin: 0px;
                 font-family: Consolas, monospace;
             }
             QLabel#DateLabel {
-                background-color: rgba(145, 98, 61, 205);
-                color: #fff4df;
+                background-color: rgba(126, 110, 99, 115);
+                color: rgba(249, 241, 232, 220);
             }
             QLabel#StartTimeLabel {
-                background-color: rgba(79, 99, 147, 205);
-                color: #f3f5ff;
+                background-color: rgba(92, 107, 118, 115);
+                color: rgba(238, 243, 246, 220);
             }
             QLabel#DaysLabel {
-                background-color: rgba(151, 84, 105, 205);
-                color: #fff1f5;
+                background-color: rgba(123, 102, 107, 115);
+                color: rgba(248, 238, 240, 220);
             }
             QLabel#DurationLabel {
-                background-color: rgba(56, 119, 112, 205);
-                color: #effffa;
+                background-color: rgba(96, 112, 105, 115);
+                color: rgba(238, 245, 241, 220);
             }
         """
 
