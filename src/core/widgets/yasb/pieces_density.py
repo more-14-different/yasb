@@ -61,12 +61,13 @@ def density_tooltip_html(event_count: int, value: datetime) -> str:
     """Build the four semantic units shown for a hovered density bucket."""
     units = (
         ("#18382B", "#B7F5C8", f"<b>{event_count}</b>"),
-        ("#3B2924", "#F2B8A0", "Events ∈"),
+        ("#3B2924", "#F2B8A0", "Events&nbsp;∈"),
         ("#1E3148", "#BCD7FF", f"<b>{format_compact_time(value)}</b>"),
         ("#30263E", "#DDC7FF", "±5m"),
     )
     cells = "".join(
-        f'<td bgcolor="{background}"><font color="{foreground}">{text}</font></td>'
+        f'<td style="white-space: nowrap;" bgcolor="{background}">'
+        f'<font color="{foreground}">{text}</font></td>'
         for background, foreground, text in units
     )
     return f'<table cellspacing="3" cellpadding="4"><tr>{cells}</tr></table>'

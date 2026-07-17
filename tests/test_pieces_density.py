@@ -117,11 +117,11 @@ class DensityTooltipTests(unittest.TestCase):
         tooltip = density_tooltip_html(28, datetime(2026, 7, 8, 9, 5))
 
         self.assertIn("<b>28</b>", tooltip)
-        self.assertIn("Events ∈", tooltip)
+        self.assertIn("Events&nbsp;∈", tooltip)
         self.assertIn("<b>9:05</b>", tooltip)
         self.assertIn("±5m", tooltip)
         self.assertNotIn("09:05", tooltip)
-        self.assertEqual(tooltip.count("<td bgcolor="), 4)
+        self.assertEqual(tooltip.count('style="white-space: nowrap;"'), 4)
         self.assertEqual(tooltip.count("<font color="), 4)
 
 
