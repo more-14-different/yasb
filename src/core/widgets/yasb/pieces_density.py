@@ -257,9 +257,9 @@ class ControlsOverlayBase(QFrame):
                 border-color: rgba(235, 211, 216, 115);
             }
             QPushButton:disabled {
-                background-color: rgba(48, 49, 52, 125);
-                color: rgba(151, 151, 153, 80);
-                border: 1px solid rgba(91, 92, 95, 75);
+                background-color: rgba(104, 82, 89, 75);
+                color: rgba(198, 178, 183, 95);
+                border: 1px solid rgba(156, 126, 133, 55);
             }
             QLabel {
                 color: rgba(244, 241, 239, 215);
