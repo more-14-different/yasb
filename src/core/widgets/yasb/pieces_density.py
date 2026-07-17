@@ -57,6 +57,21 @@ def format_compact_duration(hours: int, minutes: int) -> str:
     return f"{hours}:{minutes:02d}"
 
 
+def density_tooltip_html(event_count: int, value: datetime) -> str:
+    """Build the four semantic units shown for a hovered density bucket."""
+    units = (
+        ("#18382B", "#B7F5C8", f"<b>{event_count}</b>"),
+        ("#3B2924", "#F2B8A0", "Events ∈"),
+        ("#1E3148", "#BCD7FF", f"<b>{format_compact_time(value)}</b>"),
+        ("#30263E", "#DDC7FF", "±5m"),
+    )
+    cells = "".join(
+        f'<td bgcolor="{background}"><font color="{foreground}">{text}</font></td>'
+        for background, foreground, text in units
+    )
+    return f'<table cellspacing="3" cellpadding="4"><tr>{cells}</tr></table>'
+
+
 def ruler_label_x(
     tick_x: float,
     hour_width: float,
@@ -843,8 +858,7 @@ class PiecesDensityWidget(BaseWidget):
 
             val = self._overlay.buckets[bucket_index]
             ts = self._overlay.stream_start_time + bucket_index * 60
-            dt_str = datetime.fromtimestamp(ts).strftime("%H:%M")
-            tooltip_text = f"{dt_str} | Events (±5m): {val}"
+            tooltip_text = density_tooltip_html(val, datetime.fromtimestamp(ts))
 
             QToolTip.showText(cursor_pos, tooltip_text)
         else:

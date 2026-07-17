@@ -13,6 +13,7 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 from core.widgets.yasb.pieces_density import (  # noqa: E402
     PiecesDensityWidget,
     SessionManager,
+    density_tooltip_html,
     format_compact_date,
     format_compact_duration,
     format_compact_time,
@@ -109,6 +110,19 @@ class CompactTimeFormatTests(unittest.TestCase):
     def test_duration_omits_leading_zero_from_hour_but_not_minute(self):
         self.assertEqual(format_compact_duration(7, 5), "7:05")
         self.assertEqual(format_compact_duration(0, 0), "0:00")
+
+
+class DensityTooltipTests(unittest.TestCase):
+    def test_uses_four_colored_semantic_units_and_compact_time(self):
+        tooltip = density_tooltip_html(28, datetime(2026, 7, 8, 9, 5))
+
+        self.assertIn("<b>28</b>", tooltip)
+        self.assertIn("Events ∈", tooltip)
+        self.assertIn("<b>9:05</b>", tooltip)
+        self.assertIn("±5m", tooltip)
+        self.assertNotIn("09:05", tooltip)
+        self.assertEqual(tooltip.count("<td bgcolor="), 4)
+        self.assertEqual(tooltip.count("<font color="), 4)
 
 
 class RefreshTests(unittest.TestCase):
