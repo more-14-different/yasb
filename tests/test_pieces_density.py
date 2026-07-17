@@ -2,6 +2,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 
 from PyQt6.QtCore import QRectF
@@ -12,6 +13,9 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 from core.widgets.yasb.pieces_density import (  # noqa: E402
     PiecesDensityWidget,
     SessionManager,
+    format_compact_date,
+    format_compact_duration,
+    format_compact_time,
     ruler_label_baseline,
     selected_session_index,
 )
@@ -87,6 +91,22 @@ class SessionSelectionTests(unittest.TestCase):
 
     def test_none_always_selects_latest_session(self):
         self.assertEqual(selected_session_index([100.0, 200.0, 300.0], None), 2)
+
+
+class CompactTimeFormatTests(unittest.TestCase):
+    def test_date_omits_leading_zero_from_month_and_day(self):
+        value = datetime(2026, 7, 8, 9, 5)
+
+        self.assertEqual(format_compact_date(value), "7-8")
+        self.assertEqual(format_compact_date(value, include_year=True), "26-7-8")
+
+    def test_clock_omits_leading_zero_from_hour_but_not_minute(self):
+        self.assertEqual(format_compact_time(datetime(2026, 7, 8, 9, 5)), "9:05")
+        self.assertEqual(format_compact_time(datetime(2026, 7, 8, 0, 0)), "0:00")
+
+    def test_duration_omits_leading_zero_from_hour_but_not_minute(self):
+        self.assertEqual(format_compact_duration(7, 5), "7:05")
+        self.assertEqual(format_compact_duration(0, 0), "0:00")
 
 
 class RefreshTests(unittest.TestCase):

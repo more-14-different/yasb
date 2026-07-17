@@ -40,6 +40,23 @@ def selected_session_index(sessions: list[float], selected_start: float | None) 
     )
 
 
+def format_compact_date(value: datetime, include_year: bool = False) -> str:
+    """Format a date without padding month or day with a leading zero."""
+    if include_year:
+        return f"{value:%y}-{value.month}-{value.day}"
+    return f"{value.month}-{value.day}"
+
+
+def format_compact_time(value: datetime) -> str:
+    """Format hours compactly while keeping minutes at two digits."""
+    return f"{value.hour}:{value.minute:02d}"
+
+
+def format_compact_duration(hours: int, minutes: int) -> str:
+    """Format duration hours compactly while keeping minutes at two digits."""
+    return f"{hours}:{minutes:02d}"
+
+
 def ruler_label_baseline(
     normal_baseline: float,
     label_rect: QRectF,
@@ -211,16 +228,44 @@ class ControlsOverlayBase(QFrame):
 
         self.style_str = """
             QPushButton {
-                background-color: rgba(20, 20, 20, 100);
-                color: rgba(255, 255, 255, 200);
-                border: 1px solid rgba(255, 255, 255, 30);
+                background-color: rgba(58, 55, 72, 190);
+                color: #fffaff;
+                border: 1px solid rgba(255, 255, 255, 55);
                 border-radius: 4px;
                 padding: 1px 4px;
                 margin: 0px;
                 font-family: Consolas, monospace;
             }
             QPushButton:hover {
-                background-color: rgba(60, 60, 60, 150);
+                border-color: rgba(255, 255, 255, 130);
+            }
+            QPushButton#LeftPreviousButton {
+                background-color: rgba(111, 88, 150, 205);
+                color: #fbf3ff;
+            }
+            QPushButton#LeftPreviousButton:hover {
+                background-color: rgba(143, 113, 187, 230);
+            }
+            QPushButton#LeftNextButton {
+                background-color: rgba(153, 83, 116, 205);
+                color: #fff2f8;
+            }
+            QPushButton#LeftNextButton:hover {
+                background-color: rgba(190, 105, 144, 230);
+            }
+            QPushButton#RightPreviousButton {
+                background-color: rgba(52, 124, 103, 205);
+                color: #effff9;
+            }
+            QPushButton#RightPreviousButton:hover {
+                background-color: rgba(68, 158, 131, 230);
+            }
+            QPushButton#RightNextButton {
+                background-color: rgba(60, 109, 157, 205);
+                color: #f0f8ff;
+            }
+            QPushButton#RightNextButton:hover {
+                background-color: rgba(76, 139, 198, 230);
             }
             QPushButton:disabled {
                 background-color: rgba(10, 10, 10, 50);
@@ -228,16 +273,29 @@ class ControlsOverlayBase(QFrame):
                 border: 1px solid rgba(255, 255, 255, 10);
             }
             QLabel {
-                color: rgba(255, 255, 255, 200);
+                color: #fffaff;
                 font-size: 10px;
-                background-color: rgba(20, 20, 20, 100);
+                background-color: rgba(58, 55, 72, 190);
                 border-radius: 4px;
                 padding: 1px 4px;
                 margin: 0px;
                 font-family: Consolas, monospace;
             }
             QLabel#DateLabel {
-                background-color: rgba(60, 40, 20, 100);
+                background-color: rgba(145, 98, 61, 205);
+                color: #fff4df;
+            }
+            QLabel#StartTimeLabel {
+                background-color: rgba(79, 99, 147, 205);
+                color: #f3f5ff;
+            }
+            QLabel#DaysLabel {
+                background-color: rgba(151, 84, 105, 205);
+                color: #fff1f5;
+            }
+            QLabel#DurationLabel {
+                background-color: rgba(56, 119, 112, 205);
+                color: #effffa;
             }
         """
 
@@ -250,6 +308,9 @@ class ControlsOverlayLeft(ControlsOverlayBase):
         self.lbl_date = QLabel()
         self.lbl_date.setObjectName("DateLabel")
         self.lbl_time = QLabel("--:--")
+        self.btn_prev.setObjectName("LeftPreviousButton")
+        self.btn_next.setObjectName("LeftNextButton")
+        self.lbl_time.setObjectName("StartTimeLabel")
 
         self.btn_prev.setStyleSheet(self.style_str)
         self.btn_next.setStyleSheet(self.style_str)
@@ -288,9 +349,9 @@ class ControlsOverlayLeft(ControlsOverlayBase):
         now = datetime.now()
 
         if now.year != dt.year:
-            date_str = dt.strftime("%y-%m-%d")
+            date_str = format_compact_date(dt, include_year=True)
         elif now.month != dt.month or now.day != dt.day:
-            date_str = dt.strftime("%m-%d")
+            date_str = format_compact_date(dt)
         else:
             date_str = ""
 
@@ -300,7 +361,7 @@ class ControlsOverlayLeft(ControlsOverlayBase):
         else:
             self.lbl_date.hide()
 
-        self.lbl_time.setText(dt.strftime("%H:%M"))
+        self.lbl_time.setText(format_compact_time(dt))
         self.adjustSize()
 
 
@@ -310,8 +371,11 @@ class ControlsOverlayRight(ControlsOverlayBase):
         self.btn_prev = QPushButton("<")
         self.btn_next = QPushButton(">")
         self.lbl_days = QLabel()
-        self.lbl_days.setObjectName("DateLabel")
         self.lbl_duration = QLabel("--:--")
+        self.btn_prev.setObjectName("RightPreviousButton")
+        self.btn_next.setObjectName("RightNextButton")
+        self.lbl_days.setObjectName("DaysLabel")
+        self.lbl_duration.setObjectName("DurationLabel")
 
         self.btn_prev.setStyleSheet(self.style_str)
         self.btn_next.setStyleSheet(self.style_str)
@@ -356,7 +420,7 @@ class ControlsOverlayRight(ControlsOverlayBase):
         else:
             self.lbl_days.hide()
 
-        self.lbl_duration.setText(f"{hours:02d}:{minutes:02d}")
+        self.lbl_duration.setText(format_compact_duration(hours, minutes))
         self.adjustSize()
 
 
