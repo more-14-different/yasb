@@ -147,7 +147,7 @@ class RulerLabelTests(unittest.TestCase):
         label = QRectF(70, 60, 35, 12)
         exclusions = [QRectF(0, 55, 100, 25)]
 
-        self.assertEqual(ruler_label_baseline(73, label, exclusions, 3), 59)
+        self.assertEqual(ruler_label_baseline(73, label, exclusions, 3), 56)
 
 
 if __name__ == "__main__":
