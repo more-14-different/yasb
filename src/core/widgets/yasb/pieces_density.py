@@ -594,7 +594,7 @@ class DensityOverlay(QFrame):
                         label_width,
                         w,
                     )
-                    normal_baseline = h - 12
+                    normal_baseline = h - 14
                     label_rect = QRectF(
                         label_x,
                         normal_baseline - font_metrics.ascent(),
