@@ -1,5 +1,4 @@
 import logging
-import math
 import os
 import sqlite3
 import sys
@@ -15,6 +14,11 @@ from win32con import SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE
 from core.utils.win32.bindings import SetWindowPos
 from core.validation.widgets.yasb.pieces_density import PiecesDensityConfig
 from core.widgets.base import BaseWidget
+from core.widgets.yasb.pieces_density_source import (
+    DensityBucketCache,
+    integrate_density,
+    resolve_density_source,
+)
 from core.widgets.yasb.pieces_time_source import TimeSource
 
 TRUTH_TIME_DB_FILENAME = Path("data") / "truth_time.sqlite3"
@@ -23,6 +27,7 @@ TRUTH_TIME_REQUIRED_COLUMNS = {
     "livestreams": {"official_start_at_utc_us", "official_end_at_utc_us"},
     "machine_sessions": {"boot_at_utc_us", "shutdown_at_utc_us", "shutdown_upper_bound_utc_us"},
 }
+_DENSITY_BUCKET_CACHE = DensityBucketCache()
 
 
 class TruthTimeSchemaError(RuntimeError):
@@ -66,8 +71,7 @@ def density_tooltip_html(event_count: int, value: datetime) -> str:
         ("#30263E", "#DDC7FF", "±5m"),
     )
     cells = "".join(
-        f'<td style="white-space: nowrap;" bgcolor="{background}">'
-        f'<font color="{foreground}">{text}</font></td>'
+        f'<td style="white-space: nowrap;" bgcolor="{background}"><font color="{foreground}">{text}</font></td>'
         for background, foreground, text in units
     )
     return f'<table cellspacing="3" cellpadding="4"><tr>{cells}</tr></table>'
@@ -138,7 +142,7 @@ def parse_color(color_str: str) -> QColor:
     """Safely parse a color string, including rgba(...) into a QColor."""
     color_str = color_str.strip()
     if color_str.startswith("rgba(") and color_str.endswith(")"):
-        parts = color_str[5:-1].split(',')
+        parts = color_str[5:-1].split(",")
         if len(parts) == 4:
             try:
                 r = int(parts[0].strip())
@@ -215,8 +219,7 @@ class SessionManager:
 
     def livestream_intervals(self) -> list[tuple[float, float | None]]:
         return self._query_intervals(
-            "select official_start_at_utc_us, official_end_at_utc_us "
-            "from livestreams order by official_start_at_utc_us"
+            "select official_start_at_utc_us, official_end_at_utc_us from livestreams order by official_start_at_utc_us"
         )
 
     def machine_intervals(self) -> list[tuple[float, float | None]]:
@@ -496,8 +499,7 @@ class DensityOverlay(QFrame):
             font = painter.font()
             font.setPointSize(10)
             painter.setFont(font)
-            painter.drawText(QRectF(0, h * 0.75, w, 20),
-                             Qt.AlignmentFlag.AlignCenter, self.error_msg)
+            painter.drawText(QRectF(0, h * 0.75, w, 20), Qt.AlignmentFlag.AlignCenter, self.error_msg)
             return
 
         n = len(self.buckets)
@@ -511,8 +513,7 @@ class DensityOverlay(QFrame):
             x_min = max(0, self.hover_idx - 5) * step_x
             x_max = min(n - 1, self.hover_idx + 5) * step_x
             # Faint background for the highlighted section
-            painter.fillRect(QRectF(x_min, 0, x_max - x_min, h),
-                             QColor(255, 255, 255, 20))
+            painter.fillRect(QRectF(x_min, 0, x_max - x_min, h), QColor(255, 255, 255, 20))
 
         # Create gradient
         gradient = QLinearGradient(0, h, 0, 0)
@@ -532,8 +533,7 @@ class DensityOverlay(QFrame):
         # Draw smooth curve
         points = []
         if n > 1 and max_val > 0:
-            points = [QPointF(i * step_x, h - (self.buckets[i] * y_scale))
-                      for i in range(n)]
+            points = [QPointF(i * step_x, h - (self.buckets[i] * y_scale)) for i in range(n)]
 
             path.lineTo(points[0])
             for i in range(n - 1):
@@ -588,14 +588,13 @@ class DensityOverlay(QFrame):
 
                 # Determine which minor ticks to show based on duration
                 if n > 720:
-                    is_minor_tick = (dt.minute == 30)
+                    is_minor_tick = dt.minute == 30
                 else:
-                    is_minor_tick = (dt.minute % 10 == 0)
+                    is_minor_tick = dt.minute % 10 == 0
 
                 # Major tick on the hour (e.g. 14:00)
                 if dt.minute == 0:
-                    pen_major = QPen(
-                        QColor(255, 255, 255, 255 if is_hovered else 150))
+                    pen_major = QPen(QColor(255, 255, 255, 255 if is_hovered else 150))
                     pen_major.setWidthF(1.5 if is_hovered else 1.5)
                     painter.setPen(pen_major)
 
@@ -623,12 +622,10 @@ class DensityOverlay(QFrame):
                         exclusions,
                         font_metrics.descent(),
                     )
-                    painter.setPen(
-                        QColor(255, 255, 255, 255 if is_hovered else 200))
+                    painter.setPen(QColor(255, 255, 255, 255 if is_hovered else 200))
                     painter.drawText(QPointF(label_x, label_baseline), label)
                 elif is_minor_tick:
-                    pen_minor = QPen(
-                        QColor(255, 255, 255, 200 if is_hovered else 60))
+                    pen_minor = QPen(QColor(255, 255, 255, 200 if is_hovered else 60))
                     pen_minor.setWidthF(1.5 if is_hovered else 1.0)
                     painter.setPen(pen_minor)
 
@@ -640,7 +637,17 @@ class FetchWorker(QThread):
     # buckets, has_interval, start_time, duration, error, source
     data_fetched = pyqtSignal(list, bool, float, float, str, str)
 
-    def __init__(self, config: PiecesDensityConfig, time_source: TimeSource, known_start_time: float = 0.0, last_streaming_time: float = 0.0, session_override: float = 0.0, force_session: bool = False, session_end_bound: float = 0.0, interval_error: str = ""):
+    def __init__(
+        self,
+        config: PiecesDensityConfig,
+        time_source: TimeSource,
+        known_start_time: float = 0.0,
+        last_streaming_time: float = 0.0,
+        session_override: float = 0.0,
+        force_session: bool = False,
+        session_end_bound: float = 0.0,
+        interval_error: str = "",
+    ):
         super().__init__()
         self.session_end_bound = session_end_bound
         self.config = config
@@ -659,15 +666,18 @@ class FetchWorker(QThread):
         try:
             # event-logger is the only provider of interval boundaries.
             if self.interval_error:
-                self.data_fetched.emit(
-                    [], True, 0.0, 0.0, self.interval_error, self.time_source.value)
+                self.data_fetched.emit([], True, 0.0, 0.0, self.interval_error, self.time_source.value)
                 return
 
             if self.session_override <= 0:
                 self.data_fetched.emit(
-                    [], False, 0.0, 0.0,
+                    [],
+                    False,
+                    0.0,
+                    0.0,
                     f"No canonical interval in {self.config.truth_time_db_path}",
-                    self.time_source.value)
+                    self.time_source.value,
+                )
                 return
 
             stream_start_time = self.session_override
@@ -678,56 +688,31 @@ class FetchWorker(QThread):
             if not self._is_running:
                 return
 
-            # 2. Raw Bucket sampling (1 min intervals)
-            bucket_interval = 60
-            num_buckets = max(
-                math.ceil(total_duration_sec / bucket_interval), 1)
-            raw_buckets = [0] * num_buckets
-
-            # 3. Query the local Pieces OS sqlite file
-            localappdata = os.environ.get("LOCALAPPDATA", "")
-            db_path = os.path.join(
-                localappdata,
-                "Mesh Intelligent Technologies, Inc",
-                "Pieces OS",
-                "com.pieces.os",
-                "production",
-                "Pieces",
-                "vector_db",
-                "workstreamEvents.sqlite"
+            resolved_source = resolve_density_source(
+                self.config.density_source,
+                self.config.screenpipe_db_path,
+                self.config.pieces_db_path,
             )
-
-            if not os.path.exists(db_path):
+            if not os.path.exists(resolved_source.database_path):
                 self.data_fetched.emit(
-                    [], True, 0.0, 0.0, f"Pieces DB missing at: {db_path}", self.time_source.value)
-                return
-
-            # Connect in read-only mode
-            uri = f"file:{db_path}?mode=ro"
-            conn = sqlite3.connect(uri, uri=True)
-            try:
-                c = conn.cursor()
-                c.execute(
-                    "SELECT created_at FROM vectors WHERE created_at >= ? AND created_at < ?",
-                    (stream_start_time, interval_end),
+                    [],
+                    True,
+                    0.0,
+                    0.0,
+                    f"{resolved_source.source.value} DB missing at: {resolved_source.database_path}",
+                    self.time_source.value,
                 )
-                rows = c.fetchall()
-                if not self._is_running:
-                    return
-                for row in rows:
-                    if not self._is_running:
-                        return
-                    idx = int((row[0] - stream_start_time) / bucket_interval)
-                    if 0 <= idx < num_buckets:
-                        raw_buckets[idx] += 1
-            finally:
-                conn.close()
-
-            # 4. Apply 10-min sliding window (±5 mins) integration
-            buckets = [
-                sum(raw_buckets[max(0, i - 5):min(num_buckets, i + 6)])
-                for i in range(num_buckets)
-            ]
+                return
+            raw_buckets = _DENSITY_BUCKET_CACHE.load(
+                resolved_source,
+                stream_start_time,
+                interval_end,
+                closed_interval=self.session_end_bound > 0,
+                cancelled=lambda: not self._is_running,
+            )
+            if not self._is_running:
+                return
+            buckets = integrate_density(raw_buckets)
 
             # Keep leading zero-activity buckets so the heatmap remains aligned with the
             # canonical interval selected from event-logger.
@@ -735,13 +720,11 @@ class FetchWorker(QThread):
             if not self._is_running:
                 return
 
-            self.data_fetched.emit(
-                buckets, True, stream_start_time, total_duration_sec, "", self.time_source.value)
+            self.data_fetched.emit(buckets, True, stream_start_time, total_duration_sec, "", self.time_source.value)
 
         except Exception as e:
-            logging.error("Error fetching Pieces data: %s", e)
-            self.data_fetched.emit(
-                [], True, 0.0, 0.0, f"Error: {e}", self.time_source.value)
+            logging.error("Error fetching activity density: %s", e)
+            self.data_fetched.emit([], True, 0.0, 0.0, f"Error: {e}", self.time_source.value)
 
 
 class PiecesDensityWidget(BaseWidget):
@@ -749,6 +732,7 @@ class PiecesDensityWidget(BaseWidget):
     A widget that anchors to the yasb bar, but spawns a full-width overlay
     beneath the bar for the Pieces Workstream density heatmap.
     """
+
     validation_schema = PiecesDensityConfig
 
     _toggle_req_signal = pyqtSignal(str)
@@ -757,6 +741,17 @@ class PiecesDensityWidget(BaseWidget):
     def __init__(self, config: PiecesDensityConfig):
         super().__init__("pieces-density-widget")
         self.config = config
+
+        resolved_density = resolve_density_source(
+            config.density_source,
+            config.screenpipe_db_path,
+            config.pieces_db_path,
+        )
+        logging.info(
+            "Activity density database (%s): %s",
+            resolved_density.source.value,
+            resolved_density.database_path,
+        )
 
         self._is_active = True
         self._time_source = TimeSource.YOUTUBE_LIVESTREAM
@@ -775,12 +770,10 @@ class PiecesDensityWidget(BaseWidget):
         self._timer.start(self.config.poll_interval_sec * 1000)
         self.register_callback("toggle_pieces_density", self._toggle_overlay)
 
-        self._event_service.register_event(
-            "toggle_pieces_widget", self._toggle_req_signal)
+        self._event_service.register_event("toggle_pieces_widget", self._toggle_req_signal)
         self._toggle_req_signal.connect(self._toggle_pieces_state)
 
-        self._event_service.register_event(
-            "pieces_time_source_changed", self._time_source_changed_signal)
+        self._event_service.register_event("pieces_time_source_changed", self._time_source_changed_signal)
         self._time_source_changed_signal.connect(self._on_time_source_changed)
 
         # Drop to the bottom of the bar's Z-order to prevent covering other widgets
@@ -809,12 +802,9 @@ class PiecesDensityWidget(BaseWidget):
         except RuntimeError:
             return
 
-        SetWindowPos(controls_l_hwnd, bar_hwnd, 0, 0, 0, 0,
-                     SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE)
-        SetWindowPos(controls_r_hwnd, controls_l_hwnd, 0, 0, 0,
-                     0, SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE)
-        SetWindowPos(overlay_hwnd, controls_r_hwnd, 0, 0, 0, 0,
-                     SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE)
+        SetWindowPos(controls_l_hwnd, bar_hwnd, 0, 0, 0, 0, SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE)
+        SetWindowPos(controls_r_hwnd, controls_l_hwnd, 0, 0, 0, 0, SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE)
+        SetWindowPos(overlay_hwnd, controls_r_hwnd, 0, 0, 0, 0, SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE)
 
     def _show_overlay_below_bar(self):
         self._update_overlay_geometry()
@@ -823,8 +813,13 @@ class PiecesDensityWidget(BaseWidget):
         self._place_overlay_below_bar()
 
     def _poll_hover(self):
-        if not self._overlay or not self._overlay.isVisible() or not self.config.show_tooltip or not self._overlay.is_streaming:
-            if getattr(self._overlay, 'hover_idx', None) is not None:
+        if (
+            not self._overlay
+            or not self._overlay.isVisible()
+            or not self.config.show_tooltip
+            or not self._overlay.is_streaming
+        ):
+            if getattr(self._overlay, "hover_idx", None) is not None:
                 self._overlay.hover_idx = None
                 self._overlay.update()
                 QToolTip.hideText()
@@ -839,8 +834,7 @@ class PiecesDensityWidget(BaseWidget):
                 return
 
             if self._overlay.error_msg:
-                QToolTip.showText(
-                    cursor_pos, f"Error: {self._overlay.error_msg}")
+                QToolTip.showText(cursor_pos, f"Error: {self._overlay.error_msg}")
                 return
 
             if not self._overlay.buckets:
@@ -850,10 +844,9 @@ class PiecesDensityWidget(BaseWidget):
             # Map mouse global X to time bucket
             local_x = cursor_pos.x() - geo.x()
             bucket_index = int((local_x / w) * len(self._overlay.buckets))
-            bucket_index = min(max(bucket_index, 0),
-                               len(self._overlay.buckets) - 1)
+            bucket_index = min(max(bucket_index, 0), len(self._overlay.buckets) - 1)
 
-            if getattr(self._overlay, 'hover_idx', None) != bucket_index:
+            if getattr(self._overlay, "hover_idx", None) != bucket_index:
                 self._overlay.hover_idx = bucket_index
                 self._overlay.update()
 
@@ -863,7 +856,7 @@ class PiecesDensityWidget(BaseWidget):
 
             QToolTip.showText(cursor_pos, tooltip_text)
         else:
-            if getattr(self._overlay, 'hover_idx', None) is not None:
+            if getattr(self._overlay, "hover_idx", None) is not None:
                 self._overlay.hover_idx = None
                 self._overlay.update()
                 QToolTip.hideText()
@@ -887,15 +880,21 @@ class PiecesDensityWidget(BaseWidget):
             real_idx = self._selected_session_index(sessions)
             if real_idx is not None:
                 override_time = sessions[real_idx]
-                end_bound = self._session_manager.get_session_end(
-                    self._time_source, override_time) or 0.0
+                end_bound = self._session_manager.get_session_end(self._time_source, override_time) or 0.0
 
         force_session = override_time > 0
         interval_error = self._session_manager.last_error
 
-        self._worker = FetchWorker(self.config, self._time_source, self._stream_start_time,
-                                   self._last_streaming_time, override_time, force_session, end_bound,
-                                   interval_error)
+        self._worker = FetchWorker(
+            self.config,
+            self._time_source,
+            self._stream_start_time,
+            self._last_streaming_time,
+            override_time,
+            force_session,
+            end_bound,
+            interval_error,
+        )
         self._worker.data_fetched.connect(self._on_data_fetched)
         self._worker.finished.connect(self._on_worker_finished)
         self._worker.finished.connect(self._worker.deleteLater)
@@ -927,7 +926,15 @@ class PiecesDensityWidget(BaseWidget):
             self._selected_session_start = None
         return index
 
-    def _on_data_fetched(self, buckets: list[int], is_streaming: bool, start_time: float, total_duration_sec: float, error_msg: str, source_value: str):
+    def _on_data_fetched(
+        self,
+        buckets: list[int],
+        is_streaming: bool,
+        start_time: float,
+        total_duration_sec: float,
+        error_msg: str,
+        source_value: str,
+    ):
         if not getattr(self, "_is_active", True):
             return
         # Discard stale result: time source was toggled while the worker was running.
@@ -989,8 +996,7 @@ class PiecesDensityWidget(BaseWidget):
         self._controls_right.adjustSize()
         cw_r = self._controls_right.width()
         ch_r = self._controls_right.height()
-        self._controls_right.setGeometry(
-            x + w - cw_r - 5, y + h - ch_r - 5, cw_r, ch_r)
+        self._controls_right.setGeometry(x + w - cw_r - 5, y + h - ch_r - 5, cw_r, ch_r)
 
     def _toggle_overlay(self):
         if self._overlay.isVisible():
@@ -1049,8 +1055,7 @@ class PiecesDensityWidget(BaseWidget):
                 self._controls_left.hide()
                 self._controls_right.hide()
 
-        self._event_service.emit_event(
-            "pieces_widget_state_changed", self._is_active, self.screen_name)
+        self._event_service.emit_event("pieces_widget_state_changed", self._is_active, self.screen_name)
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -1060,14 +1065,11 @@ class PiecesDensityWidget(BaseWidget):
         bar_window = self.window()
         if hasattr(bar_window, "animation_tick") and not getattr(self, "_connected_anim", False):
             bar_window.animation_tick.connect(self._update_overlay_geometry)
-            bar_window.animation_finished.connect(
-                self._update_overlay_geometry)
+            bar_window.animation_finished.connect(self._update_overlay_geometry)
             if hasattr(bar_window, "opacity_tick"):
                 bar_window.opacity_tick.connect(self._overlay.setWindowOpacity)
-                bar_window.opacity_tick.connect(
-                    self._controls_left.setWindowOpacity)
-                bar_window.opacity_tick.connect(
-                    self._controls_right.setWindowOpacity)
+                bar_window.opacity_tick.connect(self._controls_left.setWindowOpacity)
+                bar_window.opacity_tick.connect(self._controls_right.setWindowOpacity)
             self._connected_anim = True
 
         # Initial geometry update and fetch

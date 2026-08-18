@@ -1,3 +1,5 @@
+from typing import Literal
+
 from core.validation.widgets.base_model import (
     CallbacksConfig,
     CustomBaseModel,
@@ -17,9 +19,14 @@ class PiecesDensityConfig(CustomBaseModel):
     # "auto" checks EVENT_LOGGER_DB_PATH, nearby repositories, then local app data.
     truth_time_db_path: str = "auto"
 
+    # Raw event density provider. Auto prefers Screenpipe and keeps Pieces as fallback.
+    density_source: Literal["auto", "screenpipe", "pieces"] = "auto"
+    screenpipe_db_path: str = "auto"
+    pieces_db_path: str = "auto"
+
     # Appearance
     widget_height: int = 100  # Can match the screenshot
-    
+
     # Gradient colors for heatmap (cold -> hot)
     color_low: str = "rgba(0, 200, 255, 0.2)"
     color_mid: str = "rgba(255, 150, 0, 0.5)"
