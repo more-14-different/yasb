@@ -34,7 +34,7 @@ class KomorebiWorkspacesConfig(CustomBaseModel):
     label_workspace_btn: str = "{index}"
     label_workspace_active_btn: str = "{index}"
     label_workspace_populated_btn: str = "{index}"
-    label_default_name: str = ""
+    label_default_name: str = "{index}"
     label_float_override: str = "Override Active"
     toggle_workspace_layer: ToggleWorkspaceLayerConfig = ToggleWorkspaceLayerConfig()
     hide_if_offline: bool = False

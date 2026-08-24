@@ -34,6 +34,48 @@ APP_ICON_DISPLAY_MODE_ROW = "row"
 APP_ICON_DISPLAY_MODE_LAYOUT_PREVIEW = "layout_preview"
 
 
+def _format_workspace_labels(
+    workspace_name: str | None,
+    workspace_index: int,
+    monitor_index: int,
+    label_default_name: str,
+    label_workspace_btn: str,
+    label_workspace_active_btn: str,
+    label_workspace_populated_btn: str,
+) -> tuple[str, str, str]:
+    """Format workspace labels without using whitespace as an implicit control flag."""
+    fallback_name = str(workspace_index)
+    try:
+        configured_default = label_default_name.format(index=workspace_index, monitor_index=monitor_index)
+    except (IndexError, KeyError, ValueError):
+        configured_default = fallback_name
+
+    resolved_name = workspace_name or configured_default or fallback_name
+    format_values = {
+        "name": resolved_name,
+        "index": workspace_index,
+        "monitor_index": monitor_index,
+    }
+    return (
+        label_workspace_btn.format(**format_values),
+        label_workspace_active_btn.format(**format_values),
+        label_workspace_populated_btn.format(**format_values),
+    )
+
+
+def _should_hide_workspace_label(hide_label: bool, has_icons: bool) -> bool:
+    return hide_label and has_icons
+
+
+def _workspace_topology_signature(screen: dict | None, workspaces: list[dict]) -> tuple | None:
+    if not screen:
+        return None
+    return (
+        screen.get("id"),
+        tuple((workspace.get("index"), workspace.get("name")) for workspace in workspaces),
+    )
+
+
 def _log_workspace_diag(message: str, *args) -> None:
     logging.info("[komorebi-workspaces] " + message, *args)
 
@@ -106,9 +148,9 @@ class WorkspaceButton(WorkspaceButtonMixin, QPushButton):
         self.config = config
         self.status = WORKSPACE_STATUS_EMPTY
         self.setProperty("class", "ws-btn")
-        self.default_label = label if label and label.strip() else str(workspace_index + 1)
-        self.active_label = active_label if active_label and active_label.strip() else self.default_label
-        self.populated_label = populated_label if populated_label and populated_label.strip() else self.default_label
+        self.default_label = str(workspace_index + 1) if label is None else label
+        self.active_label = self.default_label if active_label is None else active_label
+        self.populated_label = self.default_label if populated_label is None else populated_label
         self.setText(self.default_label)
         self.clicked.connect(self.activate_workspace)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, self.sizePolicy().verticalPolicy())
@@ -162,9 +204,9 @@ class WorkspaceButtonWithIcons(WorkspaceButtonMixin, QFrame):
         self.config = config
         self.status = WORKSPACE_STATUS_EMPTY
         self.setProperty("class", "ws-btn-container")
-        self.default_label = label if label and label.strip() else str(workspace_index + 1)
-        self.active_label = active_label if active_label and active_label.strip() else self.default_label
-        self.populated_label = populated_label if populated_label and populated_label.strip() else self.default_label
+        self.default_label = str(workspace_index + 1) if label is None else label
+        self.active_label = self.default_label if active_label is None else active_label
+        self.populated_label = self.default_label if populated_label is None else populated_label
 
         self.setSizePolicy(QSizePolicy.Policy.Fixed, self.sizePolicy().verticalPolicy())
 
@@ -253,10 +295,6 @@ class WorkspaceButtonWithIcons(WorkspaceButtonMixin, QFrame):
         else:
             self.text_label.setText(self.default_label)
         refresh_widget_style(self.widget_to_style)
-        
-        
-        logging.info(f"[DEBUG YASB] Workspace {self.workspace_index} text_label: status={status}, repr(text)={repr(self.text_label.text())}, isVisible={self.text_label.isVisible()}, isHidden={self.text_label.isHidden()}")
-
         if self.preview_widget.isVisible():
             self.preview_widget.refresh_preview_styles()
         self._update_icons_paint()
@@ -288,12 +326,16 @@ class WorkspaceButtonWithIcons(WorkspaceButtonMixin, QFrame):
         use_preview = self._should_use_layout_preview(icons_list)
         if use_preview and self.preview_widget.update_preview(icons_list):
             self._hide_row_icons()
-            self.text_label.show()
+            self.text_label.setVisible(
+                not _should_hide_workspace_label(self.config.app_icons.hide_label, bool(icons_list))
+            )
             return
 
         self.preview_widget.clear_preview()
         self._show_row_icons(icons_list)
-        self.text_label.show()
+        self.text_label.setVisible(
+            not _should_hide_workspace_label(self.config.app_icons.hide_label, bool(self.icon_labels))
+        )
 
         # Force layout to recalculate immediately to prevent lagging negative spacing
         self.button_layout.invalidate()
@@ -1323,6 +1365,8 @@ class WorkspaceWidget(BaseWidget):
         self._komorebi_screen = None
         self._komorebi_state = None
         self._komorebi_workspaces = []
+        self._current_workspace_topology_signature = None
+        self._workspace_topology_changed = False
         self._prev_workspace_index = None
         self._curr_workspace_index = None
         self._pending_workspace_indexes: set[int] = set()
@@ -1466,6 +1510,8 @@ class WorkspaceWidget(BaseWidget):
         self._komorebi_state = None
         self._komorebi_screen = None
         self._komorebi_workspaces = []
+        self._current_workspace_topology_signature = None
+        self._workspace_topology_changed = False
         self._curr_workspace_index = None
         self._prev_workspace_index = None
         self._pending_workspace_indexes = set()
@@ -1550,6 +1596,8 @@ class WorkspaceWidget(BaseWidget):
 
     def _on_komorebi_update_event(self, event: dict, state: dict) -> None:
         if self._update_komorebi_state(state):
+            if self._workspace_topology_changed:
+                self._reconcile_workspace_buttons()
             active_workspace_changed = self._has_active_workspace_index_changed()
             event_type = event.get("type")
             pending_workspace_confirmed = (
@@ -1733,6 +1781,12 @@ class WorkspaceWidget(BaseWidget):
             if self._komorebi_state:
                 self._komorebi_screen = self._komorebic.get_screen_by_hwnd(self._komorebi_state, self._screen_hwnd)
                 self._komorebi_workspaces = self._komorebic.get_workspaces(self._komorebi_screen)
+                topology_signature = _workspace_topology_signature(
+                    self._komorebi_screen,
+                    self._komorebi_workspaces,
+                )
+                self._workspace_topology_changed = topology_signature != self._current_workspace_topology_signature
+                self._current_workspace_topology_signature = topology_signature
                 focused_workspace = self._get_focused_workspace()
                 if focused_workspace:
                     self._prev_workspace_index = self._curr_workspace_index
@@ -2282,6 +2336,12 @@ class WorkspaceWidget(BaseWidget):
                     self._workspace_container_layout.insertWidget(i, workspace_btn)
                 self._update_button(workspace_btn)
 
+    def _reconcile_workspace_buttons(self) -> None:
+        expected_count = len(self._komorebi_workspaces)
+        for workspace_button in self._workspace_buttons[expected_count:]:
+            workspace_button.hide()
+        self._add_or_update_buttons()
+
     def _get_workspace_label(self, workspace_index):
         workspace = self._komorebic.get_workspace_by_index(self._komorebi_screen, workspace_index)
         monitor_index = self._komorebi_screen["index"]
@@ -2292,28 +2352,15 @@ class WorkspaceWidget(BaseWidget):
             ws_raw_name = workspace.get("name") if isinstance(workspace, dict) else None
         except Exception:
             ws_raw_name = None
-        try:
-            ws_name = ws_raw_name or self.config.label_default_name.format(
-                index=ws_index, monitor_index=ws_monitor_index
-            )
-        except Exception:
-            ws_name = str(ws_index)
-
-        default_label = self.config.label_workspace_btn.format(
-            name=ws_name, index=ws_index, monitor_index=ws_monitor_index
+        return _format_workspace_labels(
+            ws_raw_name,
+            ws_index,
+            ws_monitor_index,
+            self.config.label_default_name,
+            self.config.label_workspace_btn,
+            self.config.label_workspace_active_btn,
+            self.config.label_workspace_populated_btn,
         )
-        active_label = self.config.label_workspace_active_btn.format(
-            name=ws_name, index=ws_index, monitor_index=ws_monitor_index
-        )
-        populated_label = self.config.label_workspace_populated_btn.format(
-            name=ws_name, index=ws_index, monitor_index=ws_monitor_index
-        )
-        
-        default_label = default_label if default_label and default_label.strip() else ws_name
-        active_label = active_label if active_label and active_label.strip() else default_label
-        populated_label = populated_label if populated_label and populated_label.strip() else default_label
-        
-        return default_label, active_label, populated_label
 
     def _try_add_workspace_button(self, workspace_index: int) -> WorkspaceButton:
         workspace_button_indexes = [ws_btn.workspace_index for ws_btn in self._workspace_buttons]
