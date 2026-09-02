@@ -76,6 +76,19 @@ def _workspace_topology_signature(screen: dict | None, workspaces: list[dict]) -
     )
 
 
+def _resolve_komorebi_screen(komorebic, state: dict, monitor_hwnds) -> tuple[dict | None, int | None]:
+    """Resolve a monitor from ordered handles, skipping stale or duplicate values."""
+    checked_hwnds = set()
+    for monitor_hwnd in monitor_hwnds:
+        if monitor_hwnd is None or monitor_hwnd in checked_hwnds:
+            continue
+        checked_hwnds.add(monitor_hwnd)
+        screen = komorebic.get_screen_by_hwnd(state, monitor_hwnd)
+        if screen is not None:
+            return screen, monitor_hwnd
+    return None, None
+
+
 def _log_workspace_diag(message: str, *args) -> None:
     logging.info("[komorebi-workspaces] " + message, *args)
 
@@ -1463,6 +1476,10 @@ class WorkspaceWidget(BaseWidget):
         self._layout_command_debounce_timer.setSingleShot(True)
         self._layout_command_debounce_timer.timeout.connect(self._refresh_layout_preview_from_current_state)
 
+        self._monitor_rebind_timer = QTimer()
+        self._monitor_rebind_timer.setSingleShot(True)
+        self._monitor_rebind_timer.timeout.connect(self._refresh_layout_preview_from_current_state)
+
         self._register_signals_and_events()
 
     def _register_signals_and_events(self):
@@ -1495,6 +1512,23 @@ class WorkspaceWidget(BaseWidget):
         # Ensure layout previews also re-sync their geometry when shown
         QTimer.singleShot(10, self._sync_all_layout_preview_overlays)
         QTimer.singleShot(50, self._sync_all_layout_preview_overlays)
+
+    def on_bar_geometry_changed(self, monitor_hwnd: int | None) -> None:
+        """Rebind Komorebi state and owned preview overlays after display changes."""
+        self.monitor_hwnd = monitor_hwnd
+        self._workspace_container_layout.invalidate()
+        self._workspace_container_layout.activate()
+        for workspace_button in self._workspace_buttons:
+            button_layout = getattr(workspace_button, "button_layout", None)
+            if button_layout is not None:
+                button_layout.invalidate()
+                button_layout.activate()
+
+        QTimer.singleShot(0, self._sync_all_layout_preview_overlays)
+        QTimer.singleShot(50, self._sync_all_layout_preview_overlays)
+        # Debounce the two Bar-side monitor checks and refresh icons once, after
+        # Komorebi has had time to publish its new monitor ids.
+        self._monitor_rebind_timer.start(200)
 
     def _on_destroyed(self, *args):
         try:
@@ -1776,38 +1810,67 @@ class WorkspaceWidget(BaseWidget):
 
     def _update_komorebi_state(self, komorebi_state: dict) -> bool:
         try:
-            self._screen_hwnd = self.monitor_hwnd or get_monitor_hwnd(int(QWidget.winId(self)))
-            self._komorebi_state = komorebi_state
-            if self._komorebi_state:
-                self._komorebi_screen = self._komorebic.get_screen_by_hwnd(self._komorebi_state, self._screen_hwnd)
-                self._komorebi_workspaces = self._komorebic.get_workspaces(self._komorebi_screen)
-                topology_signature = _workspace_topology_signature(
-                    self._komorebi_screen,
-                    self._komorebi_workspaces,
+            if not komorebi_state:
+                return False
+
+            live_monitor_hwnd = self._get_live_monitor_hwnd()
+            komorebi_screen, screen_hwnd = _resolve_komorebi_screen(
+                self._komorebic,
+                komorebi_state,
+                (live_monitor_hwnd, self.monitor_hwnd),
+            )
+            if komorebi_screen is None:
+                _log_workspace_diag(
+                    "monitor resolution failed: configured_hwnd=%s live_hwnd=%s",
+                    self.monitor_hwnd,
+                    live_monitor_hwnd,
                 )
-                self._workspace_topology_changed = topology_signature != self._current_workspace_topology_signature
-                self._current_workspace_topology_signature = topology_signature
-                focused_workspace = self._get_focused_workspace()
-                if focused_workspace:
-                    self._prev_workspace_index = self._curr_workspace_index
-                    self._curr_workspace_index = focused_workspace["index"]
+                return False
 
-                self._curr_num_windows_in_workspaces = self._curr_num_windows_in_workspaces[
-                    : len(self._komorebi_workspaces)
-                ] + [0] * (len(self._komorebi_workspaces) - len(self._curr_num_windows_in_workspaces))
-                self._prev_num_windows_in_workspaces = self._curr_num_windows_in_workspaces.copy()
-                self._curr_workspace_layout_signatures = self._curr_workspace_layout_signatures[
-                    : len(self._komorebi_workspaces)
-                ] + [()] * (len(self._komorebi_workspaces) - len(self._curr_workspace_layout_signatures))
-                self._prev_workspace_layout_signatures = self._curr_workspace_layout_signatures.copy()
-                for i in range(len(self._komorebi_workspaces)):
-                    windows = self._get_all_windows_in_workspace(i)
-                    self._curr_num_windows_in_workspaces[i] = len(windows) if windows else 0
-                    self._curr_workspace_layout_signatures[i] = self._get_windows_layout_signature(windows)
+            komorebi_workspaces = self._komorebic.get_workspaces(komorebi_screen)
+            topology_signature = _workspace_topology_signature(komorebi_screen, komorebi_workspaces)
+            focused_workspace = self._komorebic.get_focused_workspace(komorebi_screen)
 
-                return True
-        except TypeError:
+            previous_window_counts = self._curr_num_windows_in_workspaces[: len(komorebi_workspaces)] + [0] * (
+                len(komorebi_workspaces) - len(self._curr_num_windows_in_workspaces)
+            )
+            current_window_counts = previous_window_counts.copy()
+            previous_layout_signatures = self._curr_workspace_layout_signatures[: len(komorebi_workspaces)] + [
+                ()
+            ] * (len(komorebi_workspaces) - len(self._curr_workspace_layout_signatures))
+            current_layout_signatures = previous_layout_signatures.copy()
+            for i, workspace in enumerate(komorebi_workspaces):
+                windows = self._get_all_windows_for_workspace(workspace, komorebi_screen)
+                current_window_counts[i] = len(windows) if windows else 0
+                current_layout_signatures[i] = self._get_windows_layout_signature(windows)
+
+            # Commit the new snapshot only after its monitor and workspaces have
+            # been resolved. A transient stale HMONITOR must not poison the
+            # previously valid widget state.
+            self._screen_hwnd = screen_hwnd
+            self.monitor_hwnd = screen_hwnd
+            self._komorebi_state = komorebi_state
+            self._komorebi_screen = komorebi_screen
+            self._komorebi_workspaces = komorebi_workspaces
+            self._workspace_topology_changed = topology_signature != self._current_workspace_topology_signature
+            self._current_workspace_topology_signature = topology_signature
+            if focused_workspace:
+                self._prev_workspace_index = self._curr_workspace_index
+                self._curr_workspace_index = focused_workspace["index"]
+
+            self._prev_num_windows_in_workspaces = previous_window_counts
+            self._curr_num_windows_in_workspaces = current_window_counts
+            self._prev_workspace_layout_signatures = previous_layout_signatures
+            self._curr_workspace_layout_signatures = current_layout_signatures
+            return True
+        except (KeyError, IndexError, TypeError):
             return False
+
+    def _get_live_monitor_hwnd(self) -> int | None:
+        try:
+            return get_monitor_hwnd(int(QWidget.winId(self)))
+        except (RuntimeError, TypeError):
+            return None
 
     @staticmethod
     def _get_windows_layout_signature(windows: list[dict] | None) -> tuple:
@@ -2420,7 +2483,10 @@ class WorkspaceWidget(BaseWidget):
             if not state:
                 return
             if self._update_komorebi_state(state):
+                if self._workspace_topology_changed:
+                    self._reconcile_workspace_buttons()
                 self._refresh_all_workspace_icons()
+                QTimer.singleShot(0, self._sync_all_layout_preview_overlays)
         except Exception:
             logging.exception("Failed to refresh layout preview from komorebi state")
 
@@ -2449,6 +2515,9 @@ class WorkspaceWidget(BaseWidget):
 
     def _get_all_windows_in_workspace(self, workspace_index: int) -> list[dict] | None:
         workspace = self._komorebi_workspaces[workspace_index]
+        return self._get_all_windows_for_workspace(workspace, self._komorebi_screen)
+
+    def _get_all_windows_for_workspace(self, workspace: dict, monitor_state: dict) -> list[dict] | None:
         monocle_container = self._komorebic.get_monocle_container(workspace)
         if monocle_container:
             focused_monocle_window = self._komorebic.get_focused_window(monocle_container)
@@ -2466,7 +2535,6 @@ class WorkspaceWidget(BaseWidget):
         try:
             from core.widgets.komorebi.layout_engine import calculate_layout
             import logging
-            monitor_state = self._komorebi_screen
             work_area = monitor_state.get("work_area_size")
             if work_area and containers:
                 layout_config = workspace.get("layout", {})

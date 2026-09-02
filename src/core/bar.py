@@ -159,6 +159,10 @@ class Bar(QWidget):
             self._target_screen.name(),
         )
         self.position_bar()
+        self._refresh_monitor_bindings()
+        # Display topology changes can briefly leave Qt/Win32 with the old
+        # monitor mapping. Re-check after the geometry notification settles.
+        QTimer.singleShot(150, self._refresh_monitor_bindings)
         # Re-register AppBar when screen config changes (resolution/monitor added/removed)
         self.update_app_bar()
 
@@ -167,6 +171,28 @@ class Bar(QWidget):
 
         if self._is_auto_width and self._auto_width_manager:
             QTimer.singleShot(0, self._auto_width_manager.sync)
+
+    def _refresh_monitor_bindings(self) -> None:
+        previous_monitor_hwnd = self.monitor_hwnd
+        current_monitor_hwnd = get_monitor_hwnd(int(self.winId()))
+        if current_monitor_hwnd is not None:
+            self.monitor_hwnd = current_monitor_hwnd
+
+        if self.monitor_hwnd != previous_monitor_hwnd:
+            logging.info(
+                "Monitor handle changed for bar %s on screen %s: %s -> %s",
+                self._bar_name,
+                self._target_screen.name(),
+                previous_monitor_hwnd,
+                self.monitor_hwnd,
+            )
+
+        for widget_group in self._widgets.values():
+            for widget in widget_group:
+                widget.monitor_hwnd = self.monitor_hwnd
+                geometry_changed_handler = getattr(widget, "on_bar_geometry_changed", None)
+                if callable(geometry_changed_handler):
+                    geometry_changed_handler(self.monitor_hwnd)
 
     def update_app_bar(self) -> None:
         if self.app_bar_manager:

@@ -9,6 +9,7 @@ from core.validation.widgets.komorebi.workspaces import KomorebiWorkspacesConfig
 from core.widgets.komorebi.workspaces import (  # noqa: E402
     WorkspaceWidget,
     _format_workspace_labels,
+    _resolve_komorebi_screen,
     _should_hide_workspace_label,
     _workspace_topology_signature,
 )
@@ -42,6 +43,59 @@ class WorkspaceIconLabelTests(unittest.TestCase):
 
 
 class WorkspaceTopologyTests(unittest.TestCase):
+    def test_monitor_resolution_prefers_live_handle_over_stale_handle(self):
+        class Client:
+            def get_screen_by_hwnd(self, state, hwnd):
+                return next((screen for screen in state["screens"] if screen["id"] == hwnd), None)
+
+        state = {"screens": [{"id": 111}, {"id": 222}]}
+
+        screen, hwnd = _resolve_komorebi_screen(Client(), state, (222, 111))
+
+        self.assertEqual(screen, {"id": 222})
+        self.assertEqual(hwnd, 222)
+
+    def test_monitor_resolution_does_not_select_an_unmatched_screen(self):
+        class Client:
+            def get_screen_by_hwnd(self, state, hwnd):
+                return next((screen for screen in state["screens"] if screen["id"] == hwnd), None)
+
+        screen, hwnd = _resolve_komorebi_screen(Client(), {"screens": [{"id": 333}]}, (111, 222))
+
+        self.assertIsNone(screen)
+        self.assertIsNone(hwnd)
+
+    def test_failed_monitor_resolution_preserves_last_valid_widget_state(self):
+        old_state = {"old": "state"}
+        old_screen = {"id": 111}
+        old_workspaces = [{"index": 0}]
+
+        class Client:
+            @staticmethod
+            def get_screen_by_hwnd(state, hwnd):
+                return None
+
+        class Widget:
+            monitor_hwnd = 111
+            _screen_hwnd = 111
+            _komorebi_state = old_state
+            _komorebi_screen = old_screen
+            _komorebi_workspaces = old_workspaces
+            _komorebic = Client()
+
+            @staticmethod
+            def _get_live_monitor_hwnd():
+                return 222
+
+        widget = Widget()
+
+        updated = WorkspaceWidget._update_komorebi_state(widget, {"new": "state"})
+
+        self.assertFalse(updated)
+        self.assertIs(widget._komorebi_state, old_state)
+        self.assertIs(widget._komorebi_screen, old_screen)
+        self.assertIs(widget._komorebi_workspaces, old_workspaces)
+
     def test_signature_tracks_monitor_workspace_count_and_names(self):
         screen = {"id": 131224}
         original = _workspace_topology_signature(screen, [{"index": 0, "name": None}])
