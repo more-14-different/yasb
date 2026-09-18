@@ -19,9 +19,10 @@ class PiecesDensityConfig(CustomBaseModel):
     # "auto" checks EVENT_LOGGER_DB_PATH, nearby repositories, then local app data.
     truth_time_db_path: str = "auto"
 
-    # Raw event density provider. Auto prefers Screenpipe and keeps Pieces as fallback.
-    density_source: Literal["auto", "screenpipe", "pieces"] = "auto"
-    screenpipe_db_path: str = "auto"
+    # Raw event density provider. Auto prefers event-logger's Screenpipe graph
+    # minute facts and keeps Pieces as an explicitly diagnosed fallback.
+    density_source: Literal["auto", "screenpipe_graph", "pieces"] = "auto"
+    screenpipe_graph_db_path: str = "auto"
     pieces_db_path: str = "auto"
 
     # Appearance

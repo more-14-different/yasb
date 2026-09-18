@@ -690,7 +690,7 @@ class FetchWorker(QThread):
 
             resolved_source = resolve_density_source(
                 self.config.density_source,
-                self.config.screenpipe_db_path,
+                self.config.screenpipe_graph_db_path,
                 self.config.pieces_db_path,
             )
             if not os.path.exists(resolved_source.database_path):
@@ -744,13 +744,14 @@ class PiecesDensityWidget(BaseWidget):
 
         resolved_density = resolve_density_source(
             config.density_source,
-            config.screenpipe_db_path,
+            config.screenpipe_graph_db_path,
             config.pieces_db_path,
         )
         logging.info(
-            "Activity density database (%s): %s",
+            "Activity density source=%s database=%s fallback_reason=%s",
             resolved_density.source.value,
             resolved_density.database_path,
+            resolved_density.fallback_reason or "none",
         )
 
         self._is_active = True

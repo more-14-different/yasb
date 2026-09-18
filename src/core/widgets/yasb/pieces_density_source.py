@@ -11,7 +11,7 @@ from pathlib import Path
 
 class DensitySource(StrEnum):
     AUTO = "auto"
-    SCREENPIPE = "screenpipe"
+    SCREENPIPE_GRAPH = "screenpipe_graph"
     PIECES = "pieces"
 
 
@@ -19,6 +19,7 @@ class DensitySource(StrEnum):
 class ResolvedDensitySource:
     source: DensitySource
     database_path: str
+    fallback_reason: str | None = None
 
 
 @dataclass
@@ -32,11 +33,23 @@ def _expand_path(value: str) -> str:
     return os.path.abspath(os.path.expandvars(os.path.expanduser(value)))
 
 
-def resolve_screenpipe_db_path(configured_path: str) -> str:
+def resolve_screenpipe_graph_db_path(configured_path: str) -> str:
     value = configured_path.strip()
     if value and value.casefold() != "auto":
         return _expand_path(value)
-    return str((Path.home() / ".screenpipe" / "db.sqlite").resolve())
+    environment_path = os.environ.get("EVENT_LOGGER_SCREENPIPE_GRAPH_DB_PATH", "").strip()
+    if environment_path:
+        return _expand_path(environment_path)
+    relative = Path("data") / "screenpipe-graph" / "activity-memory-continuous-v2.sqlite3"
+    candidates: list[Path] = []
+    for anchor in (Path.cwd(), Path(__file__).resolve()):
+        for parent in (anchor, *anchor.parents):
+            candidates.append(parent / "event-logger" / relative)
+            if parent.name.casefold() == "event-logger":
+                candidates.append(parent / relative)
+    existing = next((candidate for candidate in candidates if candidate.is_file()), None)
+    fallback = existing or candidates[0]
+    return str(fallback.resolve())
 
 
 def resolve_pieces_db_path(configured_path: str) -> str:
@@ -58,19 +71,23 @@ def resolve_pieces_db_path(configured_path: str) -> str:
 
 def resolve_density_source(
     configured_source: str,
-    screenpipe_database_path: str,
+    screenpipe_graph_database_path: str,
     pieces_database_path: str,
 ) -> ResolvedDensitySource:
     source = DensitySource(configured_source)
-    screenpipe_path = resolve_screenpipe_db_path(screenpipe_database_path)
+    screenpipe_graph_path = resolve_screenpipe_graph_db_path(screenpipe_graph_database_path)
     pieces_path = resolve_pieces_db_path(pieces_database_path)
-    if source is DensitySource.SCREENPIPE:
-        return ResolvedDensitySource(source, screenpipe_path)
+    if source is DensitySource.SCREENPIPE_GRAPH:
+        return ResolvedDensitySource(source, screenpipe_graph_path)
     if source is DensitySource.PIECES:
         return ResolvedDensitySource(source, pieces_path)
-    if os.path.isfile(screenpipe_path):
-        return ResolvedDensitySource(DensitySource.SCREENPIPE, screenpipe_path)
-    return ResolvedDensitySource(DensitySource.PIECES, pieces_path)
+    if os.path.isfile(screenpipe_graph_path):
+        return ResolvedDensitySource(DensitySource.SCREENPIPE_GRAPH, screenpipe_graph_path)
+    return ResolvedDensitySource(
+        DensitySource.PIECES,
+        pieces_path,
+        f"screenpipe_graph_unavailable:{screenpipe_graph_path}",
+    )
 
 
 def _rfc3339(value: float) -> str:
@@ -87,20 +104,16 @@ def query_density_buckets(
     connection = sqlite3.connect(f"file:{uri_path}?mode=ro", uri=True, timeout=2)
     try:
         connection.execute("pragma query_only = on")
-        if resolved.source is DensitySource.SCREENPIPE:
+        if resolved.source is DensitySource.SCREENPIPE_GRAPH:
             start_text = _rfc3339(query_start)
             end_text = _rfc3339(query_end)
             rows = connection.execute(
-                "with observations(timestamp) as ("
-                "select timestamp from frames "
-                "where timestamp >= ? and timestamp < ? and (focused = 1 or focused is null) "
-                "union all "
-                "select timestamp from ui_events "
-                "where timestamp >= ? and timestamp < ? and event_type != 'move'"
-                ") "
-                "select cast((unixepoch(timestamp, 'subsec') - ?) / 60 as integer), count(*) "
-                "from observations group by 1 order by 1",
-                (start_text, end_text, start_text, end_text, stream_start),
+                "select cast((unixepoch(minute_start, 'subsec') - ?) / 60 as integer), "
+                "sum(frame_count + ui_event_count) "
+                "from source_activity_minutes "
+                "where minute_start >= ? and minute_start < ? "
+                "group by minute_start order by minute_start",
+                (stream_start, start_text, end_text),
             ).fetchall()
         else:
             rows = connection.execute(

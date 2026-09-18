@@ -130,47 +130,55 @@ class DensityTooltipTests(unittest.TestCase):
 
 
 class DensitySourceTests(unittest.TestCase):
-    def test_auto_prefers_screenpipe_and_keeps_pieces_fallback(self):
+    def test_auto_prefers_screenpipe_graph_and_names_pieces_fallback(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            screenpipe = root / "screenpipe.sqlite"
+            screenpipe_graph = root / "screenpipe-graph.sqlite"
             pieces = root / "pieces.sqlite"
             pieces.touch()
 
-            fallback = resolve_density_source("auto", str(screenpipe), str(pieces))
+            fallback = resolve_density_source("auto", str(screenpipe_graph), str(pieces))
             self.assertEqual(fallback.source, DensitySource.PIECES)
+            self.assertEqual(fallback.database_path, str(pieces))
+            self.assertIn("screenpipe_graph_unavailable", fallback.fallback_reason)
 
-            screenpipe.touch()
-            preferred = resolve_density_source("auto", str(screenpipe), str(pieces))
-            self.assertEqual(preferred.source, DensitySource.SCREENPIPE)
+            screenpipe_graph.touch()
+            preferred = resolve_density_source("auto", str(screenpipe_graph), str(pieces))
+            self.assertEqual(preferred.source, DensitySource.SCREENPIPE_GRAPH)
+            self.assertIsNone(preferred.fallback_reason)
 
-    def test_screenpipe_density_matches_graph_raw_observation_policy(self):
+    def test_screenpipe_graph_density_reads_exact_minute_facts(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
-            database_path = Path(temporary_directory) / "screenpipe.sqlite"
+            database_path = Path(temporary_directory) / "screenpipe-graph.sqlite"
             connection = sqlite3.connect(database_path)
             try:
                 connection.executescript(
-                    "create table frames (timestamp text, focused integer);"
-                    "create table ui_events (timestamp text, event_type text);"
-                    "insert into frames values ('2026-07-19T10:00:10.000000+00:00', 1);"
-                    "insert into frames values ('2026-07-19T10:00:20.000000+00:00', 0);"
-                    "insert into ui_events values ('2026-07-19T10:01:10.000000+00:00', 'key');"
-                    "insert into ui_events values ('2026-07-19T10:01:20.000000+00:00', 'move');"
+                    "create table source_activity_minutes ("
+                    "source_generation_id text, minute_start text, frame_count integer, "
+                    "ui_event_count integer, source_pack_sha256 text);"
+                    "insert into source_activity_minutes values "
+                    "('g1','2026-07-19T10:00:00Z',2,3,'a');"
+                    "insert into source_activity_minutes values "
+                    "('g1','2026-07-19T10:01:00Z',7,11,'b');"
+                    "insert into source_activity_minutes values "
+                    "('g1','2026-07-19T10:02:00Z',13,17,'c');"
                 )
                 connection.commit()
             finally:
                 connection.close()
             start = datetime.fromisoformat("2026-07-19T10:00:00+00:00").timestamp()
-            resolved = ResolvedDensitySource(DensitySource.SCREENPIPE, str(database_path))
+            resolved = ResolvedDensitySource(
+                DensitySource.SCREENPIPE_GRAPH, str(database_path), None
+            )
 
             self.assertEqual(
                 query_density_buckets(resolved, start, start, start + 120),
-                [(0, 1), (1, 1)],
+                [(0, 5), (1, 18)],
             )
 
     def test_active_cache_only_refreshes_the_two_newest_minutes(self):
         cache = DensityBucketCache()
-        resolved = ResolvedDensitySource(DensitySource.SCREENPIPE, "unused.sqlite")
+        resolved = ResolvedDensitySource(DensitySource.SCREENPIPE_GRAPH, "unused.sqlite", None)
         with patch(
             "core.widgets.yasb.pieces_density_source.query_density_buckets",
             side_effect=[[(0, 1), (1, 2), (2, 3)], [(2, 4), (3, 5)]],
@@ -183,7 +191,7 @@ class DensitySourceTests(unittest.TestCase):
 
     def test_closed_interval_cache_avoids_reopening_the_database(self):
         cache = DensityBucketCache()
-        resolved = ResolvedDensitySource(DensitySource.PIECES, "unused.sqlite")
+        resolved = ResolvedDensitySource(DensitySource.PIECES, "unused.sqlite", None)
         with patch(
             "core.widgets.yasb.pieces_density_source.query_density_buckets",
             return_value=[(0, 3)],
