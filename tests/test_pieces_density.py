@@ -167,9 +167,7 @@ class DensitySourceTests(unittest.TestCase):
             finally:
                 connection.close()
             start = datetime.fromisoformat("2026-07-19T10:00:00+00:00").timestamp()
-            resolved = ResolvedDensitySource(
-                DensitySource.SCREENPIPE_GRAPH, str(database_path), None
-            )
+            resolved = ResolvedDensitySource(DensitySource.SCREENPIPE_GRAPH, str(database_path), None)
 
             self.assertEqual(
                 query_density_buckets(resolved, start, start, start + 120),
