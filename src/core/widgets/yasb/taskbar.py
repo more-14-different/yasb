@@ -1,4 +1,5 @@
 import atexit
+import ctypes
 import logging
 
 import win32con
@@ -2089,7 +2090,7 @@ class TaskbarWidget(BaseWidget):
             self._launch_pinned_app(hwnd)
             return
 
-        if not win32gui.IsWindow(hwnd):
+        if not win32gui.IsWindow(hwnd) or ctypes.windll.user32.IsHungAppWindow(int(hwnd)):
             return
         try:
             self.hide_preview()

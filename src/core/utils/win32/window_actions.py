@@ -2,6 +2,7 @@ import ctypes
 import logging
 
 import win32con
+import win32gui
 import win32process
 
 from core.utils.win32.bindings import kernel32 as k32
@@ -13,6 +14,8 @@ from core.utils.win32.utils import get_window_rect
 
 def resolve_base_and_focus(hwnd: int) -> tuple[int, int]:
     """Return (base_owner_root, focus_target). Focus target is the last active visible popup if any."""
+    if not hwnd or not win32gui.IsWindow(hwnd) or u32.IsHungAppWindow(int(hwnd)):
+        return int(hwnd), int(hwnd)
     GA_ROOT = 2
     GA_ROOTOWNER = 3
     base = hwnd
@@ -125,6 +128,8 @@ def move_cursor_to_window_center(hwnd: int) -> None:
 
 def set_foreground(hwnd: int) -> None:
     """Attempt to set foreground reliably by attaching input to the target thread."""
+    if not hwnd or not win32gui.IsWindow(hwnd) or u32.IsHungAppWindow(int(hwnd)):
+        return
     try:
         tgt_tid, _ = win32process.GetWindowThreadProcessId(hwnd)
     except Exception:
@@ -162,7 +167,7 @@ def force_foreground_focus(hwnd: int) -> None:
     Args:
         hwnd: Window handle to set as foreground
     """
-    if not hwnd:
+    if not hwnd or not win32gui.IsWindow(hwnd) or u32.IsHungAppWindow(int(hwnd)):
         return
 
     try:

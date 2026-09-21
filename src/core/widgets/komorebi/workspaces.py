@@ -2816,6 +2816,13 @@ class WorkspaceWidget(BaseWidget):
     def _focus_hwnd(self, hwnd: int) -> bool:
         if not hwnd:
             return False
+        try:
+            import ctypes
+            if ctypes.windll.user32.IsHungAppWindow(int(hwnd)):
+                _log_workspace_diag("windows focus request skipped (hung window): hwnd=%s", hwnd)
+                return False
+        except Exception:
+            pass
         _log_workspace_diag("windows focus request: hwnd=%s", hwnd)
         self._log_focus_diag("before-win32-focus", hwnd, self._curr_workspace_index)
         try:

@@ -39,6 +39,8 @@ from core.utils.win32.typecheck import CArgObject
 user32 = windll.user32
 user32.GetForegroundWindow.argtypes = []
 user32.GetForegroundWindow.restype = HWND
+user32.IsHungAppWindow.argtypes = [HWND]
+user32.IsHungAppWindow.restype = BOOL
 
 # Monitor functions
 MONITORENUMPROC = WINFUNCTYPE(BOOL, HMONITOR, HDC, POINTER(RECT), LPARAM)
