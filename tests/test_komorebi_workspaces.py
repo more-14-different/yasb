@@ -5,6 +5,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
+from core.validation.widgets.komorebi import workspaces as workspaces_validation  # noqa: E402
 from core.validation.widgets.komorebi.workspaces import KomorebiWorkspacesConfig  # noqa: E402
 from core.widgets.komorebi.workspaces import (  # noqa: E402
     WorkspaceWidget,
@@ -40,6 +41,46 @@ class WorkspaceIconLabelTests(unittest.TestCase):
         self.assertTrue(_should_hide_workspace_label(True, True))
         self.assertFalse(_should_hide_workspace_label(True, False))
         self.assertFalse(_should_hide_workspace_label(False, True))
+
+    def test_click_during_monitor_rebind_is_ignored_without_pending_state(self):
+        class ParentWidget:
+            _komorebi_screen = None
+            _curr_workspace_index = 0
+            pending_calls = 0
+            clear_calls = 0
+
+            def set_pending_workspace(self, _workspace_index):
+                self.pending_calls += 1
+
+            def clear_pending_workspace(self):
+                self.clear_calls += 1
+
+        class KomorebiClient:
+            activation_calls = 0
+
+            def activate_workspace(self, _monitor_index, _workspace_index):
+                self.activation_calls += 1
+
+        class Button:
+            parent_widget = ParentWidget()
+            komorebic = KomorebiClient()
+            workspace_index = 1
+
+        from core.widgets.komorebi.workspaces import WorkspaceButtonMixin
+
+        button = Button()
+        WorkspaceButtonMixin.activate_workspace(button)
+
+        self.assertEqual(button.parent_widget.pending_calls, 0)
+        self.assertEqual(button.parent_widget.clear_calls, 0)
+        self.assertEqual(button.komorebic.activation_calls, 0)
+
+
+class WorkspaceValidationTests(unittest.TestCase):
+    def test_app_icon_model_has_widget_specific_name(self):
+        app_icons_type = type(KomorebiWorkspacesConfig().app_icons)
+
+        self.assertIs(app_icons_type, workspaces_validation.KomorebiAppIconsConfig)
 
 
 class WorkspaceTopologyTests(unittest.TestCase):
