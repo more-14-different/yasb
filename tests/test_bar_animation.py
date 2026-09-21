@@ -1,6 +1,7 @@
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import QApplication, QFrame, QWidget
@@ -41,13 +42,31 @@ class BarAnimationTests(unittest.TestCase):
         bar.animation_tick.connect(lambda: ticks.append(bar.geometry()))
         manager = BarAnimationManager(bar)
 
-        manager._start_slide(show=True)
+        with patch.object(manager, "_slide_is_blocked", return_value=False):
+            manager._start_slide(show=True)
         manager._animation.setCurrentTime(100)
         self.app.processEvents()
 
         self.assertEqual((bar.width(), bar.height()), (300, 40))
         self.assertNotEqual(bar.pos().y(), 20)
         self.assertGreater(len(ticks), 0)
+
+        manager.cleanup()
+        bar.close()
+
+    def test_slide_falls_back_to_fade_when_adjacent_screen_blocks_it(self):
+        bar = TestBar()
+        opacity_ticks = []
+        bar.opacity_tick.connect(opacity_ticks.append)
+        manager = BarAnimationManager(bar)
+
+        with patch.object(manager, "_slide_is_blocked", return_value=True):
+            manager._start_slide(show=True)
+        manager._animation.setCurrentTime(100)
+        self.app.processEvents()
+
+        self.assertEqual(bytes(manager._animation.propertyName()), b"windowOpacity")
+        self.assertGreater(len(opacity_ticks), 0)
 
         manager.cleanup()
         bar.close()
