@@ -21,6 +21,7 @@ from core.ui.views.welcome import run_setup_wizard
 from core.utils.controller import start_cli_server
 from core.utils.system_colors import SystemColorsService
 from core.utils.update_service import get_update_service, start_update_checker
+from core.utils.win32.constants import ERROR_ALREADY_EXISTS
 from core.watcher import create_observer
 from env import load_env, set_font_engine
 
@@ -60,74 +61,50 @@ def _exit_process(exit_code: int) -> None:
 
 @contextlib.contextmanager
 def single_instance_lock(name: str = "yasb_reborn"):
-    """Create a Windows mutex to ensure a single instance, with optional restart wait.
+    """Hold a named mutex, waiting briefly when a reload replaces YASB."""
 
-    If the process is launched with --restart-wait, the new instance will
-    wait for the previous instance to exit and release the mutex (bounded
-    wait) instead of exiting immediately.
-    """
-    ERROR_ALREADY_EXISTS = 183
-    wait_for_restart = "--restart-wait" in sys.argv
+    kernel32 = ctypes.windll.kernel32
+    deadline = time.monotonic() + (10.0 if "--restart-wait" in sys.argv else 0.0)
     restart_parent_pid_value = _get_arg_value("--restart-parent-pid")
+    waiting = False
 
-    # CreateMutexW(bInitialOwner=True) to own the mutex while we run
-    mutex = ctypes.windll.kernel32.CreateMutexW(None, True, name)
-    if not mutex:
-        logging.error("Failed to create mutex.")
-        sys.exit(1)
+    while True:
+        mutex = kernel32.CreateMutexW(None, False, name)
+        if not mutex:
+            logging.error("Failed to create mutex.")
+            sys.exit(1)
 
-    last_err = ctypes.windll.kernel32.GetLastError()
-    if last_err == ERROR_ALREADY_EXISTS:
-        # Another instance owns or created the mutex. If we're in restart mode, wait for it.
-        if wait_for_restart:
+        if kernel32.GetLastError() != ERROR_ALREADY_EXISTS:
+            break
+
+        kernel32.CloseHandle(mutex)
+        if time.monotonic() >= deadline:
+            logging.error(
+                "Timeout waiting for previous instance. Aborting start."
+                if waiting
+                else "Another instance of the YASB is already running."
+            )
+            sys.exit(1)
+        if not waiting:
             logging.info("Waiting for previous YASB instance to exit...")
-            # Release our initial ownership before waiting to avoid interfering
-            ctypes.windll.kernel32.ReleaseMutex(mutex)
+            waiting = True
+        time.sleep(0.25)
 
-            # Loop trying to acquire (CreateMutexW again) until timeout
-            timeout_s = 10
-            start = time.time()
-            acquired = False
-            while time.time() - start < timeout_s:
-                ctypes.windll.kernel32.CloseHandle(mutex)
-                mutex = ctypes.windll.kernel32.CreateMutexW(None, True, name)
-                if not mutex:
-                    logging.error("CreateMutexW failed while waiting")
-                    break
-                if ctypes.windll.kernel32.GetLastError() != ERROR_ALREADY_EXISTS:
-                    acquired = True
-                    break
-                # Still held by previous instance
-                ctypes.windll.kernel32.ReleaseMutex(mutex)
-                ctypes.windll.kernel32.CloseHandle(mutex)
-                time.sleep(0.25)
+    if waiting:
+        logging.info("Previous instance exited, continuing startup.")
 
-            if not acquired:
-                logging.error("Timeout waiting for previous instance. Aborting start.")
-                sys.exit(1)
-
-            logging.info("Previous instance exited, continuing startup.")
-
-            if restart_parent_pid_value and restart_parent_pid_value.isdigit():
-                restart_parent_pid = int(restart_parent_pid_value)
-                logging.info("Waiting for previous YASB process %s to terminate...", restart_parent_pid)
-                if not _wait_for_process_exit(restart_parent_pid, timeout_s=10):
-                    logging.error("Timeout waiting for previous YASB process to terminate. Aborting start.")
-                    sys.exit(1)
-        else:
-            ctypes.windll.kernel32.CloseHandle(mutex)
-            logging.error("Another instance of the YASB is already running.")
+    if restart_parent_pid_value and restart_parent_pid_value.isdigit():
+        restart_parent_pid = int(restart_parent_pid_value)
+        logging.info("Waiting for previous YASB process %s to terminate...", restart_parent_pid)
+        if not _wait_for_process_exit(restart_parent_pid, timeout_s=10):
+            kernel32.CloseHandle(mutex)
+            logging.error("Timeout waiting for previous YASB process to terminate. Aborting start.")
             sys.exit(1)
 
     try:
         yield mutex
     finally:
-        # Ensure we release and close the mutex on exit
-        try:
-            ctypes.windll.kernel32.ReleaseMutex(mutex)
-        except Exception:
-            pass
-        ctypes.windll.kernel32.CloseHandle(mutex)
+        kernel32.CloseHandle(mutex)
 
 
 def main():

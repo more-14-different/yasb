@@ -123,10 +123,12 @@ class WorkspaceButtonMixin:
     def activate_workspace(self):
         try:
             import time
+
+            screen = self.parent_widget._komorebi_screen
+            if screen is None:
+                return
             self.parent_widget._last_yasb_click_time = time.time()
-            screen_index = (
-                self.parent_widget._komorebi_screen.get("index") if self.parent_widget._komorebi_screen else None
-            )
+            screen_index = screen.get("index")
             _log_workspace_diag(
                 "workspace click: monitor=%s current_ws=%s target_ws=%s",
                 screen_index,
@@ -134,7 +136,7 @@ class WorkspaceButtonMixin:
                 self.workspace_index,
             )
             self.parent_widget.set_pending_workspace(self.workspace_index)
-            self.komorebic.activate_workspace(self.parent_widget._komorebi_screen["index"], self.workspace_index)
+            self.komorebic.activate_workspace(screen["index"], self.workspace_index)
         except Exception:
             self.parent_widget.clear_pending_workspace()
             logging.exception("Failed to focus workspace at index %s", self.workspace_index)
