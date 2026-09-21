@@ -27,6 +27,7 @@ compile_commands.json
 
 # User Custom
 .verysync
+.worktrees/
 Local/
 InstalledPackages/
 Cache/
