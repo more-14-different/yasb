@@ -155,13 +155,14 @@ class DensitySourceTests(unittest.TestCase):
                 connection.executescript(
                     "create table source_activity_minutes ("
                     "source_generation_id text, minute_start text, frame_count integer, "
-                    "ui_event_count integer, source_pack_sha256 text);"
+                    "ui_event_count integer, effective_ui_event_count integer, "
+                    "suppressed_ui_event_count integer, source_pack_sha256 text);"
                     "insert into source_activity_minutes values "
-                    "('g1','2026-07-19T10:00:00Z',2,3,'a');"
+                    "('g1','2026-07-19T10:00:00Z',2,3,1,2,'a');"
                     "insert into source_activity_minutes values "
-                    "('g1','2026-07-19T10:01:00Z',7,11,'b');"
+                    "('g1','2026-07-19T10:01:00Z',7,11,5,6,'b');"
                     "insert into source_activity_minutes values "
-                    "('g1','2026-07-19T10:02:00Z',13,17,'c');"
+                    "('g1','2026-07-19T10:02:00Z',13,17,9,8,'c');"
                 )
                 connection.commit()
             finally:
@@ -171,7 +172,30 @@ class DensitySourceTests(unittest.TestCase):
 
             self.assertEqual(
                 query_density_buckets(resolved, start, start, start + 120),
-                [(0, 5), (1, 18)],
+                [(0, 3), (1, 12)],
+            )
+
+    def test_screenpipe_graph_density_falls_back_to_v1_raw_ui_counts(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            database_path = Path(temporary_directory) / "screenpipe-graph.sqlite"
+            connection = sqlite3.connect(database_path)
+            try:
+                connection.executescript(
+                    "create table source_activity_minutes ("
+                    "source_generation_id text, minute_start text, frame_count integer, "
+                    "ui_event_count integer, source_pack_sha256 text);"
+                    "insert into source_activity_minutes values "
+                    "('g1','2026-07-19T10:00:00Z',2,3,'a');"
+                )
+                connection.commit()
+            finally:
+                connection.close()
+            start = datetime.fromisoformat("2026-07-19T10:00:00+00:00").timestamp()
+            resolved = ResolvedDensitySource(DensitySource.SCREENPIPE_GRAPH, str(database_path), None)
+
+            self.assertEqual(
+                query_density_buckets(resolved, start, start, start + 60),
+                [(0, 5)],
             )
 
     def test_active_cache_only_refreshes_the_two_newest_minutes(self):

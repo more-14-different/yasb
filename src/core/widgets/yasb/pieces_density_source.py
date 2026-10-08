@@ -107,9 +107,18 @@ def query_density_buckets(
         if resolved.source is DensitySource.SCREENPIPE_GRAPH:
             start_text = _rfc3339(query_start)
             end_text = _rfc3339(query_end)
+            minute_columns = {
+                str(row[1])
+                for row in connection.execute("pragma table_info(source_activity_minutes)")
+            }
+            ui_count_column = (
+                "effective_ui_event_count"
+                if "effective_ui_event_count" in minute_columns
+                else "ui_event_count"
+            )
             rows = connection.execute(
                 "select cast((unixepoch(minute_start, 'subsec') - ?) / 60 as integer), "
-                "sum(frame_count + ui_event_count) "
+                f"sum(frame_count + {ui_count_column}) "
                 "from source_activity_minutes "
                 "where minute_start >= ? and minute_start < ? "
                 "group by minute_start order by minute_start",
