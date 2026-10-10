@@ -155,14 +155,15 @@ class DensitySourceTests(unittest.TestCase):
                 connection.executescript(
                     "create table source_activity_minutes ("
                     "source_generation_id text, minute_start text, frame_count integer, "
+                    "effective_frame_count integer, suppressed_frame_count integer, "
                     "ui_event_count integer, effective_ui_event_count integer, "
                     "suppressed_ui_event_count integer, source_pack_sha256 text);"
                     "insert into source_activity_minutes values "
-                    "('g1','2026-07-19T10:00:00Z',2,3,1,2,'a');"
+                    "('g1','2026-07-19T10:00:00Z',5,2,3,3,1,2,'a');"
                     "insert into source_activity_minutes values "
-                    "('g1','2026-07-19T10:01:00Z',7,11,5,6,'b');"
+                    "('g1','2026-07-19T10:01:00Z',15,7,8,11,5,6,'b');"
                     "insert into source_activity_minutes values "
-                    "('g1','2026-07-19T10:02:00Z',13,17,9,8,'c');"
+                    "('g1','2026-07-19T10:02:00Z',25,13,12,17,9,8,'c');"
                 )
                 connection.commit()
             finally:

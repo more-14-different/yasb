@@ -111,6 +111,11 @@ def query_density_buckets(
                 str(row[1])
                 for row in connection.execute("pragma table_info(source_activity_minutes)")
             }
+            frame_count_column = (
+                "effective_frame_count"
+                if "effective_frame_count" in minute_columns
+                else "frame_count"
+            )
             ui_count_column = (
                 "effective_ui_event_count"
                 if "effective_ui_event_count" in minute_columns
@@ -118,7 +123,7 @@ def query_density_buckets(
             )
             rows = connection.execute(
                 "select cast((unixepoch(minute_start, 'subsec') - ?) / 60 as integer), "
-                f"sum(frame_count + {ui_count_column}) "
+                f"sum({frame_count_column} + {ui_count_column}) "
                 "from source_activity_minutes "
                 "where minute_start >= ? and minute_start < ? "
                 "group by minute_start order by minute_start",
