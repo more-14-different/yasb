@@ -1,22 +1,19 @@
 import re
 
-with open('src/core/widgets/yasb/pieces_density.py', 'r', encoding='utf-8') as f:
+with open("src/core/widgets/yasb/pieces_density.py", encoding="utf-8") as f:
     code = f.read()
 
 # --- 1. FetchWorker Logic ---
 code = code.replace(
     "data_fetched = pyqtSignal(list, bool, float, str, bool)",
-    "data_fetched = pyqtSignal(list, bool, float, float, str, bool)"
+    "data_fetched = pyqtSignal(list, bool, float, float, str, bool)",
 )
 
 code = code.replace(
     "def __init__(self, config: PiecesDensityConfig, use_obs_time: bool, known_start_time: float = 0.0, last_streaming_time: float = 0.0, session_override: float = 0.0, force_session: bool = False):",
-    "def __init__(self, config: PiecesDensityConfig, use_obs_time: bool, known_start_time: float = 0.0, last_streaming_time: float = 0.0, session_override: float = 0.0, force_session: bool = False, session_end_bound: float = 0.0):\n        self.session_end_bound = session_end_bound"
+    "def __init__(self, config: PiecesDensityConfig, use_obs_time: bool, known_start_time: float = 0.0, last_streaming_time: float = 0.0, session_override: float = 0.0, force_session: bool = False, session_end_bound: float = 0.0):\n        self.session_end_bound = session_end_bound",
 )
-code = code.replace(
-    "super().__init__()",
-    "super().__init__()\n        self.session_end_bound = 0.0"
-)
+code = code.replace("super().__init__()", "super().__init__()\n        self.session_end_bound = 0.0")
 
 fetch_logic_old = """            if self.force_session and self.session_override > 0:
                 is_streaming = True
@@ -44,15 +41,15 @@ code = code.replace(fetch_logic_old, fetch_logic_new)
 
 code = code.replace(
     "self.data_fetched.emit([], is_streaming, 0.0, err, self.use_obs_time)",
-    "self.data_fetched.emit([], is_streaming, 0.0, 0.0, err, self.use_obs_time)"
+    "self.data_fetched.emit([], is_streaming, 0.0, 0.0, err, self.use_obs_time)",
 )
 code = code.replace(
-    "self.data_fetched.emit(buckets, True, stream_start_time, \"\", self.use_obs_time)",
-    "self.data_fetched.emit(buckets, True, stream_start_time, total_duration_sec, \"\", self.use_obs_time)"
+    'self.data_fetched.emit(buckets, True, stream_start_time, "", self.use_obs_time)',
+    'self.data_fetched.emit(buckets, True, stream_start_time, total_duration_sec, "", self.use_obs_time)',
 )
 
 # --- 2. ControlsOverlay to ControlsOverlayLeft & Right ---
-controls_class_pattern = re.compile(r'class ControlsOverlay\(QFrame\):.*?class DensityOverlay', re.DOTALL)
+controls_class_pattern = re.compile(r"class ControlsOverlay\(QFrame\):.*?class DensityOverlay", re.DOTALL)
 
 new_classes = """class ControlsOverlayBase(QFrame):
     def __init__(self, widget: "PiecesDensityWidget", parent=None):
@@ -220,7 +217,10 @@ class DensityOverlay"""
 code = controls_class_pattern.sub(new_classes, code)
 
 # Replacements
-code = code.replace("self._controls = ControlsOverlay(self)", "self._controls_left = ControlsOverlayLeft(self)\\n        self._controls_right = ControlsOverlayRight(self)")
+code = code.replace(
+    "self._controls = ControlsOverlay(self)",
+    "self._controls_left = ControlsOverlayLeft(self)\\n        self._controls_right = ControlsOverlayRight(self)",
+)
 
 # _place_overlay_below_bar
 old_place = """        try:
@@ -276,15 +276,27 @@ code = code.replace(old_fetch_init, new_fetch_init)
 
 
 # data_fetched signature
-code = code.replace("def _on_data_fetched(self, buckets: list[int], is_streaming: bool, start_time: float, error_msg: str, was_obs_time: bool):", "def _on_data_fetched(self, buckets: list[int], is_streaming: bool, start_time: float, total_duration_sec: float, error_msg: str, was_obs_time: bool):")
+code = code.replace(
+    "def _on_data_fetched(self, buckets: list[int], is_streaming: bool, start_time: float, error_msg: str, was_obs_time: bool):",
+    "def _on_data_fetched(self, buckets: list[int], is_streaming: bool, start_time: float, total_duration_sec: float, error_msg: str, was_obs_time: bool):",
+)
 
 
 # buttons and visibility
-code = code.replace("self._controls.update_buttons()", "self._controls_left.update_buttons()\\n        self._controls_right.update_buttons(0.0)")
+code = code.replace(
+    "self._controls.update_buttons()",
+    "self._controls_left.update_buttons()\\n        self._controls_right.update_buttons(0.0)",
+)
 code = code.replace("self._controls.show()", "self._controls_left.show()\\n                self._controls_right.show()")
 code = code.replace("self._controls.hide()", "self._controls_left.hide()\\n                self._controls_right.hide()")
-code = code.replace("self._controls_left.hide()\\n                self._controls_right.hide()\\n        else:\\n            self._show_overlay_below_bar()\\n            self._controls.show()", "self._controls_left.hide()\\n                self._controls_right.hide()\\n        else:\\n            self._show_overlay_below_bar()\\n            self._controls_left.show()\\n            self._controls_right.show()")
-code = code.replace("bar_window.opacity_tick.connect(self._controls.setWindowOpacity)", "bar_window.opacity_tick.connect(self._controls_left.setWindowOpacity)\\n                bar_window.opacity_tick.connect(self._controls_right.setWindowOpacity)")
+code = code.replace(
+    "self._controls_left.hide()\\n                self._controls_right.hide()\\n        else:\\n            self._show_overlay_below_bar()\\n            self._controls.show()",
+    "self._controls_left.hide()\\n                self._controls_right.hide()\\n        else:\\n            self._show_overlay_below_bar()\\n            self._controls_left.show()\\n            self._controls_right.show()",
+)
+code = code.replace(
+    "bar_window.opacity_tick.connect(self._controls.setWindowOpacity)",
+    "bar_window.opacity_tick.connect(self._controls_left.setWindowOpacity)\\n                bar_window.opacity_tick.connect(self._controls_right.setWindowOpacity)",
+)
 
 # update overlay geometry
 old_geo = """        # Ensure it fits the content perfectly
@@ -309,8 +321,8 @@ code = code.replace(old_geo, new_geo)
 
 code = code.replace(
     "self._controls_right.update_buttons(0.0)\\n\\n        self._overlay.buckets = buckets",
-    "self._controls_left.update_buttons()\\n        self._controls_right.update_buttons(total_duration_sec)\\n\\n        self._overlay.buckets = buckets"
+    "self._controls_left.update_buttons()\\n        self._controls_right.update_buttons(total_duration_sec)\\n\\n        self._overlay.buckets = buckets",
 )
 
-with open('src/core/widgets/yasb/pieces_density.py', 'w', encoding='utf-8') as f:
+with open("src/core/widgets/yasb/pieces_density.py", "w", encoding="utf-8") as f:
     f.write(code)
