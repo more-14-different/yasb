@@ -1,7 +1,7 @@
 import math
 from enum import StrEnum
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any, cast, override
+from typing import TYPE_CHECKING, Any, TypedDict, cast, override
 
 from PyQt6.QtCore import (
     QEasingCurve,
@@ -57,7 +57,13 @@ def is_valid_percentage_str(s: str) -> bool:
     return s.endswith("%") and len(s) <= 4 and s[:-1].isdigit()
 
 
-def parse_label_template(content: str) -> list[dict]:
+class LabelPart(TypedDict):
+    is_icon: bool
+    text: str
+    class_name: str
+
+
+def parse_label_template(content: str) -> list[LabelPart]:
     """
     Parses a string containing <span class="...">icon</span> into its constituent parts.
     Returns a list of dicts with keys: is_icon, text, class_name
@@ -65,7 +71,7 @@ def parse_label_template(content: str) -> list[dict]:
     import re
 
     label_parts = re.split(r"(<span.*?>.*?</span>)", content)
-    result = []
+    result: list[LabelPart] = []
     for part in label_parts:
         part = part.strip()
         if not part:

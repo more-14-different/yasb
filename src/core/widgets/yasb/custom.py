@@ -52,7 +52,7 @@ class CustomWorker(QObject):
                 elif cmd_str.lower().startswith("cat "):
                     file_path = cmd_str[4:].strip(" \"'")
                     is_file_read = True
-            elif isinstance(self.cmd, list) and len(self.cmd) >= 2:
+            elif len(self.cmd) >= 2:
                 if self.cmd[0].lower() in ["type", "cat"]:
                     file_path = self.cmd[1].strip(" \"'")
                     is_file_read = True
@@ -107,7 +107,7 @@ class CustomWidget(BaseWidget):
         self._exec_data: JsonValue = None
         self._exec_cmd = self._build_exec_cmd(self.config.exec_options.run_cmd, self.config.exec_options.use_shell)
         self._show_alt_label = False
-        self._worker = None  # Keep reference to worker for cleanup
+        self._worker: CustomWorker | None = None  # Keep reference to worker for cleanup
 
         # Construct container
         self._init_container()

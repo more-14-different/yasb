@@ -1,7 +1,8 @@
 from collections.abc import Callable
+from typing import override
 
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QMouseEvent, QPainter
+from PyQt6.QtGui import QColor, QMouseEvent, QPainter, QPaintEvent
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout
 
 from core.validation.widgets.yasb.pieces_toggle import PiecesToggleConfig
@@ -17,26 +18,33 @@ class _ClickableLayerLabel(QLabel):
         self._mouse_handler = mouse_handler
         self.setMouseTracking(True)
 
-    def paintEvent(self, event):
+    @override
+    def paintEvent(self, a0: QPaintEvent | None) -> None:
         painter = QPainter(self)
         painter.fillRect(self.rect(), QColor(0, 0, 0, 1))
         painter.end()
-        super().paintEvent(event)
+        super().paintEvent(a0)
 
-    def mousePressEvent(self, event: QMouseEvent):
-        if self.rect().contains(event.pos()):
-            event.accept()
+    @override
+    def mousePressEvent(self, ev: QMouseEvent | None) -> None:
+        if ev is None:
+            return
+        if self.rect().contains(ev.pos()):
+            ev.accept()
             return
 
-        super().mousePressEvent(event)
+        super().mousePressEvent(ev)
 
-    def mouseReleaseEvent(self, event: QMouseEvent):
-        if self.rect().contains(event.pos()):
-            self._mouse_handler(event)
-            event.accept()
+    @override
+    def mouseReleaseEvent(self, ev: QMouseEvent | None) -> None:
+        if ev is None:
+            return
+        if self.rect().contains(ev.pos()):
+            self._mouse_handler(ev)
+            ev.accept()
             return
 
-        super().mouseReleaseEvent(event)
+        super().mouseReleaseEvent(ev)
 
 
 class PiecesToggleWidget(BaseWidget):
@@ -74,7 +82,6 @@ class PiecesToggleWidget(BaseWidget):
         self.callback_left = self.config.callbacks.on_left
         self.callback_right = self.config.callbacks.on_right
         self.callback_middle = self.config.callbacks.on_middle
-        self.mouseReleaseEvent = self._ignore_container_mouse_release
 
         self._event_service.register_event("pieces_widget_state_changed", self._state_changed_signal)
         self._state_changed_signal.connect(self._on_state_changed)
@@ -138,8 +145,10 @@ class PiecesToggleWidget(BaseWidget):
             self._handle_pieces_mouse_event, Qt.AlignmentFlag.AlignBottom
         )
 
-    def _ignore_container_mouse_release(self, event: QMouseEvent):
-        event.ignore()
+    @override
+    def mouseReleaseEvent(self, a0: QMouseEvent | None) -> None:
+        if a0 is not None:
+            a0.ignore()
 
     def _handle_time_mouse_event(self, event: QMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton:

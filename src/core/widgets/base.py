@@ -2,7 +2,7 @@ import logging
 import re
 import subprocess
 from collections.abc import Callable
-from typing import Any, override
+from typing import TYPE_CHECKING, Any, override
 
 from pydantic import BaseModel
 from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
@@ -12,6 +12,9 @@ from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QWidget
 from core.events.service import EventService
 from core.utils.win32.system_function import function_map
 from core.widgets.registry import register_widget_class
+
+if TYPE_CHECKING:
+    from core.utils.utilities import LabelPart
 
 
 class BaseWidget(QWidget):
@@ -177,7 +180,7 @@ class BaseWidget(QWidget):
     ):
         from core.utils.utilities import parse_label_template
 
-        def process_content(content: str, is_alt: bool = False) -> tuple[list[QLabel], list[dict]]:
+        def process_content(content: str, is_alt: bool = False) -> tuple[list[QLabel], list[LabelPart]]:
             parsed_parts = parse_label_template(content)
             widgets: list[QLabel] = []
             for parsed in parsed_parts:
