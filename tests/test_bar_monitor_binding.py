@@ -30,7 +30,7 @@ class BarMonitorBindingTests(unittest.TestCase):
                 def name():
                     return "display"
 
-            _target_screen = Screen()
+            target_screen = Screen()
 
             @staticmethod
             def winId():

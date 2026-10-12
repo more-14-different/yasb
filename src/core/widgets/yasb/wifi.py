@@ -7,6 +7,7 @@ from PyQt6.QtWidgets import (
 )
 from winrt.windows.networking.connectivity import NetworkInformation
 
+from core.utils.utilities import LabelPart, parse_label_template
 from core.validation.widgets.yasb.wifi import WifiConfig
 from core.widgets.base import BaseWidget
 from core.widgets.services.wifi.wifi_managers import NetworkInfo, WiFiInfo, WiFiWorker
@@ -74,11 +75,9 @@ class WifiWidget(BaseWidget):
         self._update_label()
 
     def _create_dynamically_label(self, content: str, content_alt: str, is_ethernet: bool = False):
-        from core.utils.utilities import parse_label_template
-
         def process_content(
             content: str, is_alt: bool = False, is_ethernet: bool = False
-        ) -> tuple[list[QLabel], list[dict]]:
+        ) -> tuple[list[QLabel], list[LabelPart]]:
             parsed_parts = parse_label_template(content)
             widgets: list[QLabel] = []
             for parsed in parsed_parts:

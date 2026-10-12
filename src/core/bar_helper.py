@@ -129,6 +129,12 @@ class BarAnimationManager(QObject):
             self._animation.stop()
         self._animation = None
 
+    def _emit_opacity_tick(self, value: float) -> None:
+        self.bar_widget.opacity_tick.emit(value)
+
+    def _emit_animation_tick(self, _value: object) -> None:
+        self.bar_widget.animation_tick.emit()
+
     def start_fade(self, show: bool):
         self._stop_animation()
         duration = self.bar_widget.animation.get("duration", 300)
@@ -137,8 +143,7 @@ class BarAnimationManager(QObject):
         self._animation.setStartValue(0.0 if show else 1.0)
         self._animation.setEndValue(1.0 if show else 0.0)
         self._animation.setEasingCurve(QEasingCurve.Type.OutQuad if show else QEasingCurve.Type.InQuad)
-        if hasattr(self.bar_widget, "opacity_tick"):
-            self._animation.valueChanged.connect(lambda v: self.bar_widget.opacity_tick.emit(float(v)))
+        self._animation.valueChanged.connect(self._emit_opacity_tick)
         self._animation.finished.connect(self._on_show_finished if show else self._on_hide_finished)
         if show:
             self.bar_widget.setWindowOpacity(0.0)
@@ -182,8 +187,7 @@ class BarAnimationManager(QObject):
         self._animation.setStartValue(hidden_pos if show else resting_pos)
         self._animation.setEndValue(resting_pos if show else hidden_pos)
         self._animation.setEasingCurve(QEasingCurve.Type.OutQuad if show else QEasingCurve.Type.InQuad)
-        if hasattr(bar, "animation_tick"):
-            self._animation.valueChanged.connect(lambda _value: bar.animation_tick.emit())
+        self._animation.valueChanged.connect(self._emit_animation_tick)
         self._animation.finished.connect(self._on_show_finished if show else self._on_hide_finished)
         self._animation.start()
 

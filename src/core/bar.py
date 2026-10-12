@@ -189,7 +189,7 @@ class Bar(QWidget):
             logging.info(
                 "Monitor handle changed for bar %s on screen %s: %s -> %s",
                 self._bar_name,
-                self._target_screen.name(),
+                self.target_screen.name(),
                 previous_monitor_hwnd,
                 self.monitor_hwnd,
             )
