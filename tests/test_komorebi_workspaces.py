@@ -1,6 +1,9 @@
+# pyright: reportPrivateUsage=false
+
 import sys
 import unittest
 from pathlib import Path
+from typing import cast
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
@@ -8,12 +11,14 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 from core.validation.widgets.komorebi import workspaces as workspaces_validation  # noqa: E402
 from core.validation.widgets.komorebi.workspaces import KomorebiWorkspacesConfig  # noqa: E402
 from core.widgets.komorebi.workspaces import (  # noqa: E402
+    WorkspaceButtonMixin,
     WorkspaceWidget,
     _format_workspace_labels,
     _resolve_komorebi_screen,
     _should_hide_workspace_label,
     _workspace_topology_signature,
 )
+from core.widgets.services.komorebi.client import KomorebiClient, KomorebiNode  # noqa: E402
 
 
 class WorkspaceLabelTests(unittest.TestCase):
@@ -49,31 +54,41 @@ class WorkspaceIconLabelTests(unittest.TestCase):
             pending_calls = 0
             clear_calls = 0
 
-            def set_pending_workspace(self, _workspace_index):
+            @property
+            def komorebi_screen(self) -> None:
+                return None
+
+            @property
+            def current_workspace_index(self) -> int:
+                return self._curr_workspace_index
+
+            def set_pending_workspace(self, _workspace_index: int) -> None:
                 self.pending_calls += 1
 
-            def clear_pending_workspace(self):
+            def clear_pending_workspace(self) -> None:
                 self.clear_calls += 1
 
-        class KomorebiClient:
+        class KomorebiClientStub:
             activation_calls = 0
 
-            def activate_workspace(self, _monitor_index, _workspace_index):
+            def activate_workspace(self, _monitor_index: int, _workspace_index: int) -> None:
                 self.activation_calls += 1
 
-        class Button:
-            parent_widget = ParentWidget()
-            komorebic = KomorebiClient()
+        class Button(WorkspaceButtonMixin):
+            parent_widget: WorkspaceWidget
+            komorebic: KomorebiClient
             workspace_index = 1
 
-        from core.widgets.komorebi.workspaces import WorkspaceButtonMixin
-
         button = Button()
-        WorkspaceButtonMixin.activate_workspace(button)
+        parent_widget = ParentWidget()
+        komorebic = KomorebiClientStub()
+        button.parent_widget = cast(WorkspaceWidget, parent_widget)
+        button.komorebic = cast(KomorebiClient, komorebic)
+        button.activate_workspace()
 
-        self.assertEqual(button.parent_widget.pending_calls, 0)
-        self.assertEqual(button.parent_widget.clear_calls, 0)
-        self.assertEqual(button.komorebic.activation_calls, 0)
+        self.assertEqual(parent_widget.pending_calls, 0)
+        self.assertEqual(parent_widget.clear_calls, 0)
+        self.assertEqual(komorebic.activation_calls, 0)
 
 
 class WorkspaceValidationTests(unittest.TestCase):
@@ -86,22 +101,22 @@ class WorkspaceValidationTests(unittest.TestCase):
 class WorkspaceTopologyTests(unittest.TestCase):
     def test_monitor_resolution_prefers_live_handle_over_stale_handle(self):
         class Client:
-            def get_screen_by_hwnd(self, state, hwnd):
+            def get_screen_by_hwnd(self, state: KomorebiNode, hwnd: int) -> KomorebiNode | None:
                 return next((screen for screen in state["screens"] if screen["id"] == hwnd), None)
 
         state = {"screens": [{"id": 111}, {"id": 222}]}
 
-        screen, hwnd = _resolve_komorebi_screen(Client(), state, (222, 111))
+        screen, hwnd = _resolve_komorebi_screen(cast(KomorebiClient, Client()), state, (222, 111))
 
         self.assertEqual(screen, {"id": 222})
         self.assertEqual(hwnd, 222)
 
     def test_monitor_resolution_does_not_select_an_unmatched_screen(self):
         class Client:
-            def get_screen_by_hwnd(self, state, hwnd):
+            def get_screen_by_hwnd(self, state: KomorebiNode, hwnd: int) -> KomorebiNode | None:
                 return next((screen for screen in state["screens"] if screen["id"] == hwnd), None)
 
-        screen, hwnd = _resolve_komorebi_screen(Client(), {"screens": [{"id": 333}]}, (111, 222))
+        screen, hwnd = _resolve_komorebi_screen(cast(KomorebiClient, Client()), {"screens": [{"id": 333}]}, (111, 222))
 
         self.assertIsNone(screen)
         self.assertIsNone(hwnd)
@@ -113,7 +128,7 @@ class WorkspaceTopologyTests(unittest.TestCase):
 
         class Client:
             @staticmethod
-            def get_screen_by_hwnd(state, hwnd):
+            def get_screen_by_hwnd(state: KomorebiNode, hwnd: int) -> None:
                 return None
 
         class Widget:
@@ -130,7 +145,7 @@ class WorkspaceTopologyTests(unittest.TestCase):
 
         widget = Widget()
 
-        updated = WorkspaceWidget._update_komorebi_state(widget, {"new": "state"})
+        updated = WorkspaceWidget._update_komorebi_state(cast(WorkspaceWidget, widget), {"new": "state"})
 
         self.assertFalse(updated)
         self.assertIs(widget._komorebi_state, old_state)
@@ -151,10 +166,10 @@ class WorkspaceTopologyTests(unittest.TestCase):
 
     def test_reconcile_hides_buttons_removed_from_monitor(self):
         class Button:
-            def __init__(self):
+            def __init__(self) -> None:
                 self.hidden = False
 
-            def hide(self):
+            def hide(self) -> None:
                 self.hidden = True
 
         class Widget:
@@ -162,11 +177,11 @@ class WorkspaceTopologyTests(unittest.TestCase):
             _workspace_buttons = [Button(), Button(), Button()]
             updated = False
 
-            def _add_or_update_buttons(self):
+            def _add_or_update_buttons(self) -> None:
                 self.updated = True
 
         widget = Widget()
-        WorkspaceWidget._reconcile_workspace_buttons(widget)
+        WorkspaceWidget._reconcile_workspace_buttons(cast(WorkspaceWidget, widget))
 
         self.assertFalse(widget._workspace_buttons[0].hidden)
         self.assertTrue(widget._workspace_buttons[1].hidden)
