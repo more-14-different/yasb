@@ -1,6 +1,7 @@
 import sys
 import unittest
 from pathlib import Path
+from typing import NoReturn
 from unittest.mock import patch
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -10,23 +11,23 @@ import main as yasb_main  # noqa: E402
 
 
 class Kernel32Fake:
-    def __init__(self):
+    def __init__(self) -> None:
         self._handles = iter((101, 102))
         self._errors = iter((183, 0))
-        self.initial_owner_values = []
-        self.closed_handles = []
+        self.initial_owner_values: list[bool] = []
+        self.closed_handles: list[int] = []
 
-    def CreateMutexW(self, _security, initial_owner, _name):
+    def CreateMutexW(self, _security: object | None, initial_owner: bool, _name: str) -> int:
         self.initial_owner_values.append(initial_owner)
         return next(self._handles)
 
-    def GetLastError(self):
+    def GetLastError(self) -> int:
         return next(self._errors)
 
-    def CloseHandle(self, handle):
+    def CloseHandle(self, handle: int) -> None:
         self.closed_handles.append(handle)
 
-    def ReleaseMutex(self, _handle):
+    def ReleaseMutex(self, _handle: int) -> NoReturn:
         raise AssertionError("a non-owned mutex must never be released")
 
 
@@ -49,7 +50,6 @@ class SingleInstanceTests(unittest.TestCase):
 
     def test_parent_timeout_closes_acquired_mutex_before_aborting(self):
         kernel32 = Kernel32Fake()
-        kernel32.ReleaseMutex = lambda _handle: None
 
         with (
             patch.object(yasb_main.ctypes.windll, "kernel32", kernel32),

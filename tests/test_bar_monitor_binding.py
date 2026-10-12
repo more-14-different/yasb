@@ -1,6 +1,9 @@
+# pyright: reportPrivateUsage=false
+
 import sys
 import unittest
 from pathlib import Path
+from typing import cast
 from unittest.mock import patch
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -14,10 +17,10 @@ class BarMonitorBindingTests(unittest.TestCase):
         class Widget:
             monitor_hwnd = 111
 
-            def __init__(self):
-                self.notifications = []
+            def __init__(self) -> None:
+                self.notifications: list[int] = []
 
-            def on_bar_geometry_changed(self, monitor_hwnd):
+            def on_bar_geometry_changed(self, monitor_hwnd: int) -> None:
                 self.notifications.append(monitor_hwnd)
 
         class TestBar:
@@ -40,7 +43,7 @@ class BarMonitorBindingTests(unittest.TestCase):
         widget = bar._widgets["left"][0]
 
         with patch("core.bar.get_monitor_hwnd", return_value=222):
-            Bar._refresh_monitor_bindings(bar)
+            Bar._refresh_monitor_bindings(cast(Bar, bar))
 
         self.assertEqual(bar.monitor_hwnd, 222)
         self.assertEqual(widget.monitor_hwnd, 222)
@@ -60,7 +63,7 @@ class BarMonitorBindingTests(unittest.TestCase):
                 def name():
                     return "display"
 
-            _target_screen = Screen()
+            target_screen = Screen()
 
             @staticmethod
             def winId():
@@ -69,7 +72,7 @@ class BarMonitorBindingTests(unittest.TestCase):
         bar = TestBar()
 
         with patch("core.bar.get_monitor_hwnd", return_value=None):
-            Bar._refresh_monitor_bindings(bar)
+            Bar._refresh_monitor_bindings(cast(Bar, bar))
 
         self.assertEqual(bar.monitor_hwnd, 111)
         self.assertEqual(bar._widgets["left"][0].monitor_hwnd, 111)
