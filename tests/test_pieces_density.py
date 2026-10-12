@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
+from typing import cast
 from unittest.mock import patch
 
 from PyQt6.QtCore import QRectF
@@ -140,6 +141,7 @@ class DensitySourceTests(unittest.TestCase):
             fallback = resolve_density_source("auto", str(screenpipe_graph), str(pieces))
             self.assertEqual(fallback.source, DensitySource.PIECES)
             self.assertEqual(fallback.database_path, str(pieces))
+            assert fallback.fallback_reason is not None
             self.assertIn("screenpipe_graph_unavailable", fallback.fallback_reason)
 
             screenpipe_graph.touch()
@@ -247,10 +249,10 @@ class RefreshTests(unittest.TestCase):
             cancelled = False
 
             @staticmethod
-            def isRunning():
+            def isRunning() -> bool:
                 return True
 
-            def cancel(self):
+            def cancel(self) -> None:
                 self.cancelled = True
 
         class Widget:
@@ -258,26 +260,34 @@ class RefreshTests(unittest.TestCase):
             _refresh_pending = False
 
             @staticmethod
-            def _fetch_data():
+            def _fetch_data() -> None:
                 raise AssertionError("refresh must wait for the cancelled worker to finish")
 
-        widget = Widget()
-        PiecesDensityWidget._request_refresh(widget)
+            @property
+            def worker_cancelled(self) -> bool:
+                return self._worker.cancelled
 
-        self.assertTrue(widget._worker.cancelled)
-        self.assertTrue(widget._refresh_pending)
+            @property
+            def refresh_pending(self) -> bool:
+                return self._refresh_pending
+
+        widget = Widget()
+        PiecesDensityWidget.request_refresh(cast(PiecesDensityWidget, widget))
+
+        self.assertTrue(widget.worker_cancelled)
+        self.assertTrue(widget.refresh_pending)
 
     def test_session_navigation_preserves_duration_until_refresh_finishes(self):
         class SessionManagerStub:
             @staticmethod
-            def get_sessions(_source):
+            def get_sessions(_source: object) -> list[float]:
                 return [100.0, 200.0, 300.0]
 
         class ControlsStub:
-            def __init__(self):
-                self.updates = []
+            def __init__(self) -> None:
+                self.updates: list[float | None] = []
 
-            def update_buttons(self, duration_sec=None):
+            def update_buttons(self, duration_sec: float | None = None) -> None:
                 self.updates.append(duration_sec)
 
         class Widget:
@@ -288,23 +298,34 @@ class RefreshTests(unittest.TestCase):
             _controls_right = ControlsStub()
             refreshes = 0
 
-            def _selected_session_index(self, sessions):
+            def sessions(self) -> list[float]:
+                return self._session_manager.get_sessions(self._time_source)
+
+            def selected_session_index(self, sessions: list[float]) -> int | None:
                 return selected_session_index(sessions, self._selected_session_start)
 
-            def _request_refresh(self):
+            def request_refresh(self) -> None:
                 self.refreshes += 1
 
-        widget = Widget()
-        PiecesDensityWidget._prev_session(widget)
+            @property
+            def selected_session_start(self) -> float | None:
+                return self._selected_session_start
 
-        self.assertEqual(widget._selected_session_start, 100.0)
-        self.assertEqual(widget._controls_right.updates, [None])
+            @property
+            def right_updates(self) -> list[float | None]:
+                return self._controls_right.updates
+
+        widget = Widget()
+        PiecesDensityWidget.select_previous_session(cast(PiecesDensityWidget, widget))
+
+        self.assertEqual(widget.selected_session_start, 100.0)
+        self.assertEqual(widget.right_updates, [None])
         self.assertEqual(widget.refreshes, 1)
 
-        PiecesDensityWidget._next_session(widget)
+        PiecesDensityWidget.select_next_session(cast(PiecesDensityWidget, widget))
 
-        self.assertEqual(widget._selected_session_start, 200.0)
-        self.assertEqual(widget._controls_right.updates, [None, None])
+        self.assertEqual(widget.selected_session_start, 200.0)
+        self.assertEqual(widget.right_updates, [None, None])
         self.assertEqual(widget.refreshes, 2)
 
 
