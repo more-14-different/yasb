@@ -87,6 +87,13 @@ class SystrayWidget(BaseWidget):
     _systray_about_to_quit_signal = None
 
     @classmethod
+    def systray_monitor_hwnd(cls) -> int | None:
+        client = cls._systray_client_instance
+        if isinstance(client, SystrayMonitor) and client.hwnd:
+            return client.hwnd
+        return None
+
+    @classmethod
     def get_monitor_instance(cls, hook: bool = False):
         """
         Since we don't want multiple systray monitors or hooks,
@@ -558,12 +565,13 @@ class SystrayWidget(BaseWidget):
 
         if self.config.show_in_popup:
             self._systray_popup.sort_unpinned(unpinned)
-        else:
-            for w in unpinned:
-                self.unpinned_layout.insertWidget(unpinned.index(w), w)
+        elif isinstance(self.unpinned_layout, QHBoxLayout):
+            for index, widget in enumerate(unpinned):
+                self.unpinned_layout.insertWidget(index, widget)
 
-        for w in pinned:
-            self.pinned_layout.insertWidget(pinned.index(w), w)
+        if isinstance(self.pinned_layout, QHBoxLayout):
+            for index, widget in enumerate(pinned):
+                self.pinned_layout.insertWidget(index, widget)
         self.update_current_state()
 
     def update_current_state(self):

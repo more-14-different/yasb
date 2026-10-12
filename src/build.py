@@ -2,7 +2,7 @@ import datetime
 import os
 import sys
 
-from cx_Freeze import Executable, setup
+from cx_Freeze import Executable, setup  # pyright: ignore[reportUnknownVariableType, reportMissingTypeStubs]
 
 from core.utils.system import detect_architecture
 from settings import APP_ID, BUILD_VERSION, RELEASE_CHANNEL
@@ -33,6 +33,7 @@ def _python_runtime_files() -> list[tuple[str, str]]:
         if os.path.exists(dll_path):
             runtime_files.append((dll_path, dll_name))
     return runtime_files
+
 
 build_options = {
     "packages": [

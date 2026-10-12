@@ -1,8 +1,6 @@
 import logging
-import re
 
 from PyQt6.QtCore import pyqtSignal
-from PyQt6.QtWidgets import QLabel
 
 from core.events.service import EventService
 from core.utils.system import is_windows_10
@@ -81,17 +79,16 @@ class NotificationsWidget(BaseWidget):
         active_widgets = self._widgets_alt if self._show_alt_label else self._widgets
         active_parsed = self._parsed_label_alt if self._show_alt_label else self._parsed_label
 
-        label_options = [("{count}", self._notification_count)]
+        icon = self.config.icons.new if self._notification_count > 0 else self.config.icons.default
+        label_options = [("{count}", self._notification_count), ("{icon}", icon)]
 
         for widget, parsed in zip(active_widgets, active_parsed):
-            if parsed["is_icon"]:
-                widget.setText(parsed["text"])
-            else:
-                part = parsed["text"]
-                for option, value in label_options:
-                    part = part.replace(option, str(value))
-                widget.setText(part)
+            part = parsed["text"]
+            for option, value in label_options:
+                part = part.replace(option, str(value))
+            widget.setText(part)
 
+            if not parsed["is_icon"]:
                 # Update class based on notification count
                 current_class = widget.property("class")
                 if self._notification_count > 0:

@@ -41,48 +41,49 @@ class _ClickableLayerLabel(QLabel):
 
 class PiecesToggleWidget(BaseWidget):
     validation_schema = PiecesToggleConfig
-    
+
     _state_changed_signal = pyqtSignal(bool, str)
-    
+
     def __init__(self, config: PiecesToggleConfig):
         super().__init__(class_name=f"pieces-toggle-widget {config.class_name}")
         self.config = config
         self._is_on = True
         self._time_source = TimeSource.YOUTUBE_LIVESTREAM
-        
+
         # Override the base horizontal layout with a vertical layout
         self._widget_container_layout = QVBoxLayout()
-        self._widget_container_layout.setSpacing(0) # Let alignment dictate spacing
+        self._widget_container_layout.setSpacing(0)  # Let alignment dictate spacing
         self._widget_container_layout.setContentsMargins(0, 0, 0, 0)
-        
+
         self._widget_container = QFrame()
         self._widget_container.setLayout(self._widget_container_layout)
         self._widget_container.setProperty("class", "widget-container")
         self.widget_layout.addWidget(self._widget_container)
-        
+
         self._time_widgets = []
         self._time_widgets_alt = []
         self._pieces_widgets = []
         self._pieces_widgets_alt = []
-        
+
         self._build_two_toggles()
-        
+
         self.register_callback("toggle_pieces", self._toggle_pieces)
-        
+
         # The icon labels handle mouse release events themselves. This avoids the
         # outer capsule-shaped container being clickable outside the icon layer.
         self.callback_left = self.config.callbacks.on_left
         self.callback_right = self.config.callbacks.on_right
         self.callback_middle = self.config.callbacks.on_middle
         self.mouseReleaseEvent = self._ignore_container_mouse_release
-        
+
         self._event_service.register_event("pieces_widget_state_changed", self._state_changed_signal)
         self._state_changed_signal.connect(self._on_state_changed)
-        
+
         self._update_labels()
-        
+
     def _build_two_toggles(self):
         from core.utils.utilities import parse_label_template
+
         def process_content(
             content: str,
             mouse_handler: Callable[[QMouseEvent], None],
@@ -101,7 +102,7 @@ class PiecesToggleWidget(BaseWidget):
                 else:
                     label = _ClickableLayerLabel(text, mouse_handler)
                     label.setProperty("class", "label alt" if is_alt else "label")
-                
+
                 label.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 widgets.append(label)
                 if is_alt:
@@ -110,16 +111,18 @@ class PiecesToggleWidget(BaseWidget):
                     label.show()
             return widgets
 
-        def create_toggle_row(mouse_handler: Callable[[QMouseEvent], None], alignment: Qt.AlignmentFlag) -> tuple[list[QLabel], list[QLabel]]:
+        def create_toggle_row(
+            mouse_handler: Callable[[QMouseEvent], None], alignment: Qt.AlignmentFlag
+        ) -> tuple[list[QLabel], list[QLabel]]:
             frame = QFrame()
             layout = QHBoxLayout(frame)
             layout.setSpacing(0)
             layout.setContentsMargins(0, 0, -4, 0)
             layout.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            
+
             widgets = process_content(self.config.label, mouse_handler)
             widgets_alt = process_content(self.config.label_alt, mouse_handler, True)
-            
+
             for w in widgets + widgets_alt:
                 layout.addWidget(w)
             self._widget_container_layout.addWidget(frame, alignment=alignment)
@@ -170,21 +173,21 @@ class PiecesToggleWidget(BaseWidget):
     def _toggle_pieces(self):
         # Route the toggle request only to the pieces widget on the same screen.
         self._event_service.emit_event("toggle_pieces_widget", self.screen_name)
-        
+
     def _on_state_changed(self, is_on: bool, screen_name: str):
         if screen_name != self.screen_name:
             return
 
         self._is_on = is_on
         self._update_labels()
-        
+
     def _update_labels(self):
         uses_livestream = self._time_source is TimeSource.YOUTUBE_LIVESTREAM
         for widget in self._time_widgets:
             widget.setVisible(uses_livestream)
         for widget in self._time_widgets_alt:
             widget.setVisible(not uses_livestream)
-            
+
         for widget in self._pieces_widgets:
             widget.setVisible(self._is_on)
         for widget in self._pieces_widgets_alt:

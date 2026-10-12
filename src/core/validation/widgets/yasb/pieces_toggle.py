@@ -1,8 +1,9 @@
-from pydantic import Field
-from core.validation.widgets.base_model import CustomBaseModel, CallbacksConfig
+from core.validation.widgets.base_model import CallbacksConfig, CustomBaseModel
+
 
 class PiecesToggleCallbacksConfig(CallbacksConfig):
     on_left: str = "toggle_pieces"
+
 
 class PiecesToggleConfig(CustomBaseModel):
     class_name: str = ""

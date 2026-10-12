@@ -6,6 +6,7 @@ from ctypes import (
     byref,
     c_char,
     c_size_t,
+    c_ulonglong,
     c_wchar,
     create_string_buffer,
     windll,
@@ -25,7 +26,7 @@ from ctypes.wintypes import (
     USHORT,
 )
 
-from core.utils.win32.structs import SYSTEM_POWER_STATUS
+from core.utils.win32.structs import OVERLAPPED, SYSTEM_POWER_STATUS
 from core.utils.win32.typecheck import CArgObject
 
 kernel32 = windll.kernel32
@@ -81,11 +82,17 @@ kernel32.CreateEventW.restype = HANDLE
 kernel32.SetEvent.argtypes = [HANDLE]
 kernel32.SetEvent.restype = BOOL
 
+kernel32.ResetEvent.argtypes = [HANDLE]
+kernel32.ResetEvent.restype = BOOL
+
 kernel32.OpenEventW.argtypes = [DWORD, BOOL, LPCWSTR]
 kernel32.OpenEventW.restype = HANDLE
 
 kernel32.WaitForSingleObject.argtypes = [HANDLE, DWORD]
 kernel32.WaitForSingleObject.restype = DWORD
+
+kernel32.WaitForMultipleObjects.argtypes = [DWORD, POINTER(HANDLE), BOOL, DWORD]
+kernel32.WaitForMultipleObjects.restype = DWORD
 
 kernel32.ReadFile.argtypes = [
     HANDLE,
@@ -95,6 +102,12 @@ kernel32.ReadFile.argtypes = [
     LPVOID,
 ]
 kernel32.ReadFile.restype = BOOL
+
+kernel32.GetOverlappedResult.argtypes = [HANDLE, POINTER(OVERLAPPED), LPDWORD, BOOL]
+kernel32.GetOverlappedResult.restype = BOOL
+
+kernel32.CancelIoEx.argtypes = [HANDLE, POINTER(OVERLAPPED)]
+kernel32.CancelIoEx.restype = BOOL
 
 kernel32.WriteFile.argtypes = [
     HANDLE,
@@ -115,6 +128,15 @@ kernel32.CreateFileW.argtypes = [
     HANDLE,
 ]
 kernel32.CreateFileW.restype = HANDLE
+
+kernel32.FindFirstChangeNotificationW.argtypes = [LPCWSTR, BOOL, DWORD]
+kernel32.FindFirstChangeNotificationW.restype = HANDLE
+
+kernel32.FindNextChangeNotification.argtypes = [HANDLE]
+kernel32.FindNextChangeNotification.restype = BOOL
+
+kernel32.FindCloseChangeNotification.argtypes = [HANDLE]
+kernel32.FindCloseChangeNotification.restype = BOOL
 
 kernel32.DeviceIoControl.argtypes = [
     HANDLE,
@@ -174,13 +196,16 @@ kernel32.FormatMessageW.argtypes = [
     DWORD,
     LPWSTR,
     DWORD,
-    POINTER(DWORD),
+    LPVOID,  # va_list*, or a DWORD_PTR array with FORMAT_MESSAGE_ARGUMENT_ARRAY
 ]
 kernel32.FormatMessageW.restype = DWORD
 
 # Additional kernel32 APIs
 kernel32.GetCurrentThreadId.argtypes = []
 kernel32.GetCurrentThreadId.restype = DWORD
+
+kernel32.GetTickCount64.argtypes = []
+kernel32.GetTickCount64.restype = c_ulonglong
 
 kernel32.GetModuleHandleW.argtypes = [LPCWSTR]
 kernel32.GetModuleHandleW.restype = HANDLE
@@ -290,7 +315,7 @@ def CreateNamedPipe(
     )
 
 
-def ConnectNamedPipe(hNamedPipe: int, lpOverlapped: int | None = None) -> bool:
+def ConnectNamedPipe(hNamedPipe: int, lpOverlapped: CArgObject | int | None = None) -> bool:
     return bool(kernel32.ConnectNamedPipe(hNamedPipe, lpOverlapped))
 
 
@@ -300,10 +325,6 @@ def DisconnectNamedPipe(hNamedPipe: int) -> bool:
 
 def WaitNamedPipe(hNamedPipe: str, nTimeOut: int) -> bool:
     return bool(kernel32.WaitNamedPipeW(hNamedPipe, nTimeOut))
-
-
-def CancelIoEx(hFile: int, lpOverlapped: int | None = None) -> bool:
-    return bool(kernel32.CancelIoEx(hFile, lpOverlapped))
 
 
 def PeekNamedPipe(hNamedPipe: int) -> tuple[bool, int, int]:
@@ -335,6 +356,10 @@ def SetEvent(hEvent: int) -> bool:
     return bool(kernel32.SetEvent(hEvent))
 
 
+def ResetEvent(hEvent: int) -> bool:
+    return bool(kernel32.ResetEvent(hEvent))
+
+
 def OpenEvent(dwDesiredAccess: int, bInheritHandle: bool, lpName: str) -> int:
     return kernel32.OpenEventW(dwDesiredAccess, bInheritHandle, lpName)
 
@@ -352,6 +377,22 @@ def ReadFile(hFile: int, nNumberOfBytesToRead: int) -> tuple[bool, bytes]:
     bytes_read = DWORD()
     success = bool(kernel32.ReadFile(hFile, buffer, nNumberOfBytesToRead, byref(bytes_read), None))
     return success, buffer.raw[: bytes_read.value]
+
+
+def ReadFileOverlapped(hFile: int, lpBuffer: Array[c_char], lpOverlapped: CArgObject) -> bool:
+    """Start a read; the caller must keep the buffer and OVERLAPPED alive until completion."""
+    return bool(kernel32.ReadFile(hFile, lpBuffer, len(lpBuffer), None, lpOverlapped))
+
+
+def GetOverlappedResult(hFile: int, lpOverlapped: CArgObject, bWait: bool) -> tuple[bool, int]:
+    """Return (success, bytes_transferred), including partial reads on ERROR_MORE_DATA."""
+    bytes_transferred = DWORD()
+    success = bool(kernel32.GetOverlappedResult(hFile, lpOverlapped, byref(bytes_transferred), bWait))
+    return success, bytes_transferred.value
+
+
+def CancelIoEx(hFile: int, lpOverlapped: CArgObject | None = None) -> bool:
+    return bool(kernel32.CancelIoEx(hFile, lpOverlapped))
 
 
 def WriteFile(hFile: int, data: bytes) -> bool:
@@ -461,6 +502,10 @@ def FormatMessage(
 
 def GetCurrentThreadId() -> int:
     return int(kernel32.GetCurrentThreadId())
+
+
+def GetTickCount64() -> int:
+    return kernel32.GetTickCount64()
 
 
 def GetModuleHandle(lpModuleName: str | None) -> int:

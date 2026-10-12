@@ -15,7 +15,7 @@ A vertical and minimal album-style media widget. Cover art and track info on the
 | `tooltip` | boolean | `true` | Show tooltips on the bar (title + artist) and popup controls. |
 | `media_menu` | dict | [See below](#media-menu-options) | Popup menu options. |
 | `callbacks` | dict | [See below](#available-callbacks) | Mouse callbacks. |
-| `keybindings` | list | `[]` | Optional hotkeys. |
+| `keybindings` | list | `[]` | Optional hotkeys. See [Keybindings](./Keybindings). |
 
 ## Example Configuration
 
@@ -99,6 +99,17 @@ Source is a **16px app icon** (tooltip shows the app name). The volume icon **al
 
 ## Available Callbacks
 
+The `callbacks` option maps mouse buttons (`on_left`, `on_middle`, `on_right`) to actions. All keys are optional, the values shown are the defaults.
+
+```yaml
+callbacks:
+  on_left: "toggle_media_menu"
+  on_middle: "do_nothing"
+  on_right: "do_nothing"
+```
+
+Available actions:
+
 | Callback | Description |
 | --- | --- |
 | `toggle_media_menu` | Open / close the media popup. |
@@ -110,16 +121,15 @@ Source is a **16px app icon** (tooltip shows the app name). The volume icon **al
 
 ```css
 .media-lite-widget {}
-.media-lite-widget .widget-container {}
-.media-lite-widget .thumbnail {}
-.media-lite-widget .text {}
-.media-lite-widget .label {}
-.media-lite-widget .title {}
-.media-lite-widget .artist {}
+.media-lite-widget .widget-container {}  /* holds the thumbnail and the text container */
+.media-lite-widget .thumbnail {}         /* album art in the bar (show_thumbnail) */
+.media-lite-widget .text {}              /* text container: holds .label, or .title and .artist */
+.media-lite-widget .label {}             /* one line "title - artist" (scrolling_label: true) */
+.media-lite-widget .title {}             /* track title (scrolling_label: false) */
+.media-lite-widget .artist {}            /* artist below the title (scrolling_label: false) */
 
 .media-lite-menu {}
 .media-lite-menu .header {}
-.media-lite-menu .artwork-background {}
 .media-lite-menu .thumbnail {}
 .media-lite-menu .controls {}
 .media-lite-menu .title {}
@@ -317,5 +327,5 @@ Source is a **16px app icon** (tooltip shows the app name). The volume icon **al
 }
 ```
 
-## Preview of the Media Lite Widget
-![GitHub YASB Widget](assets/c69d10a8-5a41-4b0a-8ea1-797c8c0b70c1.png)
+## Preview of the Widget
+![Media Lite YASB Widget](assets/c69d10a8-5a41-4b0a-8ea1-797c8c0b70c1.png)

@@ -22,6 +22,7 @@ from ctypes.wintypes import (
     HBRUSH,
     HICON,
     HINSTANCE,
+    HKEY,
     HWND,
     INT,
     LONG,
@@ -39,6 +40,18 @@ from ctypes.wintypes import (
 
 WNDPROC = WINFUNCTYPE(LPARAM, HWND, UINT, WPARAM, LPARAM)
 WINEVENTPROC = WINFUNCTYPE(None, HANDLE, DWORD, HWND, LONG, LONG, DWORD, DWORD)
+
+
+class OVERLAPPED(ct.Structure):
+    """Asynchronous I/O state, using the offset members of the anonymous union."""
+
+    _fields_ = [
+        ("Internal", c_size_t),
+        ("InternalHigh", c_size_t),
+        ("Offset", DWORD),
+        ("OffsetHigh", DWORD),
+        ("hEvent", HANDLE),
+    ]
 
 
 class ACCENTPOLICY(ct.Structure):
@@ -487,6 +500,7 @@ class SIZE(ct.Structure):
 
 
 class DWM_THUMBNAIL_PROPERTIES(ct.Structure):
+    _pack_ = 1
     _fields_ = [
         ("dwFlags", UINT),
         ("rcDestination", RECT),
@@ -756,4 +770,24 @@ class PDH_FMT_COUNTERVALUE_DOUBLE(ct.Structure):
         ("CStatus", DWORD),
         ("padding", DWORD),
         ("doubleValue", ct.c_double),
+    ]
+
+
+class SHELLEXECUTEINFO(ct.Structure):
+    _fields_ = [
+        ("cbSize", DWORD),
+        ("fMask", ct.c_ulong),
+        ("hwnd", HWND),
+        ("lpVerb", LPCWSTR),
+        ("lpFile", LPCWSTR),
+        ("lpParameters", LPCWSTR),
+        ("lpDirectory", LPCWSTR),
+        ("nShow", ct.c_int),
+        ("hInstApp", HINSTANCE),
+        ("lpIDList", c_void_p),
+        ("lpClass", LPCWSTR),
+        ("hkeyClass", HKEY),
+        ("dwHotKey", DWORD),
+        ("hIconOrMonitor", HANDLE),
+        ("hProcess", HANDLE),
     ]

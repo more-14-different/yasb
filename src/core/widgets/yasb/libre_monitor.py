@@ -1,5 +1,4 @@
 import json
-import re
 from collections import deque
 from urllib.parse import quote
 
@@ -92,7 +91,7 @@ class LibreHardwareMonitorWidget(BaseWidget):
             layout.addWidget(header_label)
 
         self.sensors_container = QWidget()
-        self.sensor_value_labels = {}
+        self.sensor_value_labels: dict[str, QLabel] = {}
 
         self.sensors_layout = QGridLayout(self.sensors_container)
         col_count = self.config.libre_menu.columns
@@ -140,13 +139,13 @@ class LibreHardwareMonitorWidget(BaseWidget):
             for sensor in self.config.libre_menu.sensors:
                 sensor_id = sensor.id
                 value_label = self.sensor_value_labels.get(sensor_id)
-                if value_label is not None and isinstance(value_label, QLabel):
+                if value_label is not None:
                     try:
                         self._update_sensor_value(sensor_id, value_label)
                     except RuntimeError:
                         continue
 
-    def _update_sensor_value(self, sensor_id, value_label):
+    def _update_sensor_value(self, sensor_id: str, value_label: QLabel) -> None:
         """Update just the value for a specific sensor"""
         if not self._is_menu_visible():
             return
@@ -158,6 +157,8 @@ class LibreHardwareMonitorWidget(BaseWidget):
         manager = QNetworkAccessManager()
         manager.authenticationRequired.connect(self._handle_authentication)
         reply = manager.post(request, b"")
+        if reply is None:
+            return
         loop = QEventLoop()
         reply.finished.connect(loop.quit)
         loop.exec()
@@ -176,7 +177,7 @@ class LibreHardwareMonitorWidget(BaseWidget):
     def _is_menu_visible(self):
         """Check if the popup menu is visible"""
         try:
-            if getattr(self, "_menu", None) is not None and isinstance(self._menu, QWidget) and self._menu.isVisible():
+            if getattr(self, "_menu", None) is not None and self._menu.isVisible():
                 return True
         except RuntimeError, AttributeError:
             return False
@@ -231,7 +232,6 @@ class LibreHardwareMonitorWidget(BaseWidget):
                 part = parsed["text"]
                 formatted_text = part.format(info=info) if info else part
                 widget.setText(formatted_text)
-
 
         # Update popup menu if it's visible
         if self._is_menu_visible():

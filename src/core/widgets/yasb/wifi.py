@@ -1,5 +1,4 @@
 import logging
-import re
 import socket
 
 from PyQt6.QtCore import Qt
@@ -27,10 +26,9 @@ class WifiWidget(BaseWidget):
         self._ethernet_active = False
         self._wifi_menu = WifiMenu(self, self.config.menu_config)
 
-        self._cached_wifi_info = WiFiInfo(0, "Disconnected", -1)
-
         # Worker thread that will fetch wifi info on an interval
         self._wifi_worker = WiFiWorker(self.config.get_exact_wifi_strength, self.config.update_interval)
+        self._cached_wifi_info = self._wifi_worker.last_result or WiFiInfo(0, "Disconnected", -1)
         self._wifi_worker.result.connect(self._on_wifi_info_result)
         self._wifi_worker.start()
 
@@ -50,6 +48,8 @@ class WifiWidget(BaseWidget):
         self.callback_left = self.config.callbacks.on_left
         self.callback_right = self.config.callbacks.on_right
         self.callback_middle = self.config.callbacks.on_middle
+
+        self._update_label()
 
     def _display_correct_label(self):
         active_widget_group = "ethernet" if self._ethernet_active else "wifi"
@@ -75,7 +75,10 @@ class WifiWidget(BaseWidget):
 
     def _create_dynamically_label(self, content: str, content_alt: str, is_ethernet: bool = False):
         from core.utils.utilities import parse_label_template
-        def process_content(content: str, is_alt: bool = False, is_ethernet: bool = False) -> tuple[list[QLabel], list[dict]]:
+
+        def process_content(
+            content: str, is_alt: bool = False, is_ethernet: bool = False
+        ) -> tuple[list[QLabel], list[dict]]:
             parsed_parts = parse_label_template(content)
             widgets: list[QLabel] = []
             for parsed in parsed_parts:
@@ -89,7 +92,7 @@ class WifiWidget(BaseWidget):
                 else:
                     label = QLabel(text)
                     label.setProperty("class", "label alt" if is_alt else "label")
-                
+
                 label.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 self._widget_container_layout.addWidget(label)
                 widgets.append(label)
@@ -101,7 +104,9 @@ class WifiWidget(BaseWidget):
 
         if is_ethernet:
             self._widgets_ethernet, self._parsed_ethernet = process_content(content, is_ethernet=True)
-            self._widgets_ethernet_alt, self._parsed_ethernet_alt = process_content(content_alt, is_alt=True, is_ethernet=True)
+            self._widgets_ethernet_alt, self._parsed_ethernet_alt = process_content(
+                content_alt, is_alt=True, is_ethernet=True
+            )
         else:
             self._widgets, self._parsed_label = process_content(content)
             self._widgets_alt, self._parsed_label_alt = process_content(content_alt, is_alt=True)

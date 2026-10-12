@@ -12,17 +12,17 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 from core.bar_helper import BarAnimationManager  # noqa: E402
 
 
-class TestBar(QWidget):
+class AnimationBar(QWidget):
     animation_tick = pyqtSignal()
     animation_finished = pyqtSignal()
     opacity_tick = pyqtSignal(float)
 
     def __init__(self):
         super().__init__()
-        self._animation = {"enabled": True, "type": "slide", "duration": 1000}
-        self._alignment = {"position": "top"}
-        self._autohide_manager = None
-        self._skip_animation = False
+        self.animation = {"enabled": True, "type": "slide", "duration": 1000}
+        self.alignment = {"position": "top"}
+        self.autohide_manager = None
+        self.skip_animation = False
         self._bar_frame = QFrame(self)
         self.position_bar()
         self._bar_frame.setGeometry(0, 0, self.width(), self.height())
@@ -37,7 +37,7 @@ class BarAnimationTests(unittest.TestCase):
         cls.app = QApplication.instance() or QApplication([])
 
     def test_slide_moves_whole_bar_and_notifies_floating_overlays(self):
-        bar = TestBar()
+        bar = AnimationBar()
         ticks = []
         bar.animation_tick.connect(lambda: ticks.append(bar.geometry()))
         manager = BarAnimationManager(bar)
@@ -55,7 +55,7 @@ class BarAnimationTests(unittest.TestCase):
         bar.close()
 
     def test_slide_falls_back_to_fade_when_adjacent_screen_blocks_it(self):
-        bar = TestBar()
+        bar = AnimationBar()
         opacity_ticks = []
         bar.opacity_tick.connect(opacity_ticks.append)
         manager = BarAnimationManager(bar)

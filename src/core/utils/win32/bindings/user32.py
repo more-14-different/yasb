@@ -5,10 +5,12 @@ from ctypes import (
     WINFUNCTYPE,
     c_int,
     c_long,
-    c_ulong,
+    c_size_t,
+    c_ssize_t,
     windll,
 )
 from ctypes.wintypes import (
+    ATOM,
     BOOL,
     DWORD,
     HANDLE,
@@ -25,6 +27,7 @@ from ctypes.wintypes import (
     LPVOID,
     MSG,
     RECT,
+    SHORT,
     UINT,
     WPARAM,
 )
@@ -89,7 +92,7 @@ user32.PostThreadMessageW.argtypes = [DWORD, UINT, WPARAM, LPARAM]
 user32.PostThreadMessageW.restype = BOOL
 
 user32.RegisterClassW.argtypes = [POINTER(WNDCLASS)]
-user32.RegisterClassW.restype = UINT
+user32.RegisterClassW.restype = ATOM
 
 user32.RegisterPowerSettingNotification.argtypes = [HANDLE, POINTER(GUID), DWORD]
 user32.RegisterPowerSettingNotification.restype = HANDLE
@@ -105,7 +108,7 @@ user32.UnregisterHotKey.argtypes = [HWND, INT]
 user32.UnregisterHotKey.restype = BOOL
 
 user32.DefWindowProcW.argtypes = [HWND, UINT, WPARAM, LPARAM]
-user32.DefWindowProcW.restype = c_long
+user32.DefWindowProcW.restype = LPARAM
 
 user32.CreateWindowExW.argtypes = [
     DWORD,
@@ -150,7 +153,10 @@ user32.SetPropW.argtypes = [HWND, LPCWSTR, HANDLE]
 user32.SetPropW.restype = BOOL
 
 user32.RemovePropW.argtypes = [HWND, LPCWSTR]
-user32.RemovePropW.restype = BOOL
+user32.RemovePropW.restype = HANDLE
+
+user32.GetPropW.argtypes = [HWND, LPCWSTR]
+user32.GetPropW.restype = HANDLE
 
 user32.SetTaskmanWindow.argtypes = [HWND]
 user32.SetTaskmanWindow.restype = BOOL
@@ -158,13 +164,19 @@ user32.SetTaskmanWindow.restype = BOOL
 user32.SendNotifyMessageW.argtypes = [HWND, UINT, WPARAM, LPARAM]
 user32.SendNotifyMessageW.restype = c_int
 
+user32.GetDesktopWindow.argtypes = []
+user32.GetDesktopWindow.restype = HWND
+
+user32.WaitForInputIdle.argtypes = [HANDLE, DWORD]
+user32.WaitForInputIdle.restype = DWORD
+
 user32.PostMessageW.argtypes = [HWND, UINT, WPARAM, LPARAM]
 user32.PostMessageW.restype = c_int
 
-user32.SetTimer.argtypes = [HWND, UINT, UINT, LPVOID]
-user32.SetTimer.restype = c_int
+user32.SetTimer.argtypes = [HWND, c_size_t, UINT, LPVOID]
+user32.SetTimer.restype = c_size_t
 
-user32.KillTimer.argtypes = [HWND, UINT]
+user32.KillTimer.argtypes = [HWND, c_size_t]
 user32.KillTimer.restype = BOOL
 
 user32.FindWindowW.argtypes = [LPCWSTR, LPCWSTR]
@@ -180,13 +192,16 @@ user32.FindWindowExW.argtypes = [HWND, HWND, LPCWSTR, LPCWSTR]
 user32.FindWindowExW.restype = HWND
 
 user32.SendMessageW.argtypes = [HWND, UINT, WPARAM, LPARAM]
-user32.SendMessageW.restype = c_int
+user32.SendMessageW.restype = LPARAM
 
 user32.IsWindow.argtypes = [HWND]
 user32.IsWindow.restype = BOOL
 
 user32.IsWindowEnabled.argtypes = [HWND]
 user32.IsWindowEnabled.restype = BOOL
+
+user32.IsHungAppWindow.argtypes = [HWND]
+user32.IsHungAppWindow.restype = BOOL
 
 user32.GetWindowThreadProcessId.argtypes = [HWND, LPDWORD]
 user32.GetWindowThreadProcessId.restype = DWORD
@@ -230,10 +245,16 @@ user32.IsWindowVisible.argtypes = [HWND]
 user32.IsWindowVisible.restype = BOOL
 
 user32.GetKeyState.argtypes = [INT]
-user32.GetKeyState.restype = INT
+user32.GetKeyState.restype = SHORT
 
 user32.GetWindowLongW.argtypes = [HWND, INT]
 user32.GetWindowLongW.restype = c_long
+
+user32.GetWindowLongPtrW.argtypes = [HWND, INT]
+user32.GetWindowLongPtrW.restype = c_ssize_t
+
+user32.SetWindowLongPtrW.argtypes = [HWND, INT, c_ssize_t]
+user32.SetWindowLongPtrW.restype = c_ssize_t
 
 user32.GetShellWindow.argtypes = []
 user32.GetShellWindow.restype = HWND
@@ -253,8 +274,8 @@ user32.SetActiveWindow.restype = HWND
 user32.AttachThreadInput.argtypes = [DWORD, DWORD, BOOL]
 user32.AttachThreadInput.restype = BOOL
 
-user32.SendMessageTimeoutW.argtypes = [HWND, UINT, WPARAM, LPARAM, UINT, UINT, LPVOID]
-user32.SendMessageTimeoutW.restype = c_int
+user32.SendMessageTimeoutW.argtypes = [HWND, UINT, WPARAM, LPARAM, UINT, UINT, POINTER(c_size_t)]
+user32.SendMessageTimeoutW.restype = LPARAM
 
 user32.EndTask.argtypes = [HWND, BOOL, BOOL]
 user32.EndTask.restype = BOOL
@@ -342,8 +363,12 @@ def SetProp(hwnd: int, lpString: str, hData: int | None = None) -> bool:
     return user32.SetPropW(hwnd, lpString, hData)
 
 
-def RemoveProp(hwnd: int, lpString: str) -> bool:
+def RemoveProp(hwnd: int, lpString: str) -> int | None:
     return user32.RemovePropW(hwnd, lpString)
+
+
+def GetProp(hwnd: int, lpString: str) -> int | None:
+    return user32.GetPropW(hwnd, lpString)
 
 
 def SetTaskmanWindow(hwnd: int) -> bool:
@@ -352,6 +377,14 @@ def SetTaskmanWindow(hwnd: int) -> bool:
 
 def SendNotifyMessage(hwnd: int, msg: int, wParam: int, lParam: int) -> int:
     return user32.SendNotifyMessageW(hwnd, msg, wParam, lParam)
+
+
+def GetDesktopWindow() -> int:
+    return user32.GetDesktopWindow()
+
+
+def WaitForInputIdle(hProcess: int, dwMilliseconds: int) -> int:
+    return user32.WaitForInputIdle(hProcess, dwMilliseconds)
 
 
 def PostMessage(hwnd: int, msg: int, wParam: int, lParam: int) -> int:
@@ -406,6 +439,10 @@ def IsWindow(hwnd: int) -> bool:
 
 def IsWindowEnabled(hwnd: int) -> bool:
     return user32.IsWindowEnabled(hwnd)
+
+
+def IsHungAppWindow(hwnd: int) -> bool:
+    return bool(user32.IsHungAppWindow(hwnd))
 
 
 def GetWindowThreadProcessId(hwnd: int, lpdwProcessId: CArgObject | None) -> int:
@@ -468,7 +505,7 @@ def SetCursorPos(x: int, y: int) -> bool:
     return bool(user32.SetCursorPos(x, y))
 
 
-def SetWindowCompositionAttribute(hwnd: int, data: LPVOID) -> int:
+def SetWindowCompositionAttribute(hwnd: int, data: CArgObject) -> int:
     return user32.SetWindowCompositionAttribute(hwnd, data)
 
 
@@ -486,6 +523,14 @@ def IsWindowVisible(hwnd: int) -> bool:
 
 def GetWindowLong(hwnd: int, index: int) -> int:
     return int(user32.GetWindowLongW(hwnd, index))
+
+
+def GetWindowLongPtr(hwnd: int, index: int) -> int:
+    return user32.GetWindowLongPtrW(hwnd, index)
+
+
+def SetWindowLongPtr(hwnd: int, index: int, value: int) -> int:
+    return user32.SetWindowLongPtrW(hwnd, index, value)
 
 
 def GetShellWindow() -> int:
@@ -523,7 +568,7 @@ def SendMessageTimeout(
 ) -> int:
     # Accept None for lpdwResult and provide a dummy buffer
     if lpdwResult is None:
-        tmp = c_ulong()
+        tmp = c_size_t()
         from ctypes import byref as _byref  # local import to avoid polluting namespace
 
         return user32.SendMessageTimeoutW(hwnd, msg, wParam, lParam, fuFlags, uTimeout, _byref(tmp))
@@ -541,7 +586,7 @@ def SendMessageTimeoutW(
     lParam: int,
     fuFlags: int,
     uTimeout: int,
-    lpdwResult,
+    lpdwResult: CArgObject,
 ) -> int:
     """Direct wrapper with the wide-character entrypoint name for robustness."""
     return user32.SendMessageTimeoutW(hwnd, msg, wParam, lParam, fuFlags, uTimeout, lpdwResult)

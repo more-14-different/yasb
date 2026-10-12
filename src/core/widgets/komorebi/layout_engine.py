@@ -1,5 +1,6 @@
 import math
-from typing import TypedDict, Literal
+from typing import Literal, TypedDict
+
 
 class RectDict(TypedDict):
     left: int
@@ -7,11 +8,13 @@ class RectDict(TypedDict):
     right: int
     bottom: int
 
+
 class OutputRectDict(TypedDict):
     left: int
     top: int
     width: int
     height: int
+
 
 Axis = Literal["Horizontal", "Vertical", "HorizontalAndVertical", "None"]
 
@@ -21,16 +24,17 @@ DEFAULT_RATIO = 0.5
 DEFAULT_SECONDARY_RATIO = 0.25
 MAX_RATIOS = 5
 
+
 def calculate_layout(
     layout_type: str,
     work_area: RectDict,
     num_windows: int,
     layout_flip: Axis = "None",
-    layout_options: dict | None = None
+    layout_options: dict | None = None,
 ) -> list[OutputRectDict]:
     if num_windows <= 0:
         return []
-    
+
     if layout_options is None:
         layout_options = {}
 
@@ -53,18 +57,22 @@ def calculate_layout(
     elif layout_type == "Scrolling":
         layouts = _calculate_scrolling(work_area, num_windows, layout_flip, layout_options)
     else:
-        layouts = [{"left": work_area["left"], "top": work_area["top"], "right": work_area["right"], "bottom": work_area["bottom"]} for _ in range(num_windows)]
+        layouts = [
+            {
+                "left": work_area["left"],
+                "top": work_area["top"],
+                "right": work_area["right"],
+                "bottom": work_area["bottom"],
+            }
+            for _ in range(num_windows)
+        ]
 
     # Convert Komorebi's right/bottom meaning width/height to actual python keys
     out = []
     for l in layouts:
-        out.append({
-            "left": l["left"],
-            "top": l["top"],
-            "width": l["right"],
-            "height": l["bottom"]
-        })
+        out.append({"left": l["left"], "top": l["top"], "width": l["right"], "height": l["bottom"]})
     return out
+
 
 def _get_column_ratios(layout_options: dict) -> list[float]:
     ratios = layout_options.get("column_ratios", [])
@@ -82,6 +90,7 @@ def _get_column_ratios(layout_options: dict) -> list[float]:
                 break
     return valid_ratios
 
+
 def _get_row_ratios(layout_options: dict) -> list[float]:
     ratios = layout_options.get("row_ratios", [])
     if not ratios:
@@ -97,6 +106,7 @@ def _get_row_ratios(layout_options: dict) -> list[float]:
             else:
                 break
     return valid_ratios
+
 
 def _recursive_fibonacci(
     idx: int,
@@ -124,7 +134,7 @@ def _recursive_fibonacci(
         alt_x = area["left"]
         main_y = area["top"] + (area["bottom"] - primary_resized_height)
         alt_y = area["top"]
-    else: # None
+    else:  # None
         main_x = area["left"]
         alt_x = area["left"] + primary_resized_width
         main_y = area["top"]
@@ -136,20 +146,41 @@ def _recursive_fibonacci(
         return [{"left": area["left"], "top": area["top"], "right": area["right"], "bottom": area["bottom"]}]
     elif idx % 2 != 0:
         res = [{"left": area["left"], "top": main_y, "right": area["right"], "bottom": primary_resized_height}]
-        res.extend(_recursive_fibonacci(
-            idx + 1, count - 1,
-            {"left": area["left"], "top": alt_y, "right": area["right"], "bottom": area["bottom"] - primary_resized_height},
-            layout_flip, column_split_ratio, row_split_ratio
-        ))
+        res.extend(
+            _recursive_fibonacci(
+                idx + 1,
+                count - 1,
+                {
+                    "left": area["left"],
+                    "top": alt_y,
+                    "right": area["right"],
+                    "bottom": area["bottom"] - primary_resized_height,
+                },
+                layout_flip,
+                column_split_ratio,
+                row_split_ratio,
+            )
+        )
         return res
     else:
         res = [{"left": main_x, "top": area["top"], "right": primary_resized_width, "bottom": area["bottom"]}]
-        res.extend(_recursive_fibonacci(
-            idx + 1, count - 1,
-            {"left": alt_x, "top": area["top"], "right": area["right"] - primary_resized_width, "bottom": area["bottom"]},
-            layout_flip, column_split_ratio, row_split_ratio
-        ))
+        res.extend(
+            _recursive_fibonacci(
+                idx + 1,
+                count - 1,
+                {
+                    "left": alt_x,
+                    "top": area["top"],
+                    "right": area["right"] - primary_resized_width,
+                    "bottom": area["bottom"],
+                },
+                layout_flip,
+                column_split_ratio,
+                row_split_ratio,
+            )
+        )
         return res
+
 
 def _columns_with_ratios(area: RectDict, length: int, ratios: list[float]) -> list[RectDict]:
     layouts = []
@@ -171,12 +202,14 @@ def _columns_with_ratios(area: RectDict, length: int, ratios: list[float]) -> li
         else:
             right_width = area["right"] // length
 
-        layouts.append({
-            "left": area["left"] + left_offset,
-            "top": area["top"],
-            "right": right_width,
-            "bottom": area["bottom"],
-        })
+        layouts.append(
+            {
+                "left": area["left"] + left_offset,
+                "top": area["top"],
+                "right": right_width,
+                "bottom": area["bottom"],
+            }
+        )
         left_offset += right_width
 
     total_width = sum(l["right"] for l in layouts)
@@ -185,6 +218,7 @@ def _columns_with_ratios(area: RectDict, length: int, ratios: list[float]) -> li
         layouts[-1]["right"] += remainder
 
     return layouts
+
 
 def _rows_with_ratios(area: RectDict, length: int, ratios: list[float]) -> list[RectDict]:
     layouts = []
@@ -206,12 +240,14 @@ def _rows_with_ratios(area: RectDict, length: int, ratios: list[float]) -> list[
         else:
             bottom_height = area["bottom"] // length
 
-        layouts.append({
-            "left": area["left"],
-            "top": area["top"] + top_offset,
-            "right": area["right"],
-            "bottom": bottom_height,
-        })
+        layouts.append(
+            {
+                "left": area["left"],
+                "top": area["top"] + top_offset,
+                "right": area["right"],
+                "bottom": bottom_height,
+            }
+        )
         top_offset += bottom_height
 
     total_height = sum(l["bottom"] for l in layouts)
@@ -221,19 +257,24 @@ def _rows_with_ratios(area: RectDict, length: int, ratios: list[float]) -> list[
 
     return layouts
 
+
 def _columns_reverse(layouts: list[RectDict]):
-    if not layouts: return
+    if not layouts:
+        return
     n = len(layouts)
     layouts[n - 1]["left"] = layouts[0]["left"]
     for i in range(n - 2, -1, -1):
         layouts[i]["left"] = layouts[i + 1]["left"] + layouts[i + 1]["right"]
 
+
 def _rows_reverse(layouts: list[RectDict]):
-    if not layouts: return
+    if not layouts:
+        return
     n = len(layouts)
     layouts[n - 1]["top"] = layouts[0]["top"]
     for i in range(n - 2, -1, -1):
         layouts[i]["top"] = layouts[i + 1]["top"] + layouts[i + 1]["bottom"]
+
 
 def _calculate_bsp(work_area: RectDict, num_windows: int, layout_flip: Axis, layout_options: dict):
     col_ratios = _get_column_ratios(layout_options)
@@ -242,12 +283,14 @@ def _calculate_bsp(work_area: RectDict, num_windows: int, layout_flip: Axis, lay
     row_split = row_ratios[0] if row_ratios else DEFAULT_RATIO
     return _recursive_fibonacci(0, num_windows, work_area, layout_flip, col_split, row_split)
 
+
 def _calculate_columns(work_area: RectDict, num_windows: int, layout_flip: Axis, layout_options: dict):
     ratios = _get_column_ratios(layout_options)
     layouts = _columns_with_ratios(work_area, num_windows, ratios)
     if layout_flip in ("Horizontal", "HorizontalAndVertical") and num_windows >= 2:
         _columns_reverse(layouts)
     return layouts
+
 
 def _calculate_rows(work_area: RectDict, num_windows: int, layout_flip: Axis, layout_options: dict):
     ratios = _get_row_ratios(layout_options)
@@ -256,28 +299,32 @@ def _calculate_rows(work_area: RectDict, num_windows: int, layout_flip: Axis, la
         _rows_reverse(layouts)
     return layouts
 
+
 def _calculate_vertical_stack(work_area: RectDict, num_windows: int, layout_flip: Axis, layout_options: dict):
     layouts = []
     col_ratios = _get_column_ratios(layout_options)
     primary_ratio = col_ratios[0] if col_ratios else DEFAULT_RATIO
 
     primary_width = work_area["right"] if num_windows == 1 else int(work_area["right"] * primary_ratio)
-    
+
     if num_windows >= 1:
-        layouts.append({
-            "left": work_area["left"],
-            "top": work_area["top"],
-            "right": primary_width,
-            "bottom": work_area["bottom"]
-        })
+        layouts.append(
+            {"left": work_area["left"], "top": work_area["top"], "right": primary_width, "bottom": work_area["bottom"]}
+        )
         if num_windows > 1:
             row_ratios = _get_row_ratios(layout_options)
-            layouts.extend(_rows_with_ratios({
-                "left": work_area["left"] + primary_width,
-                "top": work_area["top"],
-                "right": work_area["right"] - primary_width,
-                "bottom": work_area["bottom"]
-            }, num_windows - 1, row_ratios))
+            layouts.extend(
+                _rows_with_ratios(
+                    {
+                        "left": work_area["left"] + primary_width,
+                        "top": work_area["top"],
+                        "right": work_area["right"] - primary_width,
+                        "bottom": work_area["bottom"],
+                    },
+                    num_windows - 1,
+                    row_ratios,
+                )
+            )
 
     if layout_flip in ("Horizontal", "HorizontalAndVertical") and num_windows >= 2:
         primary = layouts[0]
@@ -293,29 +340,40 @@ def _calculate_vertical_stack(work_area: RectDict, num_windows: int, layout_flip
 
     return layouts
 
-def _calculate_right_main_vertical_stack(work_area: RectDict, num_windows: int, layout_flip: Axis, layout_options: dict):
+
+def _calculate_right_main_vertical_stack(
+    work_area: RectDict, num_windows: int, layout_flip: Axis, layout_options: dict
+):
     layouts = []
     col_ratios = _get_column_ratios(layout_options)
     primary_ratio = col_ratios[0] if col_ratios else DEFAULT_RATIO
 
     primary_width = work_area["right"] if num_windows == 1 else int(work_area["right"] * primary_ratio)
     primary_left = 0 if num_windows == 1 else work_area["right"] - primary_width
-    
+
     if num_windows >= 1:
-        layouts.append({
-            "left": work_area["left"] + primary_left,
-            "top": work_area["top"],
-            "right": primary_width,
-            "bottom": work_area["bottom"]
-        })
+        layouts.append(
+            {
+                "left": work_area["left"] + primary_left,
+                "top": work_area["top"],
+                "right": primary_width,
+                "bottom": work_area["bottom"],
+            }
+        )
         if num_windows > 1:
             row_ratios = _get_row_ratios(layout_options)
-            layouts.extend(_rows_with_ratios({
-                "left": work_area["left"],
-                "top": work_area["top"],
-                "right": primary_left,
-                "bottom": work_area["bottom"]
-            }, num_windows - 1, row_ratios))
+            layouts.extend(
+                _rows_with_ratios(
+                    {
+                        "left": work_area["left"],
+                        "top": work_area["top"],
+                        "right": primary_left,
+                        "bottom": work_area["bottom"],
+                    },
+                    num_windows - 1,
+                    row_ratios,
+                )
+            )
 
     if layout_flip in ("Horizontal", "HorizontalAndVertical") and num_windows >= 2:
         primary = layouts[0]
@@ -331,28 +389,32 @@ def _calculate_right_main_vertical_stack(work_area: RectDict, num_windows: int, 
 
     return layouts
 
+
 def _calculate_horizontal_stack(work_area: RectDict, num_windows: int, layout_flip: Axis, layout_options: dict):
     layouts = []
     row_ratios = _get_row_ratios(layout_options)
     primary_ratio = row_ratios[0] if row_ratios else DEFAULT_RATIO
 
     primary_height = work_area["bottom"] if num_windows == 1 else int(work_area["bottom"] * primary_ratio)
-    
+
     if num_windows >= 1:
-        layouts.append({
-            "left": work_area["left"],
-            "top": work_area["top"],
-            "right": work_area["right"],
-            "bottom": primary_height
-        })
+        layouts.append(
+            {"left": work_area["left"], "top": work_area["top"], "right": work_area["right"], "bottom": primary_height}
+        )
         if num_windows > 1:
             col_ratios = _get_column_ratios(layout_options)
-            layouts.extend(_columns_with_ratios({
-                "left": work_area["left"],
-                "top": work_area["top"] + primary_height,
-                "right": work_area["right"],
-                "bottom": work_area["bottom"] - primary_height
-            }, num_windows - 1, col_ratios))
+            layouts.extend(
+                _columns_with_ratios(
+                    {
+                        "left": work_area["left"],
+                        "top": work_area["top"] + primary_height,
+                        "right": work_area["right"],
+                        "bottom": work_area["bottom"] - primary_height,
+                    },
+                    num_windows - 1,
+                    col_ratios,
+                )
+            )
 
     if layout_flip in ("Vertical", "HorizontalAndVertical") and num_windows >= 2:
         primary = layouts[0]
@@ -368,6 +430,7 @@ def _calculate_horizontal_stack(work_area: RectDict, num_windows: int, layout_fl
 
     return layouts
 
+
 def _calculate_ultrawide_vertical_stack(work_area: RectDict, num_windows: int, layout_flip: Axis, layout_options: dict):
     layouts = []
     ratios = _get_column_ratios(layout_options)
@@ -375,7 +438,7 @@ def _calculate_ultrawide_vertical_stack(work_area: RectDict, num_windows: int, l
     secondary_ratio = ratios[1] if len(ratios) > 1 else DEFAULT_SECONDARY_RATIO
 
     primary_width = work_area["right"] if num_windows == 1 else int(work_area["right"] * primary_ratio)
-    
+
     if num_windows == 1:
         secondary_width = 0
     elif num_windows == 2:
@@ -395,28 +458,33 @@ def _calculate_ultrawide_vertical_stack(work_area: RectDict, num_windows: int, l
         stack_left = work_area["left"] + primary_width + secondary_width
 
     if num_windows >= 1:
-        layouts.append({
-            "left": primary_left,
-            "top": work_area["top"],
-            "right": primary_width,
-            "bottom": work_area["bottom"]
-        })
+        layouts.append(
+            {"left": primary_left, "top": work_area["top"], "right": primary_width, "bottom": work_area["bottom"]}
+        )
         if num_windows >= 2:
-            layouts.append({
-                "left": secondary_left,
-                "top": work_area["top"],
-                "right": secondary_width,
-                "bottom": work_area["bottom"]
-            })
+            layouts.append(
+                {
+                    "left": secondary_left,
+                    "top": work_area["top"],
+                    "right": secondary_width,
+                    "bottom": work_area["bottom"],
+                }
+            )
             if num_windows > 2:
                 tertiary_width = work_area["right"] - primary_width - secondary_width
                 row_ratios = _get_row_ratios(layout_options)
-                layouts.extend(_rows_with_ratios({
-                    "left": stack_left,
-                    "top": work_area["top"],
-                    "right": tertiary_width,
-                    "bottom": work_area["bottom"]
-                }, num_windows - 2, row_ratios))
+                layouts.extend(
+                    _rows_with_ratios(
+                        {
+                            "left": stack_left,
+                            "top": work_area["top"],
+                            "right": tertiary_width,
+                            "bottom": work_area["bottom"],
+                        },
+                        num_windows - 2,
+                        row_ratios,
+                    )
+                )
 
     if layout_flip in ("Horizontal", "HorizontalAndVertical"):
         if num_windows == 2:
@@ -440,9 +508,10 @@ def _calculate_ultrawide_vertical_stack(work_area: RectDict, num_windows: int, l
 
     return layouts
 
+
 def _calculate_grid(work_area: RectDict, num_windows: int, layout_flip: Axis, layout_options: dict):
-    layouts = [{"left":0, "top":0, "right":0, "bottom":0} for _ in range(num_windows)]
-    
+    layouts = [{"left": 0, "top": 0, "right": 0, "bottom": 0} for _ in range(num_windows)]
+
     grid_opts = layout_options.get("grid", {})
     row_constraint = grid_opts.get("rows")
     col_ratios = _get_column_ratios(layout_options)
@@ -503,10 +572,10 @@ def _calculate_grid(work_area: RectDict, num_windows: int, layout_flip: Axis, la
             num_rows_in_this_col = min(remaining_windows // remaining_columns, row_constraint)
         else:
             num_rows_in_this_col = remaining_windows // remaining_columns
-        
+
         if num_rows_in_this_col <= 0:
             num_rows_in_this_col = 1
-            
+
         base_height = work_area["bottom"] // num_rows_in_this_col
         height_remainder = work_area["bottom"] - (base_height * num_rows_in_this_col)
 
@@ -515,7 +584,7 @@ def _calculate_grid(work_area: RectDict, num_windows: int, layout_flip: Axis, la
 
         for row in range(num_rows_in_this_col):
             if win_idx < num_windows:
-                is_last_row = (row == num_rows_in_this_col - 1)
+                is_last_row = row == num_rows_in_this_col - 1
                 win_height = base_height + height_remainder if is_last_row else base_height
 
                 left = col_left
@@ -524,40 +593,39 @@ def _calculate_grid(work_area: RectDict, num_windows: int, layout_flip: Axis, la
                 if layout_flip == "Horizontal":
                     left = flipped_col_lefts[col]
                 elif layout_flip == "Vertical":
-                    top = work_area["top"] if is_last_row else work_area["top"] + work_area["bottom"] - (base_height * (row + 1))
+                    top = (
+                        work_area["top"]
+                        if is_last_row
+                        else work_area["top"] + work_area["bottom"] - (base_height * (row + 1))
+                    )
                 elif layout_flip == "HorizontalAndVertical":
                     left = flipped_col_lefts[col]
-                    top = work_area["top"] if is_last_row else work_area["top"] + work_area["bottom"] - (base_height * (row + 1))
+                    top = (
+                        work_area["top"]
+                        if is_last_row
+                        else work_area["top"] + work_area["bottom"] - (base_height * (row + 1))
+                    )
 
-                layouts[win_idx] = {
-                    "left": left,
-                    "top": top,
-                    "right": win_width,
-                    "bottom": win_height
-                }
+                layouts[win_idx] = {"left": left, "top": top, "right": win_width, "bottom": win_height}
                 win_idx += 1
 
     return layouts
+
 
 def _calculate_scrolling(work_area: RectDict, num_windows: int, layout_flip: Axis, layout_options: dict):
     layouts = []
     scrolling_opts = layout_options.get("scrolling", {})
     column_count = scrolling_opts.get("columns", 3)
-    
+
     column_width = work_area["right"] // min(column_count, num_windows)
     visible_columns = work_area["right"] // column_width
     first_visible = 0
-    
+
     for i in range(num_windows):
         position = i - first_visible
         left = work_area["left"] + (position * column_width)
-        layouts.append({
-            "left": left,
-            "top": work_area["top"],
-            "right": column_width,
-            "bottom": work_area["bottom"]
-        })
-        
+        layouts.append({"left": left, "top": work_area["top"], "right": column_width, "bottom": work_area["bottom"]})
+
     width_remainder = work_area["right"] - (column_width * visible_columns)
     if width_remainder > 0:
         last_visible_idx = min(first_visible + visible_columns - 1, num_windows - 1)

@@ -1,4 +1,5 @@
 from asyncio import AbstractEventLoop, Event
+
 from PyQt6.QtWidgets import QApplication
 
 

@@ -1,7 +1,7 @@
 import math
 from enum import StrEnum
 from functools import lru_cache
-from typing import Any, cast, override
+from typing import TYPE_CHECKING, Any, cast, override
 
 from PyQt6.QtCore import (
     QEasingCurve,
@@ -16,8 +16,10 @@ from PyQt6.QtCore import (
     pyqtSlot,
 )
 from PyQt6.QtGui import (
+    QCloseEvent,
     QFontMetrics,
     QHideEvent,
+    QMouseEvent,
     QPainter,
     QPaintEvent,
     QResizeEvent,
@@ -28,6 +30,7 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtWidgets import (
     QApplication,
+    QBoxLayout,
     QDialog,
     QFrame,
     QLabel,
@@ -41,6 +44,9 @@ from winrt.windows.ui.notifications import ToastNotification, ToastNotificationM
 from core.utils.qobject import is_valid_qobject
 from core.utils.system import is_windows_10
 from core.utils.win32.backdrop import enable_blur
+
+if TYPE_CHECKING:
+    from core.utils.progress_bar import ProgressWidget
 
 
 def percent_to_float(percent: str) -> float:
@@ -57,6 +63,7 @@ def parse_label_template(content: str) -> list[dict]:
     Returns a list of dicts with keys: is_icon, text, class_name
     """
     import re
+
     label_parts = re.split(r"(<span.*?>.*?</span>)", content)
     result = []
     for part in label_parts:
@@ -82,7 +89,7 @@ def get_screen_by_name(screen_name: str) -> QScreen | None:
     return next(filter(lambda scr: screen_name in scr.name(), screens), None)
 
 
-def refresh_widget_style(*widgets: QWidget) -> None:
+def refresh_widget_style(*widgets: QWidget | None) -> None:
     """Refresh the style of the given widgets."""
     for widget in widgets:
         if widget is None or not is_valid_qobject(widget):
@@ -97,15 +104,15 @@ def refresh_widget_style(*widgets: QWidget) -> None:
             pass
 
 
-def build_progress_widget(self, options: dict[str, Any]) -> None:
+def build_progress_widget(parent: QWidget, options: dict[str, Any]) -> ProgressWidget | None:
     """Builds a circular or linear progress widget based on the provided options."""
     if not options["enabled"]:
-        return
+        return None
 
     from core.utils.progress_bar import ProgressBar, ProgressWidget
 
-    self.progress_data = ProgressBar(
-        parent=self,
+    progress_bar = ProgressBar(
+        parent=parent,
         size=options["size"],
         thickness=options["thickness"],
         color=options["color"],
@@ -114,8 +121,7 @@ def build_progress_widget(self, options: dict[str, Any]) -> None:
         progress_type=options.get("progress_type", "circular"),
         radius=options.get("radius", 0),
     )
-    self.progress_widget = ProgressWidget(self.progress_data)
-    return self.progress_widget
+    return ProgressWidget(progress_bar)
 
 
 @lru_cache(maxsize=1)
@@ -179,6 +185,10 @@ class PopupWidget(QWidget):
     # But this should be revisited maybe is there a better way to manage this
     _open_popups: dict[int, PopupWidget] = {}
 
+    @classmethod
+    def open_popup_for(cls, parent: QWidget) -> PopupWidget | None:
+        return cls._open_popups.get(id(parent))
+
     def __init__(
         self,
         parent: QWidget,
@@ -222,12 +232,16 @@ class PopupWidget(QWidget):
 
         self._is_closing = False
 
-    def setProperty(self, name, value):
-        super().setProperty(name, value)
+    @override
+    def setProperty(self, name: str | None, value: Any) -> bool:
+        result = super().setProperty(name, value)
         if name == "class":
             self._popup_content.setProperty(name, value)
+        return result
 
-    def setPosition(self, alignment="left", direction="down", offset_left=0, offset_top=0):
+    def setPosition(
+        self, alignment: str = "left", direction: str = "down", offset_left: int = 0, offset_top: int = 0
+    ) -> None:
         """
         Position the popup relative to its parent widget.
         Args:
@@ -282,43 +296,48 @@ class PopupWidget(QWidget):
         if not pinned:
             self._drag_pos = None
 
-    def mousePressEvent(self, event):
-        if self._pinnable and self._pinned and event.button() == Qt.MouseButton.LeftButton:
-            self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
-            event.accept()
+    @override
+    def mousePressEvent(self, a0: QMouseEvent | None) -> None:
+        if a0 is not None and self._pinnable and self._pinned and a0.button() == Qt.MouseButton.LeftButton:
+            self._drag_pos = a0.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            a0.accept()
             return
-        super().mousePressEvent(event)
+        super().mousePressEvent(a0)
 
-    def mouseMoveEvent(self, event):
+    @override
+    def mouseMoveEvent(self, a0: QMouseEvent | None) -> None:
         if (
-            self._pinnable
+            a0 is not None
+            and self._pinnable
             and self._pinned
             and self._drag_pos is not None
-            and event.buttons() & Qt.MouseButton.LeftButton
+            and a0.buttons() & Qt.MouseButton.LeftButton
         ):
-            self.move(event.globalPosition().toPoint() - self._drag_pos)
-            event.accept()
+            self.move(a0.globalPosition().toPoint() - self._drag_pos)
+            a0.accept()
             return
-        super().mouseMoveEvent(event)
+        super().mouseMoveEvent(a0)
 
-    def mouseReleaseEvent(self, event):
-        if self._pinnable and self._pinned and event.button() == Qt.MouseButton.LeftButton:
+    @override
+    def mouseReleaseEvent(self, a0: QMouseEvent | None) -> None:
+        if a0 is not None and self._pinnable and self._pinned and a0.button() == Qt.MouseButton.LeftButton:
             self._drag_pos = None
-            event.accept()
+            a0.accept()
             return
-        super().mouseReleaseEvent(event)
+        super().mouseReleaseEvent(a0)
 
-    def event(self, event):
+    @override
+    def event(self, a0: QEvent | None) -> bool:
         # Tool-type windows (pinnable=True) don't auto-close on WindowDeactivate the way
         # Popup-type windows do, so we replicate that behaviour here:
         # close when not pinned, stay open when pinned.
-        if event.type() == QEvent.Type.WindowDeactivate and self._pinnable:
+        if a0 is not None and a0.type() == QEvent.Type.WindowDeactivate and self._pinnable:
             if not self._pinned:
                 self.hide_animated()
             return True
-        return super().event(event)
+        return super().event(a0)
 
-    def _add_separator(self, layout):
+    def add_separator(self, layout: QBoxLayout) -> None:
         separator = QFrame(self)
         separator.setFrameShape(QFrame.Shape.HLine)
         separator.setProperty("class", "separator")
@@ -391,9 +410,11 @@ class PopupWidget(QWidget):
         except Exception:
             pass
 
-    def closeEvent(self, event):
+    @override
+    def closeEvent(self, a0: QCloseEvent | None) -> None:
         """Override close event to use animation."""
-        event.ignore()  # Ignore the default close behavior
+        if a0 is not None:
+            a0.ignore()  # Ignore the default close behavior
         self.hide_animated()
 
     def show(self):
@@ -415,17 +436,21 @@ class PopupWidget(QWidget):
 
         super().show()
 
-    def showEvent(self, event):
+    @override
+    def showEvent(self, a0: QShowEvent | None) -> None:
         # Install event filter only when popup is actually shown
-        QApplication.instance().installEventFilter(self)
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
 
         # Register this popup in the class-level registry for toggle support
         parent_id = id(self._parent)
         PopupWidget._open_popups[parent_id] = self
 
         # Clear stuck :hover state scoped to the bar widget's own content only.
-        if self._parent:
-            self._parent.clear_hover_state()
+        clear_hover_state = getattr(self._parent, "clear_hover_state", None)
+        if callable(clear_hover_state):
+            clear_hover_state()
 
         if self._blur:
             enable_blur(
@@ -447,7 +472,7 @@ class PopupWidget(QWidget):
         # Set initial opacity and show
         self.setWindowOpacity(0.0)
 
-        super().showEvent(event)
+        super().showEvent(a0)
 
         self.activateWindow()
         self._fade_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
@@ -455,13 +480,14 @@ class PopupWidget(QWidget):
         self._fade_animation.setEndValue(1.0)
         self._fade_animation.start()
 
-    def eventFilter(self, obj, event):
-        if not isinstance(obj, QObject):
+    @override
+    def eventFilter(self, a0: QObject | None, a1: QEvent | None) -> bool:
+        if not isinstance(a0, QObject) or a1 is None:
             return False
         if self._suspend_close or self._pinned:
-            return super().eventFilter(obj, event)
-        if event.type() == QEvent.Type.MouseButtonPress:
-            global_pos = event.globalPosition().toPoint()
+            return super().eventFilter(a0, a1)
+        if a1.type() == QEvent.Type.MouseButtonPress:
+            global_pos = cast(QMouseEvent, a1).globalPosition().toPoint()
 
             # Check if click is inside popup
             try:
@@ -469,16 +495,16 @@ class PopupWidget(QWidget):
             except Exception:
                 popup_global_geom = self.geometry()
             if popup_global_geom.contains(global_pos):
-                return super().eventFilter(obj, event)
+                return super().eventFilter(a0, a1)
 
             # Check if click is inside any visible QMenu or QDialog (file dialogs, etc.)
             try:
                 for w in QApplication.topLevelWidgets():
-                    if isinstance(w, (QMenu, QDialog)) and w.isVisible() and w is not self:
+                    if isinstance(w, (QMenu, QDialog)) and w.isVisible():
                         try:
                             w_global_geom = QRect(w.mapToGlobal(QPoint(0, 0)), w.size())
                             if w_global_geom.contains(global_pos):
-                                return super().eventFilter(obj, event)
+                                return super().eventFilter(a0, a1)
                         except Exception:
                             continue
             except Exception:
@@ -491,19 +517,22 @@ class PopupWidget(QWidget):
 
             self.hide_animated()
             return True
-        return super().eventFilter(obj, event)
+        return super().eventFilter(a0, a1)
 
     def set_auto_close_enabled(self, enabled: bool):
         """Enable/disable auto-close behavior when clicking outside."""
         self._suspend_close = not enabled
 
-    def hideEvent(self, event):
-        if self._is_closing:
-            QApplication.instance().removeEventFilter(self)
+    @override
+    def hideEvent(self, a0: QHideEvent | None) -> None:
+        app = QApplication.instance()
+        if self._is_closing and app is not None:
+            app.removeEventFilter(self)
 
-        super().hideEvent(event)
+        super().hideEvent(a0)
 
-    def resizeEvent(self, event):
+    @override
+    def resizeEvent(self, a0: QResizeEvent | None) -> None:
         # reset geometry
         self._popup_content.setGeometry(0, 0, self.width(), self.height())
         # reposition if we've already called setPosition()
@@ -511,7 +540,7 @@ class PopupWidget(QWidget):
             alignment, direction, offset_left, offset_top = self._pos_args
             self.setPosition(alignment, direction, offset_left, offset_top)
 
-        super().resizeEvent(event)
+        super().resizeEvent(a0)
 
 
 class ToastNotifier:
@@ -531,9 +560,9 @@ class ToastNotifier:
         title: str,
         message: str,
         duration: str = "short",
-        launch_url: str = None,
+        launch_url: str | None = None,
         launch_label: str = "Download &amp; Install",
-        scenario: str = None,
+        scenario: str | None = None,
     ) -> None:
         # refer to https://learn.microsoft.com/en-us/uwp/schemas/tiles/toastschema/schema-root
         scenario = ' scenario="reminder"' if scenario else ""
@@ -579,8 +608,8 @@ class ElidedLabel(QLabel):
         self.setMinimumWidth(0)
 
     @override
-    def setText(self, text: str) -> None:
-        self._text = text
+    def setText(self, a0: str | None) -> None:
+        self._text = a0 if a0 is not None else ""
         self._update_elided_text()
 
     @override
@@ -588,8 +617,8 @@ class ElidedLabel(QLabel):
         return self._text
 
     @override
-    def resizeEvent(self, event: QResizeEvent | None) -> None:
-        super().resizeEvent(event)
+    def resizeEvent(self, a0: QResizeEvent | None) -> None:
+        super().resizeEvent(a0)
         self._update_elided_text()
 
     def _update_elided_text(self) -> None:

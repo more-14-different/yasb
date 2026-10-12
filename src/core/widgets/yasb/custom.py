@@ -1,16 +1,16 @@
 import json
-import re
 import shlex
 import subprocess
 import threading
 
 from PyQt6.QtCore import QObject, pyqtSignal
-from PyQt6.QtWidgets import QLabel
 
 from core.utils.tooltip import set_tooltip
 from core.utils.win32.system_function import function_map
 from core.validation.widgets.yasb.custom import CustomConfig
 from core.widgets.base import BaseWidget
+
+type JsonValue = dict[str, JsonValue] | list[JsonValue] | str | int | float | bool | None
 
 
 class CustomWorker(QObject):
@@ -19,7 +19,7 @@ class CustomWorker(QObject):
 
     def __init__(
         self,
-        cmd: list[str] | None,
+        cmd: str | list[str] | None,
         use_shell: bool,
         encoding: str | None,
         return_type: str,
@@ -38,29 +38,30 @@ class CustomWorker(QObject):
 
     def run(self):
         import os
+
         exec_data = None
         if self.cmd and self._is_running:
             is_file_read = False
             file_path = None
-            
+
             if isinstance(self.cmd, str):
                 cmd_str = self.cmd.strip()
                 if cmd_str.lower().startswith("type "):
-                    file_path = cmd_str[5:].strip(' "\'')
+                    file_path = cmd_str[5:].strip(" \"'")
                     is_file_read = True
                 elif cmd_str.lower().startswith("cat "):
-                    file_path = cmd_str[4:].strip(' "\'')
+                    file_path = cmd_str[4:].strip(" \"'")
                     is_file_read = True
             elif isinstance(self.cmd, list) and len(self.cmd) >= 2:
                 if self.cmd[0].lower() in ["type", "cat"]:
-                    file_path = self.cmd[1].strip(' "\'')
+                    file_path = self.cmd[1].strip(" \"'")
                     is_file_read = True
 
             if is_file_read and file_path and os.path.isfile(file_path):
                 try:
-                    with open(file_path, "r", encoding=self.encoding or "utf-8") as f:
+                    with open(file_path, encoding=self.encoding or "utf-8") as f:
                         output = f.read()
-                    
+
                     if self.return_type == "json":
                         try:
                             exec_data = json.loads(output)
@@ -79,18 +80,15 @@ class CustomWorker(QObject):
                     shell=self.use_shell,
                     encoding=self.encoding,
                 )
-                try:
-                    output = proc.stdout.read()
-                    if self.return_type == "json":
-                        try:
-                            exec_data = json.loads(output)
-                        except json.JSONDecodeError:
-                            exec_data = None
-                    else:
-                        exec_data = output.decode("utf-8").strip() if isinstance(output, bytes) else output.strip()
-                finally:
-                    proc.stdout.close()
-                    proc.wait()
+                output, _ = proc.communicate()
+                if self.return_type == "json":
+                    try:
+                        exec_data = json.loads(output)
+                    except json.JSONDecodeError:
+                        exec_data = None
+                else:
+                    text = output if isinstance(output, str) else output.decode("utf-8")
+                    exec_data = text.strip()
 
         if self._is_running:
             try:
@@ -106,7 +104,7 @@ class CustomWidget(BaseWidget):
     def __init__(self, config: CustomConfig):
         super().__init__(config.exec_options.run_interval, class_name=f"custom-widget {config.class_name}")
         self.config = config
-        self._exec_data: dict | str | None = None
+        self._exec_data: JsonValue = None
         self._exec_cmd = self._build_exec_cmd(self.config.exec_options.run_cmd, self.config.exec_options.use_shell)
         self._show_alt_label = False
         self._worker = None  # Keep reference to worker for cleanup
@@ -148,7 +146,7 @@ class CustomWidget(BaseWidget):
             widget.setVisible(self._show_alt_label)
         self._update_label()
 
-    def _truncate_label(self, label):
+    def _truncate_label(self, label: str) -> str:
         if self.config.label_max_length and len(label) > self.config.label_max_length:
             return label[: self.config.label_max_length] + "..."
         return label
@@ -165,7 +163,7 @@ class CustomWidget(BaseWidget):
                     widget.setText(self._truncate_label(part.format(data=self._exec_data)))
                 except Exception:
                     widget.setText(self._truncate_label(part))
-                    
+
                 if self.config.exec_options.hide_empty:
                     if self._exec_data:
                         self.setVisible(True)
@@ -207,7 +205,7 @@ class CustomWidget(BaseWidget):
                 self._worker.stop()
                 try:
                     self._worker.data_ready.disconnect(self._handle_exec_data)
-                except (TypeError, RuntimeError):
+                except TypeError, RuntimeError:
                     pass
 
             self._worker = CustomWorker(
@@ -224,25 +222,25 @@ class CustomWidget(BaseWidget):
         else:
             self._update_label()
 
-    def _handle_exec_data(self, exec_data):
+    def _handle_exec_data(self, exec_data: JsonValue) -> None:
         self._exec_data = exec_data
         self._update_label()
 
-    def _cb_execute_subprocess(self, cmd: str, *cmd_args: list[str]):
+    def _cb_execute_subprocess(self, cmd: str, *cmd_args: str):
         # Overrides the default 'exec' callback from BaseWidget to allow for data formatting
+        args: list[str] = list(cmd_args)
         if self._exec_data:
-            formatted_cmd_args = []
+            args = []
             for cmd_arg in cmd_args:
                 try:
-                    formatted_cmd_args.append(cmd_arg.format(data=self._exec_data))
+                    args.append(cmd_arg.format(data=self._exec_data))
                 except KeyError:
-                    formatted_cmd_args.append(cmd_args)
-            cmd_args = formatted_cmd_args
+                    args.append(cmd_arg)
         if cmd in function_map:
             function_map[cmd]()
         else:
             subprocess.Popen(
-                [cmd, *cmd_args] if cmd_args else [cmd],
+                [cmd, *args],
                 shell=self.config.exec_options.use_shell,
                 encoding=self.config.exec_options.encoding,
             )

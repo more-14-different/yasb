@@ -2,10 +2,10 @@ import io
 import logging
 import os
 from collections.abc import Callable
-from typing import Any
+from typing import Any, override
 
 from PIL import Image
-from PyQt6.QtCore import Qt, QTimer, pyqtSlot
+from PyQt6.QtCore import QEvent, Qt, QTimer, pyqtSlot
 from PyQt6.QtGui import QMouseEvent, QPainter, QPainterPath, QPixmap, QWheelEvent
 from PyQt6.QtWidgets import (
     QFrame,
@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
 
 from core.utils.qobject import is_valid_qobject
 from core.utils.utilities import ElidedLabel, refresh_widget_style
+from core.validation.widgets.yasb.control_center import MediaSectionConfig
 from core.widgets.services.media.media import SessionState, WindowsMedia
 from settings import SCRIPT_PATH
 
@@ -30,8 +31,9 @@ class _MediaButton(QLabel):
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.data: Callable[[], Any] | None = None
 
-    def mouseReleaseEvent(self, ev: QMouseEvent):
-        if ev.button() == Qt.MouseButton.LeftButton and self.data is not None:
+    @override
+    def mouseReleaseEvent(self, ev: QMouseEvent | None) -> None:
+        if ev is not None and ev.button() == Qt.MouseButton.LeftButton and self.data is not None:
             try:
                 self.data()
             except Exception as e:
@@ -44,7 +46,7 @@ class _MediaButton(QLabel):
 class MediaSectionWidget(QFrame):
     """Section containing media playback controls and track information."""
 
-    def __init__(self, parent: QWidget, config: object):
+    def __init__(self, parent: QWidget, config: MediaSectionConfig):
         super().__init__(parent)
         self.config = config
         self.setProperty("class", "section media")
@@ -59,6 +61,7 @@ class MediaSectionWidget(QFrame):
         self._current_is_playing: bool | None = None
 
         self._cached_thumb: tuple[int, QPixmap] | None = None
+        self._thumb_dpr: float = self.devicePixelRatioF()
         self._empty_thumb: QPixmap | None = self._build_empty_thumbnail()
 
         self._hide_timer = QTimer(self)
@@ -158,6 +161,24 @@ class MediaSectionWidget(QFrame):
     def refresh_state(self) -> None:
         self._sync_ui(force_thumbnail=True)
 
+    @override
+    def event(self, e: QEvent | None) -> bool:
+        # Built before the popup has a screen, so the scale is only known once it is shown
+        if e is not None and e.type() in (QEvent.Type.Show, QEvent.Type.DevicePixelRatioChange):
+            self._update_thumbnail_scale()
+        return super().event(e)
+
+    def _update_thumbnail_scale(self) -> None:
+        dpr = self.devicePixelRatioF()
+        if dpr == self._thumb_dpr:
+            return
+        self._thumb_dpr = dpr
+        self._empty_thumb = self._build_empty_thumbnail()
+        self._cached_thumb = None
+        session = self._media.current_session
+        if session is not None:
+            self._apply_thumbnail(session.thumbnail)
+
     def _hide_now(self) -> None:
         if self._media.current_session is not None:
             return
@@ -172,12 +193,12 @@ class MediaSectionWidget(QFrame):
             return
         session = self._media.current_session
         if session is None:
-            if self.isVisible() and not self._hide_timer.isActive():
+            if not self.isHidden() and not self._hide_timer.isActive():
                 self._hide_timer.start()
             return
 
         self._hide_timer.stop()
-        if not self.isVisible():
+        if self.isHidden():
             self.show()
 
         app_id = session.app_id
@@ -224,7 +245,8 @@ class MediaSectionWidget(QFrame):
             self._thumbnail_label.clear()
 
     def _render_thumbnail(self, image: Image.Image) -> QPixmap:
-        size = self.config.thumbnail_size
+        dpr = self._thumb_dpr
+        size = max(1, round(self.config.thumbnail_size * dpr))
         radius = self.config.thumbnail_radius
 
         if image.mode != "RGBA":
@@ -246,16 +268,15 @@ class MediaSectionWidget(QFrame):
         if not source.loadFromData(buf.getvalue()):
             return QPixmap(size, size)
 
-        if radius <= 0:
-            return source
-        return self._apply_rounded_corners(source, size, radius)
+        return self._apply_rounded_corners(source, size, radius, dpr)
 
     def _build_empty_thumbnail(self) -> QPixmap | None:
         try:
             icon_path = os.path.join(SCRIPT_PATH, "assets", "images", "media.png")
             if not os.path.exists(icon_path):
                 return None
-            size = self.config.thumbnail_size
+            dpr = self._thumb_dpr
+            size = max(1, round(self.config.thumbnail_size * dpr))
             radius = self.config.thumbnail_radius
 
             with Image.open(icon_path) as image:
@@ -268,23 +289,25 @@ class MediaSectionWidget(QFrame):
                 if not source.loadFromData(buf.getvalue()):
                     return QPixmap(size, size)
 
-            if radius <= 0:
-                return source
-            return self._apply_rounded_corners(source, size, radius)
+            return self._apply_rounded_corners(source, size, radius, dpr)
         except Exception as e:
             logger.error("Error creating default media thumbnail: %s", e)
             return None
 
-    def _apply_rounded_corners(self, source: QPixmap, size: int, radius: int) -> QPixmap:
+    def _apply_rounded_corners(self, source: QPixmap, size: int, radius: int, dpr: float) -> QPixmap:
+        if radius <= 0:
+            source.setDevicePixelRatio(dpr)
+            return source
         pixmap = QPixmap(size, size)
         pixmap.fill(Qt.GlobalColor.transparent)
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         path = QPainterPath()
-        path.addRoundedRect(0, 0, size, size, radius, radius)
+        path.addRoundedRect(0, 0, size, size, radius * dpr, radius * dpr)
         painter.setClipPath(path)
         painter.drawPixmap(0, 0, source)
         painter.end()
+        pixmap.setDevicePixelRatio(dpr)
         return pixmap
 
     def _update_controls(self):
@@ -320,11 +343,12 @@ class MediaSectionWidget(QFrame):
                 btn.setProperty("class", new_class)
                 refresh_widget_style(btn)
 
-    def wheelEvent(self, event: QWheelEvent | None):
-        if event is None:
+    @override
+    def wheelEvent(self, a0: QWheelEvent | None) -> None:
+        if a0 is None:
             return
-        delta = event.angleDelta().y()
+        delta = a0.angleDelta().y()
         if delta == 0:
             return
         self._media.switch_current_session(1 if delta > 0 else -1)
-        event.accept()
+        a0.accept()

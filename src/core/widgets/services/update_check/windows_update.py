@@ -8,10 +8,12 @@ threads (QThread workers).
 """
 
 import logging
-import subprocess
+from typing import Any
 
 import pywintypes
 import win32com.client
+
+from core.utils.shell_utils import shell_open
 
 
 def check_updates() -> list[dict[str, str]]:
@@ -33,7 +35,7 @@ def check_updates() -> list[dict[str, str]]:
 
         results: list[dict[str, str]] = []
         for update in search_result.Updates:
-            kb_ids = []
+            kb_ids: list[Any] = []
             for i in range(update.KBArticleIDs.Count):
                 kb_ids.append(update.KBArticleIDs.Item(i))
             kb_str = ", ".join(f"KB{kb}" for kb in kb_ids) if kb_ids else ""
@@ -64,4 +66,4 @@ def check_updates() -> list[dict[str, str]]:
 
 def upgrade_packages(package_ids: list[str] | None = None) -> None:
     """Open the Windows Update settings page to install updates."""
-    subprocess.Popen("start ms-settings:windowsupdate", shell=True)
+    shell_open("ms-settings:windowsupdate")
