@@ -107,19 +107,10 @@ def query_density_buckets(
         if resolved.source is DensitySource.SCREENPIPE_GRAPH:
             start_text = _rfc3339(query_start)
             end_text = _rfc3339(query_end)
-            minute_columns = {
-                str(row[1])
-                for row in connection.execute("pragma table_info(source_activity_minutes)")
-            }
-            frame_count_column = (
-                "effective_frame_count"
-                if "effective_frame_count" in minute_columns
-                else "frame_count"
-            )
+            minute_columns = {str(row[1]) for row in connection.execute("pragma table_info(source_activity_minutes)")}
+            frame_count_column = "effective_frame_count" if "effective_frame_count" in minute_columns else "frame_count"
             ui_count_column = (
-                "effective_ui_event_count"
-                if "effective_ui_event_count" in minute_columns
-                else "ui_event_count"
+                "effective_ui_event_count" if "effective_ui_event_count" in minute_columns else "ui_event_count"
             )
             rows = connection.execute(
                 "select cast((unixepoch(minute_start, 'subsec') - ?) / 60 as integer), "
@@ -141,7 +132,14 @@ def query_density_buckets(
 
 
 class DensityBucketCache:
-    """Keeps history in RAM and rereads only the two newest minute buckets."""
+    """Caches closed intervals and incrementally refreshes safe live sources.
+
+    Screenpipe graph windows are committed after their source interval closes, so
+    any minute in an open interval can be filled after YASB first queried it.
+    Revalidate the complete open graph interval; it contains compact minute facts,
+    not raw Screenpipe events. Pieces rows arrive directly, so only its two newest
+    minute buckets need to be refreshed.
+    """
 
     _MAX_ENTRIES = 8
 
@@ -174,7 +172,7 @@ class DensityBucketCache:
             raw_buckets = list(entry.raw_buckets) if entry else []
             raw_buckets.extend([0] * (bucket_count - len(raw_buckets)))
             raw_buckets = raw_buckets[:bucket_count]
-            if entry:
+            if entry and resolved.source is not DensitySource.SCREENPIPE_GRAPH:
                 last_bucket = int(max(entry.refreshed_through - stream_start, 0) // 60)
                 refresh_index = max(last_bucket - 1, 0)
             else:

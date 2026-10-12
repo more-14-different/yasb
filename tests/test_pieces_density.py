@@ -199,9 +199,9 @@ class DensitySourceTests(unittest.TestCase):
                 [(0, 5)],
             )
 
-    def test_active_cache_only_refreshes_the_two_newest_minutes(self):
+    def test_active_pieces_cache_only_refreshes_the_two_newest_minutes(self):
         cache = DensityBucketCache()
-        resolved = ResolvedDensitySource(DensitySource.SCREENPIPE_GRAPH, "unused.sqlite", None)
+        resolved = ResolvedDensitySource(DensitySource.PIECES, "unused.sqlite", None)
         with patch(
             "core.widgets.yasb.pieces_density_source.query_density_buckets",
             side_effect=[[(0, 1), (1, 2), (2, 3)], [(2, 4), (3, 5)]],
@@ -211,6 +211,19 @@ class DensitySourceTests(unittest.TestCase):
 
         self.assertEqual(query.call_count, 2)
         self.assertEqual(query.call_args_list[1].args[2:], (120, 240))
+
+    def test_active_screenpipe_cache_reloads_late_minutes_from_the_full_interval(self):
+        cache = DensityBucketCache()
+        resolved = ResolvedDensitySource(DensitySource.SCREENPIPE_GRAPH, "unused.sqlite", None)
+        with patch(
+            "core.widgets.yasb.pieces_density_source.query_density_buckets",
+            side_effect=[[(2, 3)], [(0, 1), (1, 2), (2, 3), (3, 4)]],
+        ) as query:
+            self.assertEqual(cache.load(resolved, 0, 180, False), [0, 0, 3])
+            self.assertEqual(cache.load(resolved, 0, 240, False), [1, 2, 3, 4])
+
+        self.assertEqual(query.call_count, 2)
+        self.assertEqual(query.call_args_list[1].args[2:], (0, 240))
 
     def test_closed_interval_cache_avoids_reopening_the_database(self):
         cache = DensityBucketCache()
