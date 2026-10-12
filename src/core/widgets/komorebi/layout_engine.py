@@ -16,6 +16,21 @@ class OutputRectDict(TypedDict):
     height: int
 
 
+class GridOptions(TypedDict, total=False):
+    rows: int
+
+
+class ScrollingOptions(TypedDict, total=False):
+    columns: int
+
+
+class LayoutOptions(TypedDict, total=False):
+    column_ratios: list[float | None]
+    row_ratios: list[float | None]
+    grid: GridOptions
+    scrolling: ScrollingOptions
+
+
 Axis = Literal["Horizontal", "Vertical", "HorizontalAndVertical", "None"]
 
 MIN_RATIO = 0.1
@@ -30,7 +45,7 @@ def calculate_layout(
     work_area: RectDict,
     num_windows: int,
     layout_flip: Axis = "None",
-    layout_options: dict | None = None,
+    layout_options: LayoutOptions | None = None,
 ) -> list[OutputRectDict]:
     if num_windows <= 0:
         return []
@@ -38,6 +53,7 @@ def calculate_layout(
     if layout_options is None:
         layout_options = {}
 
+    layouts: list[RectDict]
     if layout_type == "BSP":
         layouts = _calculate_bsp(work_area, num_windows, layout_flip, layout_options)
     elif layout_type == "Columns":
@@ -68,17 +84,17 @@ def calculate_layout(
         ]
 
     # Convert Komorebi's right/bottom meaning width/height to actual python keys
-    out = []
+    out: list[OutputRectDict] = []
     for l in layouts:
         out.append({"left": l["left"], "top": l["top"], "width": l["right"], "height": l["bottom"]})
     return out
 
 
-def _get_column_ratios(layout_options: dict) -> list[float]:
+def _get_column_ratios(layout_options: LayoutOptions) -> list[float]:
     ratios = layout_options.get("column_ratios", [])
     if not ratios:
         return []
-    valid_ratios = []
+    valid_ratios: list[float] = []
     cumulative = 0.0
     for r in ratios[:MAX_RATIOS]:
         if r is not None:
@@ -91,11 +107,11 @@ def _get_column_ratios(layout_options: dict) -> list[float]:
     return valid_ratios
 
 
-def _get_row_ratios(layout_options: dict) -> list[float]:
+def _get_row_ratios(layout_options: LayoutOptions) -> list[float]:
     ratios = layout_options.get("row_ratios", [])
     if not ratios:
         return []
-    valid_ratios = []
+    valid_ratios: list[float] = []
     cumulative = 0.0
     for r in ratios[:MAX_RATIOS]:
         if r is not None:
@@ -145,7 +161,9 @@ def _recursive_fibonacci(
     elif count == 1:
         return [{"left": area["left"], "top": area["top"], "right": area["right"], "bottom": area["bottom"]}]
     elif idx % 2 != 0:
-        res = [{"left": area["left"], "top": main_y, "right": area["right"], "bottom": primary_resized_height}]
+        res: list[RectDict] = [
+            {"left": area["left"], "top": main_y, "right": area["right"], "bottom": primary_resized_height}
+        ]
         res.extend(
             _recursive_fibonacci(
                 idx + 1,
@@ -183,7 +201,7 @@ def _recursive_fibonacci(
 
 
 def _columns_with_ratios(area: RectDict, length: int, ratios: list[float]) -> list[RectDict]:
-    layouts = []
+    layouts: list[RectDict] = []
     left_offset = 0
     defined_ratios = len(ratios)
 
@@ -221,7 +239,7 @@ def _columns_with_ratios(area: RectDict, length: int, ratios: list[float]) -> li
 
 
 def _rows_with_ratios(area: RectDict, length: int, ratios: list[float]) -> list[RectDict]:
-    layouts = []
+    layouts: list[RectDict] = []
     top_offset = 0
     defined_ratios = len(ratios)
 
@@ -258,7 +276,7 @@ def _rows_with_ratios(area: RectDict, length: int, ratios: list[float]) -> list[
     return layouts
 
 
-def _columns_reverse(layouts: list[RectDict]):
+def _columns_reverse(layouts: list[RectDict]) -> None:
     if not layouts:
         return
     n = len(layouts)
@@ -267,7 +285,7 @@ def _columns_reverse(layouts: list[RectDict]):
         layouts[i]["left"] = layouts[i + 1]["left"] + layouts[i + 1]["right"]
 
 
-def _rows_reverse(layouts: list[RectDict]):
+def _rows_reverse(layouts: list[RectDict]) -> None:
     if not layouts:
         return
     n = len(layouts)
@@ -276,7 +294,9 @@ def _rows_reverse(layouts: list[RectDict]):
         layouts[i]["top"] = layouts[i + 1]["top"] + layouts[i + 1]["bottom"]
 
 
-def _calculate_bsp(work_area: RectDict, num_windows: int, layout_flip: Axis, layout_options: dict):
+def _calculate_bsp(
+    work_area: RectDict, num_windows: int, layout_flip: Axis, layout_options: LayoutOptions
+) -> list[RectDict]:
     col_ratios = _get_column_ratios(layout_options)
     row_ratios = _get_row_ratios(layout_options)
     col_split = col_ratios[0] if col_ratios else DEFAULT_RATIO
@@ -284,7 +304,9 @@ def _calculate_bsp(work_area: RectDict, num_windows: int, layout_flip: Axis, lay
     return _recursive_fibonacci(0, num_windows, work_area, layout_flip, col_split, row_split)
 
 
-def _calculate_columns(work_area: RectDict, num_windows: int, layout_flip: Axis, layout_options: dict):
+def _calculate_columns(
+    work_area: RectDict, num_windows: int, layout_flip: Axis, layout_options: LayoutOptions
+) -> list[RectDict]:
     ratios = _get_column_ratios(layout_options)
     layouts = _columns_with_ratios(work_area, num_windows, ratios)
     if layout_flip in ("Horizontal", "HorizontalAndVertical") and num_windows >= 2:
@@ -292,7 +314,9 @@ def _calculate_columns(work_area: RectDict, num_windows: int, layout_flip: Axis,
     return layouts
 
 
-def _calculate_rows(work_area: RectDict, num_windows: int, layout_flip: Axis, layout_options: dict):
+def _calculate_rows(
+    work_area: RectDict, num_windows: int, layout_flip: Axis, layout_options: LayoutOptions
+) -> list[RectDict]:
     ratios = _get_row_ratios(layout_options)
     layouts = _rows_with_ratios(work_area, num_windows, ratios)
     if layout_flip in ("Vertical", "HorizontalAndVertical") and num_windows >= 2:
@@ -300,8 +324,10 @@ def _calculate_rows(work_area: RectDict, num_windows: int, layout_flip: Axis, la
     return layouts
 
 
-def _calculate_vertical_stack(work_area: RectDict, num_windows: int, layout_flip: Axis, layout_options: dict):
-    layouts = []
+def _calculate_vertical_stack(
+    work_area: RectDict, num_windows: int, layout_flip: Axis, layout_options: LayoutOptions
+) -> list[RectDict]:
+    layouts: list[RectDict] = []
     col_ratios = _get_column_ratios(layout_options)
     primary_ratio = col_ratios[0] if col_ratios else DEFAULT_RATIO
 
@@ -342,9 +368,9 @@ def _calculate_vertical_stack(work_area: RectDict, num_windows: int, layout_flip
 
 
 def _calculate_right_main_vertical_stack(
-    work_area: RectDict, num_windows: int, layout_flip: Axis, layout_options: dict
-):
-    layouts = []
+    work_area: RectDict, num_windows: int, layout_flip: Axis, layout_options: LayoutOptions
+) -> list[RectDict]:
+    layouts: list[RectDict] = []
     col_ratios = _get_column_ratios(layout_options)
     primary_ratio = col_ratios[0] if col_ratios else DEFAULT_RATIO
 
@@ -390,8 +416,10 @@ def _calculate_right_main_vertical_stack(
     return layouts
 
 
-def _calculate_horizontal_stack(work_area: RectDict, num_windows: int, layout_flip: Axis, layout_options: dict):
-    layouts = []
+def _calculate_horizontal_stack(
+    work_area: RectDict, num_windows: int, layout_flip: Axis, layout_options: LayoutOptions
+) -> list[RectDict]:
+    layouts: list[RectDict] = []
     row_ratios = _get_row_ratios(layout_options)
     primary_ratio = row_ratios[0] if row_ratios else DEFAULT_RATIO
 
@@ -431,8 +459,10 @@ def _calculate_horizontal_stack(work_area: RectDict, num_windows: int, layout_fl
     return layouts
 
 
-def _calculate_ultrawide_vertical_stack(work_area: RectDict, num_windows: int, layout_flip: Axis, layout_options: dict):
-    layouts = []
+def _calculate_ultrawide_vertical_stack(
+    work_area: RectDict, num_windows: int, layout_flip: Axis, layout_options: LayoutOptions
+) -> list[RectDict]:
+    layouts: list[RectDict] = []
     ratios = _get_column_ratios(layout_options)
     primary_ratio = ratios[0] if len(ratios) > 0 else DEFAULT_RATIO
     secondary_ratio = ratios[1] if len(ratios) > 1 else DEFAULT_SECONDARY_RATIO
@@ -509,8 +539,10 @@ def _calculate_ultrawide_vertical_stack(work_area: RectDict, num_windows: int, l
     return layouts
 
 
-def _calculate_grid(work_area: RectDict, num_windows: int, layout_flip: Axis, layout_options: dict):
-    layouts = [{"left": 0, "top": 0, "right": 0, "bottom": 0} for _ in range(num_windows)]
+def _calculate_grid(
+    work_area: RectDict, num_windows: int, layout_flip: Axis, layout_options: LayoutOptions
+) -> list[RectDict]:
+    layouts: list[RectDict] = [{"left": 0, "top": 0, "right": 0, "bottom": 0} for _ in range(num_windows)]
 
     grid_opts = layout_options.get("grid", {})
     row_constraint = grid_opts.get("rows")
@@ -525,8 +557,8 @@ def _calculate_grid(work_area: RectDict, num_windows: int, layout_flip: Axis, la
     if num_cols <= 0:
         return layouts
 
-    col_widths = []
-    col_lefts = []
+    col_widths: list[int] = []
+    col_lefts: list[int] = []
     current_left = work_area["left"]
 
     for col in range(num_cols):
@@ -552,7 +584,7 @@ def _calculate_grid(work_area: RectDict, num_windows: int, layout_flip: Axis, la
     if width_remainder > 0 and col_widths:
         col_widths[-1] += width_remainder
 
-    flipped_col_lefts = []
+    flipped_col_lefts: list[int] = []
     if layout_flip in ("Horizontal", "HorizontalAndVertical"):
         flipped_col_lefts = [0] * num_cols
         fl = work_area["left"]
@@ -612,8 +644,10 @@ def _calculate_grid(work_area: RectDict, num_windows: int, layout_flip: Axis, la
     return layouts
 
 
-def _calculate_scrolling(work_area: RectDict, num_windows: int, layout_flip: Axis, layout_options: dict):
-    layouts = []
+def _calculate_scrolling(
+    work_area: RectDict, num_windows: int, layout_flip: Axis, layout_options: LayoutOptions
+) -> list[RectDict]:
+    layouts: list[RectDict] = []
     scrolling_opts = layout_options.get("scrolling", {})
     column_count = scrolling_opts.get("columns", 3)
 
