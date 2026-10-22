@@ -228,6 +228,9 @@ class BarAnimationManager(QObject):
         self.bar_widget.hide()
         self.bar_widget.skip_animation = False
         self.bar_widget.setWindowOpacity(1.0)
+        window = self.bar_widget.windowHandle()
+        if self._target_geo and window is not None:
+            window.setPosition(self._target_geo[0], self._target_geo[1])
         self._animation = None
         if hasattr(self.bar_widget, "animation_finished"):
             self.bar_widget.animation_finished.emit()

@@ -4,7 +4,7 @@ import sys
 import unittest
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from PyQt6.QtCore import QByteArray, QRect, pyqtSignal
 from PyQt6.QtWidgets import QApplication, QFrame, QWidget
@@ -82,6 +82,19 @@ class BarAnimationTests(unittest.TestCase):
 
         manager.cleanup()
         bar.close()
+
+    def test_hide_finish_repositions_native_window_and_notifies_overlays(self):
+        bar = Mock()
+        window = Mock()
+        bar.windowHandle.return_value = window
+        manager = BarAnimationManager(cast("Bar", bar))
+        manager._target_geo = (100, 20, 300, 40)
+
+        manager._on_hide_finished()
+
+        window.setPosition.assert_called_once_with(100, 20)
+        bar.animation_finished.emit.assert_called_once_with()
+        self.assertFalse(bar.skip_animation)
 
 
 if __name__ == "__main__":
