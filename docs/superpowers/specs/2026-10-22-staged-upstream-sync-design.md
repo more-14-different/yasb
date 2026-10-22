@@ -10,7 +10,7 @@ The work will happen on branch `sync/upstream-20261021-staged` in the isolated w
 
 Each checkpoint is merged with `--no-ff --no-commit` so the resulting stage commit records the upstream checkpoint as a parent and the final branch contains `ff3d431e` in its ancestry.
 
-1. `29b5b57b` — GlazeWM query reduction, GPU utilization correction, non-blocking window actions, initial IconService/taskbar/launchpad work where required by ancestry.
+1. `29b5b57b` — the independent non-blocking window-actions branch. GlazeWM and GPU fixes are not ancestors of this commit and therefore enter with the later mainline checkpoint that first contains them.
 2. `a4201949` — complete IconService consolidation, Win32 bindings migration, `pywin32` removal, CLI pipe cleanup, and associated tests.
 3. `57cd65a7` — Windows Desktops COM-thread work, Explorer recovery, Window Switcher live previews and keyboard behavior, auto-hide monitor fix, and CI improvements.
 4. `ff3d431e` — dependency upgrades, validation changes, Server Monitor TLS fixes and tests, and all remaining upstream changes.
