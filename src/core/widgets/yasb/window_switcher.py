@@ -1,11 +1,9 @@
 import logging
-from typing import Any, override
+from typing import override
 
 import PyQt6.QtCore as QtCore
-import win32gui
-from PIL import Image
 from PyQt6.QtCore import QEvent, QObject, Qt, QTimer
-from PyQt6.QtGui import QImage, QKeyEvent, QMouseEvent, QPixmap, QScreen, QShowEvent, QWheelEvent
+from PyQt6.QtGui import QKeyEvent, QMouseEvent, QPixmap, QScreen, QShowEvent, QWheelEvent
 from PyQt6.QtWidgets import (
     QApplication,
     QFrame,
@@ -16,10 +14,10 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from core.utils.icons.service import IconService, WindowIcon
 from core.utils.qobject import is_valid_qobject
 from core.utils.utilities import PopupWidget, refresh_widget_style
-from core.utils.win32.app_icons import get_icon_for_aumid, get_process_icon, get_window_icon
-from core.utils.win32.aumid import get_aumid_for_window
+from core.utils.win32.bindings.user32 import GetWindowText, IsIconic, IsWindow, enum_windows
 from core.utils.win32.utils import find_focused_screen
 from core.utils.win32.window_actions import (
     close_application,
@@ -41,6 +39,7 @@ class _SwitcherItem(QFrame):
         super().__init__(parent)
         self.hwnd = hwnd
         self.title = title
+        self.icon_label: QLabel | None = None
 
 
 class WindowSwitcherWidget(BaseWidget):
@@ -64,7 +63,8 @@ class WindowSwitcherWidget(BaseWidget):
         self._btn_h = 0
         self._popup_height = 0
         self._popup_extra_w = 0
-        self._icons_cache: dict[tuple[int, int, float], QPixmap] = {}
+        self._icons = IconService.instance()
+        self._icons.icons_changed.connect(self._refresh_icons)
         self.buttons_list: list[_SwitcherItem] = []
         self.active_title_label: QLabel | None = None
         self.current_focus_index = -1
@@ -146,16 +146,7 @@ class WindowSwitcherWidget(BaseWidget):
             return []
         windows = list(self._task_manager.get_windows().values())
         taskbar_windows = [w for w in windows if w.is_taskbar_window()]
-        z_order: list[int] = []
-
-        def collect(hwnd: int, _: Any) -> bool:
-            z_order.append(hwnd)
-            return True
-
-        try:
-            win32gui.EnumWindows(collect, 0)
-        except Exception:
-            pass
+        z_order = enum_windows()
         z_order_map = {hwnd: i for i, hwnd in enumerate(z_order)}
         taskbar_windows.sort(key=lambda w: z_order_map.get(w.hwnd, 99999))
         return taskbar_windows
@@ -193,7 +184,7 @@ class WindowSwitcherWidget(BaseWidget):
 
         self.buttons_list = []
         for win in taskbar_windows:
-            btn = _SwitcherItem(container, win.hwnd, win32gui.GetWindowText(win.hwnd) or win.title or "")
+            btn = _SwitcherItem(container, win.hwnd, GetWindowText(win.hwnd) or win.title or "")
             btn.setProperty("class", "item")
             btn_layout = QVBoxLayout(btn)
             btn_layout.setSpacing(0)
@@ -203,10 +194,11 @@ class WindowSwitcherWidget(BaseWidget):
             icon_label = QLabel(btn)
             icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             icon_label.setFixedSize(icon_size, icon_size)
-            icon_pixmap = self._get_app_icon(win, icon_size, self._current_dpr)
+            icon_pixmap = self._get_app_icon(win.hwnd)
             if icon_pixmap:
                 icon_label.setPixmap(icon_pixmap)
             btn_layout.addWidget(icon_label)
+            btn.icon_label = icon_label
 
             btn.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
             btn.installEventFilter(self)
@@ -238,67 +230,30 @@ class WindowSwitcherWidget(BaseWidget):
 
         self._update_popup_geometry(initial=True)
 
-    def _get_app_icon(self, win: ApplicationWindow, icon_size: int, dpr: float = 1.0) -> QPixmap | None:
-        if icon_size <= 0:
+    def _get_app_icon(self, hwnd: int) -> QPixmap | None:
+        if self.config.icon_size <= 0:
             return None
+        return self._icons.get_icon(WindowIcon(hwnd), self.config.icon_size, self._current_dpr)
 
-        cache_key = (win.hwnd, icon_size, dpr)
-        if cache_key in self._icons_cache:
-            return self._icons_cache[cache_key]
-
-        physical = round(icon_size * dpr)
-
-        def pil_to_pixmap(img: Image.Image) -> QPixmap:
-            img = img.resize((physical, physical), Image.Resampling.LANCZOS).convert("RGBA")
-            pm = QPixmap.fromImage(
-                QImage(
-                    img.tobytes("raw", "RGBA"),  # pyright: ignore[reportUnknownMemberType]
-                    physical,
-                    physical,
-                    QImage.Format.Format_RGBA8888,
-                )
-            )
-            pm.setDevicePixelRatio(dpr)
-            return pm
-
-        pixmap: QPixmap | None = None
-
-        aumid = get_aumid_for_window(win.hwnd)
-        if aumid:
-            img = get_icon_for_aumid(aumid, size=physical)
-            if img:
-                pixmap = pil_to_pixmap(img)
-
-        if not pixmap and win.process_pid:
-            img = get_process_icon(win.process_pid)
-            if img:
-                pixmap = pil_to_pixmap(img)
-
-        if not pixmap:
-            img = get_window_icon(win.hwnd)
-            if img:
-                pixmap = pil_to_pixmap(img)
-
-        if pixmap:
-            self._icons_cache[cache_key] = pixmap
-            # Because some icons can be really big depending on user settings
-            # we will keep only 40 icons in cache to prevent unnecessary growing.
-            if len(self._icons_cache) > 40:
-                self._icons_cache.pop(next(iter(self._icons_cache)))
-
-        return pixmap
+    def _refresh_icons(self) -> None:
+        for btn in self.buttons_list:
+            if btn.icon_label is None or not is_valid_qobject(btn.icon_label):
+                continue
+            pixmap = self._get_app_icon(btn.hwnd)
+            if pixmap:
+                btn.icon_label.setPixmap(pixmap)
 
     def _switch_to_window(self, hwnd: int):
         if self._popup:
             self._popup.hide_animated()
-        if not win32gui.IsWindow(hwnd):
+        if not IsWindow(hwnd):
             return
 
         def _do_focus():
             try:
                 base, focus_target = resolve_base_and_focus(hwnd)
 
-                if win32gui.IsIconic(base) or win32gui.IsIconic(hwnd):
+                if IsIconic(base) or IsIconic(hwnd):
                     restore_window(base)
                     if base != hwnd:
                         restore_window(hwnd)
@@ -313,7 +268,7 @@ class WindowSwitcherWidget(BaseWidget):
 
             except Exception:
                 try:
-                    if win32gui.IsIconic(hwnd):
+                    if IsIconic(hwnd):
                         restore_window(hwnd)
                     else:
                         show_window(hwnd)
@@ -323,7 +278,7 @@ class WindowSwitcherWidget(BaseWidget):
         QTimer.singleShot(0, _do_focus)
 
     def _close_window(self, hwnd: int):
-        if not win32gui.IsWindow(hwnd):
+        if not IsWindow(hwnd):
             return
 
         try:

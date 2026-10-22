@@ -1,4 +1,3 @@
-import ctypes
 import glob
 import os
 import re
@@ -11,20 +10,28 @@ from PyQt6.QtCore import (
     pyqtSignal,
 )
 
+from core.utils.icons.sources import AppIcon, FileIcon, IconSource
+from core.utils.win32.bindings.ole32 import CoInitialize, CoUninitialize, create_dispatch
+from core.utils.win32.bindings.shell32 import read_shortcut
+from core.utils.win32.bindings.shlwapi import SHLoadIndirectString
+from core.utils.win32.registry_keys import CLSID_KEY, CONTROL_PANEL_NAMESPACE_KEY
+
 # (name, path, description) - path is a file, "UWP::<appid>" or "CPL::<clsid>::<canonical name>".
 type AppEntry = tuple[str, str, str | None]
 
 _apps_cache: list[AppEntry] | None = None
 
-_CPL_NS_KEY = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\ControlPanel\NameSpace"
 _APPS_FOLDER = "shell:::{4234d49b-0245-4df3-b780-3893943456e1}"
 
 
-def _load_indirect_string(resource: str) -> str | None:
-    """Resolve a @resource.dll,-123 string to its localized value via SHLoadIndirectString."""
-    buf = ctypes.create_unicode_buffer(1024)
-    hr = ctypes.windll.shlwapi.SHLoadIndirectString(resource, buf, len(buf), None)
-    return buf.value if hr == 0 else None
+def app_icon_source(path: str) -> IconSource:
+    """What the icon of an app entry's path is taken from."""
+    if path.startswith("UWP::"):
+        return AppIcon(path[5:])
+    if path.startswith("CPL::"):
+        clsid = path[5:].split("::", 1)[0]
+        return FileIcon(f"shell:::{clsid}")
+    return FileIcon(path)
 
 
 def _reg_value(key: winreg.HKEYType, name: str, default: Any = None) -> Any:
@@ -42,13 +49,13 @@ def _resolve_reg_string(key: winreg.HKEYType, value_name: str) -> str | None:
     if not raw:
         return None
     if raw.startswith("@"):
-        return _load_indirect_string(raw)
+        return SHLoadIndirectString(raw)
     return raw
 
 
 def _enumerate_control_panel_items() -> Iterator[tuple[str, str, str, str | None]]:
     """Yield (name, clsid, canonical_name, description) for each Control Panel item."""
-    with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, _CPL_NS_KEY) as ns:
+    with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, CONTROL_PANEL_NAMESPACE_KEY) as ns:
         i = 0
         while True:
             try:
@@ -57,7 +64,7 @@ def _enumerate_control_panel_items() -> Iterator[tuple[str, str, str, str | None
                 break
             i += 1
             try:
-                with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, f"CLSID\\{clsid}") as ck:
+                with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, f"{CLSID_KEY}\\{clsid}") as ck:
                     canonical = _reg_value(ck, "System.ApplicationName")
                     if not canonical:
                         continue
@@ -71,17 +78,12 @@ def _enumerate_control_panel_items() -> Iterator[tuple[str, str, str, str | None
 
 
 def _get_start_apps() -> list[tuple[str, str]]:
-    import pythoncom
-    import win32com.client
-
-    pythoncom.CoInitialize()
+    hr = CoInitialize()
     try:
-        apps = [
-            (item.Name, item.Path)
-            for item in win32com.client.Dispatch("Shell.Application").NameSpace(_APPS_FOLDER).Items()
-        ]
+        apps = [(item.Name, item.Path) for item in create_dispatch("Shell.Application").NameSpace(_APPS_FOLDER).Items()]
     finally:
-        pythoncom.CoUninitialize()
+        if hr >= 0:
+            CoUninitialize()
     return sorted(apps, key=lambda app: app[0].casefold())
 
 
@@ -201,35 +203,19 @@ class ShortcutResolver:
     @staticmethod
     def resolve_lnk_target(
         lnk_path: str, warning_callback: Callable[[str], object] | None = None
-    ) -> tuple[str, str | None, str] | tuple[None, None, None]:
+    ) -> tuple[str, str] | tuple[None, None]:
         """
-        Resolve the target path, icon location, and display name from a .lnk file.
+        Resolve the launch command and display name from a .lnk file.
         If warning_callback is provided, it will be called with an error message on failure.
-        Returns (full_command, icon_path, app_name) or (None, None, None) on error.
+        Returns (full_command, app_name) or (None, None) on error.
         """
-        try:
-            import win32com.client
-
-            shell = win32com.client.Dispatch("WScript.Shell")
-            shortcut = shell.CreateShortcut(lnk_path)
-            target_path = shortcut.TargetPath
-            arguments = shortcut.Arguments
-            icon_path = shortcut.IconLocation
-            app_name = os.path.splitext(os.path.basename(lnk_path))[0]
-            # Combine target and arguments for the real launch command
-            if arguments:
-                full_command = f'"{target_path}" {arguments}'
-            else:
-                full_command = target_path
-            if icon_path:
-                icon_path = icon_path.split(",")[0]
-            if icon_path and os.path.isfile(icon_path):
-                return full_command, icon_path, app_name
-            elif target_path and os.path.isfile(target_path):
-                return full_command, target_path, app_name
-            else:
-                return full_command, None, app_name
-        except Exception:
+        shortcut = read_shortcut(lnk_path)
+        if shortcut is None:
             if warning_callback:
                 warning_callback(f"Failed to resolve shortcut: {lnk_path}")
-            return None, None, None
+            return None, None
+        app_name = os.path.splitext(os.path.basename(lnk_path))[0]
+        # Combine target and arguments for the real launch command
+        if shortcut.arguments:
+            return f'"{shortcut.target}" {shortcut.arguments}', app_name
+        return shortcut.target, app_name

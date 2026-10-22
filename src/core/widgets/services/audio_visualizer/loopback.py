@@ -4,17 +4,14 @@ import logging
 import threading
 import time
 from array import array
-from ctypes import POINTER, Structure, c_ubyte, c_uint16, c_uint32, c_uint64, c_void_p, cast
-from typing import TYPE_CHECKING, Any
+from ctypes import POINTER, Array, c_ubyte, c_void_p, cast
+from ctypes.wintypes import HANDLE
+from typing import Any
 
-import win32event
 from comtypes import (  # pyright: ignore[reportMissingTypeStubs]
     CLSCTX_ALL,
-    COMMETHOD,  # pyright: ignore[reportUnknownVariableType]
     GUID,
-    HRESULT,
     COMError,
-    IUnknown,
 )
 from pycaw.api.mmdeviceapi import PROPERTYKEY, IMMDevice, IMMDeviceEnumerator
 from pycaw.callbacks import MMNotificationClient
@@ -23,7 +20,26 @@ from pycaw.pycaw import AudioUtilities, EDataFlow, ERole, IAudioClient
 from PyQt6.QtCore import QObject, Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import QApplication
 
-from core.utils.win32.bindings.ole32 import COINIT_MULTITHREADED, RPC_E_CHANGED_MODE, ole32
+from core.utils.win32.bindings.audioclient import IAudioCaptureClient, IID_IAudioCaptureClient, IID_IAudioClient
+from core.utils.win32.bindings.kernel32 import CreateEvent, ResetEvent, SetEvent, WaitForMultipleObjects
+from core.utils.win32.bindings.ole32 import ole32
+from core.utils.win32.constants import (
+    AUDCLNT_BUFFERFLAGS_SILENT,
+    AUDCLNT_SHAREMODE_SHARED,
+    AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+    AUDCLNT_STREAMFLAGS_LOOPBACK,
+    COINIT_MULTITHREADED,
+    INFINITE,
+    KSDATAFORMAT_SUBTYPE_IEEE_FLOAT,
+    KSDATAFORMAT_SUBTYPE_PCM,
+    RPC_E_CHANGED_MODE,
+    WAIT_OBJECT_0,
+    WAIT_TIMEOUT,
+    WAVE_FORMAT_EXTENSIBLE,
+    WAVE_FORMAT_IEEE_FLOAT,
+    WAVE_FORMAT_PCM,
+)
+from core.utils.win32.structs import WAVEFORMATEX, WAVEFORMATEXTENSIBLE
 from core.widgets.services.audio_visualizer.spectrum import FFT_SIZE, SpectrumSource
 
 # Channel selectors a widget can ask for.
@@ -39,19 +55,7 @@ _PKEY_DEVICE_FRIENDLY_NAME.pid = 14
 # Returned by magnitudes() before the first frame and while the stream is idle.
 _SILENT_SPECTRUM: list[float] = [0.0] * (FFT_SIZE // 2)
 
-IID_IAudioClient = GUID("{1CB9AD4C-DBFA-4C32-B178-C2F568A703B2}")
-IID_IAudioCaptureClient = GUID("{C8ADBD64-E71E-48A0-A4DE-185C395CD317}")
-KSDATAFORMAT_SUBTYPE_IEEE_FLOAT = GUID("{00000003-0000-0010-8000-00AA00389B71}")
-KSDATAFORMAT_SUBTYPE_PCM = GUID("{00000001-0000-0010-8000-00AA00389B71}")
-
-AUDCLNT_STREAMFLAGS_LOOPBACK = 0x00020000
-AUDCLNT_STREAMFLAGS_EVENTCALLBACK = 0x00040000
-AUDCLNT_SHAREMODE_SHARED = 0
-AUDCLNT_BUFFERFLAGS_SILENT = 0x2
 REFTIMES_PER_SEC = 10_000_000
-WAVE_FORMAT_PCM = 0x0001
-WAVE_FORMAT_IEEE_FLOAT = 0x0003
-WAVE_FORMAT_EXTENSIBLE = 0xFFFE
 
 # cbSize of a WAVEFORMATEXTENSIBLE payload (2 + 4 + sizeof(GUID)).
 _WFX_EXTENSIBLE_CBSIZE = 22
@@ -77,66 +81,6 @@ _SILENCE_FLOOR = 1e-5
 _STOP = 0
 _WAKE = 1
 _AUDIO = 2
-
-
-class _WAVEFORMATEX(Structure):
-    """Windows ABI layout: 18 bytes, no trailing padding.
-
-    ``_pack_`` matters. The default ctypes alignment pads this to 20 bytes,
-    which would put every WAVEFORMATEXTENSIBLE field at the wrong offset.
-    """
-
-    _pack_ = 1
-    _fields_ = [
-        ("wFormatTag", c_uint16),
-        ("nChannels", c_uint16),
-        ("nSamplesPerSec", c_uint32),
-        ("nAvgBytesPerSec", c_uint32),
-        ("nBlockAlign", c_uint16),
-        ("wBitsPerSample", c_uint16),
-        ("cbSize", c_uint16),
-    ]
-
-
-class _WAVEFORMATEXTENSIBLE(Structure):
-    """Windows ABI layout: 40 bytes, SubFormat at offset 24."""
-
-    _pack_ = 1
-    _fields_ = [
-        ("Format", _WAVEFORMATEX),
-        ("wValidBitsPerSample", c_uint16),
-        ("dwChannelMask", c_uint32),
-        ("SubFormat", GUID),
-    ]
-
-
-class IAudioCaptureClient(IUnknown):
-    _iid_ = IID_IAudioCaptureClient
-    _methods_ = [
-        COMMETHOD(
-            [],
-            HRESULT,
-            "GetBuffer",
-            (["out"], POINTER(POINTER(c_ubyte)), "ppData"),
-            (["out"], POINTER(c_uint32), "pNumFramesToRead"),
-            (["out"], POINTER(c_uint32), "pdwFlags"),
-            (["out"], POINTER(c_uint64), "pu64DevicePosition"),
-            (["out"], POINTER(c_uint64), "pu64QPCPosition"),
-        ),
-        COMMETHOD([], HRESULT, "ReleaseBuffer", (["in"], c_uint32, "NumFramesRead")),
-        COMMETHOD(
-            [],
-            HRESULT,
-            "GetNextPacketSize",
-            (["out"], POINTER(c_uint32), "pNumFramesInNextPacket"),
-        ),
-    ]
-
-    if TYPE_CHECKING:
-
-        def GetBuffer(self) -> tuple[Any, int, int, int, int]: ...
-        def ReleaseBuffer(self, NumFramesRead: int) -> None: ...
-        def GetNextPacketSize(self) -> int: ...
 
 
 class UnsupportedFormatError(RuntimeError):
@@ -233,7 +177,7 @@ class _WasapiLoopbackClient:
         self.capture = capture
 
     def _read_format(self, wfx: Any) -> None:
-        fmt = cast(wfx, POINTER(_WAVEFORMATEX)).contents
+        fmt = cast(wfx, POINTER(WAVEFORMATEX)).contents
         self.sample_rate = max(1, int(fmt.nSamplesPerSec))
         self.channels = max(1, int(fmt.nChannels))
         self.bits = int(fmt.wBitsPerSample)
@@ -245,9 +189,9 @@ class _WasapiLoopbackClient:
         if tag == WAVE_FORMAT_EXTENSIBLE:
             if int(fmt.cbSize) < _WFX_EXTENSIBLE_CBSIZE:
                 raise UnsupportedFormatError(f"WAVE_FORMAT_EXTENSIBLE with truncated cbSize {int(fmt.cbSize)}")
-            subtype = cast(wfx, POINTER(_WAVEFORMATEXTENSIBLE)).contents.SubFormat
-            is_float = subtype == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT
-            if not is_float and subtype != KSDATAFORMAT_SUBTYPE_PCM:
+            subtype = cast(wfx, POINTER(WAVEFORMATEXTENSIBLE)).contents.SubFormat
+            is_float = bytes(subtype) == bytes(KSDATAFORMAT_SUBTYPE_IEEE_FLOAT)
+            if not is_float and bytes(subtype) != bytes(KSDATAFORMAT_SUBTYPE_PCM):
                 raise UnsupportedFormatError(f"unsupported loopback subformat {subtype}")
         else:
             is_float = tag == WAVE_FORMAT_IEEE_FLOAT
@@ -390,9 +334,9 @@ class AudioVisualizerCaptureService(QObject):
         self._enumerator: IMMDeviceEnumerator | None = None
         self._watcher: _RenderDeviceWatcher | None = None
 
-        self._audio_event = win32event.CreateEvent(None, False, False, None)  # auto-reset
-        self._wake_event = win32event.CreateEvent(None, False, False, None)  # auto-reset
-        self._stop_event = win32event.CreateEvent(None, True, False, None)  # manual-reset
+        self._audio_event = CreateEvent(None, False, False, None)  # auto-reset
+        self._wake_event = CreateEvent(None, False, False, None)  # auto-reset
+        self._stop_event = CreateEvent(None, True, False, None)  # manual-reset
 
         # Connected first so it runs before the widget slots and re-arms
         # emission as early as possible.
@@ -440,7 +384,7 @@ class AudioVisualizerCaptureService(QObject):
             self._active_readers += 1
             self._refresh_readers()
         self._ensure_thread()
-        win32event.SetEvent(self._wake_event)
+        SetEvent(self._wake_event)
 
     def detach(self, framerate: int, channels: frozenset[str], visible: bool) -> None:
         """Drop a reader. The stream closes once the last one leaves."""
@@ -454,7 +398,7 @@ class AudioVisualizerCaptureService(QObject):
             except ValueError:
                 logging.debug("Audio visualizer: detach without a matching attach")
             self._refresh_readers()
-        win32event.SetEvent(self._wake_event)
+        SetEvent(self._wake_event)
 
     def set_reader_visible(self, visible: bool) -> None:
         """A widget came on screen (``True``) or left it (``False``).
@@ -547,7 +491,7 @@ class AudioVisualizerCaptureService(QObject):
         with self._lock:
             self._device_dirty = True
             self._format_rejected = False
-        win32event.SetEvent(self._wake_event)
+        SetEvent(self._wake_event)
 
     def _ensure_thread(self) -> None:
         # Only ever called from the UI thread (via attach), so the read of
@@ -558,7 +502,7 @@ class AudioVisualizerCaptureService(QObject):
                 return
             self._running = True
         self._register_device_watcher()
-        win32event.ResetEvent(self._stop_event)
+        ResetEvent(self._stop_event)
         self._thread = threading.Thread(target=self._capture_thread, name="yasb-audio-visualizer", daemon=True)
         self._thread.start()
 
@@ -573,7 +517,7 @@ class AudioVisualizerCaptureService(QObject):
         if not was_running:
             return
 
-        win32event.SetEvent(self._stop_event)
+        SetEvent(self._stop_event)
         thread, self._thread = self._thread, None
         if thread is not None and thread.is_alive() and threading.current_thread() is not thread:
             thread.join(timeout=2.0)
@@ -623,8 +567,8 @@ class AudioVisualizerCaptureService(QObject):
                 ole32.CoUninitialize()
 
     def _capture_loop(self) -> None:
-        handles = [self._stop_event, self._wake_event, self._audio_event]
-        idle_handles = [self._stop_event, self._wake_event]
+        handles = (HANDLE * 3)(self._stop_event, self._wake_event, self._audio_event)
+        idle_handles = (HANDLE * 2)(self._stop_event, self._wake_event)
         client: _WasapiLoopbackClient | None = None
         backoff_ms = _REOPEN_BACKOFF_MIN_MS
         try:
@@ -637,7 +581,7 @@ class AudioVisualizerCaptureService(QObject):
                 if not self._has_readers():
                     client = self._close(client)
                     self._mark_stopped()
-                    if self._park(idle_handles, win32event.INFINITE):
+                    if self._park(idle_handles, INFINITE):
                         break
                     continue
 
@@ -645,7 +589,7 @@ class AudioVisualizerCaptureService(QObject):
                     if self._format_rejected:
                         # Only a device change can make this work; wait for one
                         # rather than retrying a format we cannot decode.
-                        if self._park(idle_handles, win32event.INFINITE):
+                        if self._park(idle_handles, INFINITE):
                             break
                         continue
                     client = self._open()
@@ -660,17 +604,13 @@ class AudioVisualizerCaptureService(QObject):
                     # swapping devices mid-track does not blip the bars to zero.
                     self._last_audio_ns = time.monotonic_ns()
 
-                rc = int(
-                    win32event.WaitForMultipleObjects(  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
-                        handles, False, client.stale_timeout_ms
-                    )
-                )
-                if rc == win32event.WAIT_OBJECT_0 + _STOP:
+                rc = WaitForMultipleObjects(len(handles), handles, False, client.stale_timeout_ms)
+                if rc == WAIT_OBJECT_0 + _STOP:
                     break
-                if rc == win32event.WAIT_OBJECT_0 + _WAKE:
+                if rc == WAIT_OBJECT_0 + _WAKE:
                     continue
 
-                if rc == win32event.WAIT_OBJECT_0 + _AUDIO:
+                if rc == WAIT_OBJECT_0 + _AUDIO:
                     try:
                         if self._drain(client):
                             self._last_audio_ns = time.monotonic_ns()
@@ -700,7 +640,7 @@ class AudioVisualizerCaptureService(QObject):
                             break
                         backoff_ms = min(backoff_ms * 2, _REOPEN_BACKOFF_MAX_MS)
                         continue
-                elif rc != win32event.WAIT_TIMEOUT:
+                elif rc != WAIT_TIMEOUT:
                     continue
 
                 # Idle means "no real audio for several device periods", which
@@ -717,14 +657,10 @@ class AudioVisualizerCaptureService(QObject):
         """Has no real audio arrived for ``timeout_ms``? Capture thread only."""
         return time.monotonic_ns() - self._last_audio_ns >= timeout_ms * 1_000_000
 
-    def _park(self, handles: list[int], timeout_ms: int) -> bool:
+    def _park(self, handles: Array[HANDLE], timeout_ms: int) -> bool:
         """Block on wake/stop. Returns True when shutdown was requested."""
-        rc = int(
-            win32event.WaitForMultipleObjects(  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
-                handles, False, timeout_ms
-            )
-        )
-        return rc == win32event.WAIT_OBJECT_0 + _STOP
+        rc = WaitForMultipleObjects(len(handles), handles, False, timeout_ms)
+        return rc == WAIT_OBJECT_0 + _STOP
 
     def _take_device_dirty(self) -> bool:
         with self._lock:

@@ -1,18 +1,15 @@
 import logging
 import math
-from collections.abc import Callable
 from contextlib import suppress
 from functools import partial
 from typing import Any, Literal, Protocol, TypedDict, cast, override
 
-from PIL import Image
 from PyQt6.QtCore import QEvent, QPoint, QRect, QSize, Qt, QTimer, pyqtBoundSignal, pyqtSignal
 from PyQt6.QtGui import (
     QColor,
     QCursor,
     QEnterEvent,
     QHideEvent,
-    QImage,
     QMouseEvent,
     QMoveEvent,
     QPainter,
@@ -26,9 +23,10 @@ from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QSizePolic
 
 from core.events.komorebi import KomorebiEvent
 from core.events.service import EventService
+from core.utils.icons.service import IconService, WindowIcon
 from core.utils.utilities import refresh_widget_style
-from core.utils.win32.app_icons import get_window_icon
-from core.utils.win32.utils import get_foreground_hwnd, get_process_info, get_widget_monitor_hwnd
+from core.utils.win32.bindings.user32 import GetCursorPos, GetForegroundWindow, IsHungAppWindow, SetCursorPos
+from core.utils.win32.utils import get_process_info, get_widget_monitor_hwnd
 from core.utils.win32.window_actions import move_cursor_to_window_center, restore_window, set_foreground, show_window
 from core.validation.widgets.komorebi.workspaces import KomorebiWorkspacesConfig
 from core.widgets.base import BaseWidget
@@ -436,7 +434,7 @@ class WorkspaceButtonWithIcons(WorkspaceButtonMixin, QFrame):
 
     def update_icon_by_hwnd(self, hwnd: int) -> None:
         if any(icon_entry["hwnd"] == hwnd for icon_entry in self.icons):
-            pixmap = self.parent_widget.get_app_icon(hwnd, self.workspace_index, ignore_cache=True)
+            pixmap = self.parent_widget.get_app_icon(hwnd, self.workspace_index)
             if pixmap:
                 self.update_icons(icons={hwnd: pixmap})
 
@@ -1609,7 +1607,8 @@ class WorkspaceWidget(BaseWidget):
             self.workspace_layer_label.setProperty("class", "workspace-layer")
             self.widget_layout.addWidget(self.workspace_layer_label)
 
-        self._icon_cache: dict[tuple[int, float], Image.Image] = {}
+        self._icons = IconService.instance()
+        self._icons.icons_changed.connect(self._refresh_icons)
         self.dpi = 1.0
 
         self._layout_command_debounce_timer = QTimer()
@@ -1656,10 +1655,9 @@ class WorkspaceWidget(BaseWidget):
         self,
         hwnd: int,
         workspace_index: int,
-        ignore_cache: bool = False,
         unique_app_keys: set[str | int] | None = None,
     ) -> QPixmap | None:
-        return self._get_app_icon(hwnd, workspace_index, ignore_cache, unique_app_keys)
+        return self._get_app_icon(hwnd, workspace_index, unique_app_keys)
 
     def _register_signals_and_events(self) -> None:
         self.k_signal_connect.connect(self._on_komorebi_connect_event)
@@ -2165,7 +2163,7 @@ class WorkspaceWidget(BaseWidget):
             return False
 
         try:
-            foreground_hwnd = get_foreground_hwnd()
+            foreground_hwnd = GetForegroundWindow()
         except Exception:
             foreground_hwnd = None
         return foreground_hwnd == hwnd and self._get_workspace_focused_hwnd(workspace_index) == hwnd
@@ -2188,7 +2186,7 @@ class WorkspaceWidget(BaseWidget):
     ) -> None:
         foreground_hwnd = None
         try:
-            foreground_hwnd = get_foreground_hwnd()
+            foreground_hwnd = GetForegroundWindow()
         except Exception:
             pass
 
@@ -2836,7 +2834,6 @@ class WorkspaceWidget(BaseWidget):
         self,
         hwnd: int,
         workspace_index: int,
-        ignore_cache: bool = False,
         unique_app_keys: set[str | int] | None = None,
     ) -> QPixmap | None:
         try:
@@ -2858,29 +2855,7 @@ class WorkspaceWidget(BaseWidget):
             if screen is None:
                 return None
             self.dpi = screen.devicePixelRatio()
-            cache_key = (hwnd, self.dpi)
-
-            if cache_key in self._icon_cache and not ignore_cache:
-                icon_img = self._icon_cache[cache_key]
-            else:
-                icon_img = get_window_icon(hwnd)
-
-            if icon_img:
-                icon_img = icon_img.resize(
-                    (
-                        int(self.config.app_icons.size * self.dpi),
-                        int(self.config.app_icons.size * self.dpi),
-                    ),
-                    Image.LANCZOS,
-                ).convert("RGBA")
-                self._icon_cache[cache_key] = icon_img
-                pixel_bytes = cast(Callable[[], bytes], getattr(icon_img, "tobytes"))()
-                qimage = QImage(pixel_bytes, icon_img.width, icon_img.height, QImage.Format.Format_RGBA8888)
-                pixmap = QPixmap.fromImage(qimage)
-                pixmap.setDevicePixelRatio(self.dpi)
-                return pixmap
-            else:
-                return None
+            return self._icons.get_icon(WindowIcon(hwnd), self.config.app_icons.size, self.dpi)
         except Exception:
             logging.debug("Failed to get icons for window with HWND %s", hwnd, exc_info=True)
             return None
@@ -3056,9 +3031,7 @@ class WorkspaceWidget(BaseWidget):
         if not hwnd:
             return False
         try:
-            import ctypes
-
-            if ctypes.windll.user32.IsHungAppWindow(int(hwnd)):
+            if IsHungAppWindow(int(hwnd)):
                 _log_workspace_diag("windows focus request skipped (hung window): hwnd=%s", hwnd)
                 return False
         except Exception:
@@ -3145,15 +3118,13 @@ class WorkspaceWidget(BaseWidget):
         if not hwnd:
             return
         try:
-            import win32api
-
             from core.utils.win32.utils import get_window_rect
 
             rect_dict = get_window_rect(hwnd)
             if not rect_dict:
                 return
 
-            x, y = win32api.GetCursorPos()
+            x, y = GetCursorPos()
             left = rect_dict.get("x", 0)
             top = rect_dict.get("y", 0)
             right = left + rect_dict.get("width", 0)
@@ -3173,7 +3144,7 @@ class WorkspaceWidget(BaseWidget):
                 center_x,
                 center_y,
             )
-            win32api.SetCursorPos((center_x, center_y))
+            SetCursorPos(center_x, center_y)
         except Exception:
             pass
 
@@ -3414,3 +3385,8 @@ class WorkspaceWidget(BaseWidget):
                 workspace_index,
                 target_hwnd,
             )
+
+    def _refresh_icons(self) -> None:
+        for button in self.workspace_buttons:
+            if isinstance(button, WorkspaceButtonWithIcons) and button.workspace_index < len(self._komorebi_workspaces):
+                button.update_icons()

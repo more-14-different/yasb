@@ -3,13 +3,17 @@
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
+from unittest.mock import Mock, patch
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
+from core.utils.icons.service import WindowIcon  # noqa: E402
 from core.validation.widgets.komorebi import workspaces as workspaces_validation  # noqa: E402
 from core.validation.widgets.komorebi.workspaces import KomorebiWorkspacesConfig  # noqa: E402
+from core.widgets.komorebi import workspaces as workspaces_module  # noqa: E402
 from core.widgets.komorebi.workspaces import (  # noqa: E402
     WorkspaceButtonMixin,
     WorkspaceWidget,
@@ -89,6 +93,44 @@ class WorkspaceIconLabelTests(unittest.TestCase):
         self.assertEqual(parent_widget.pending_calls, 0)
         self.assertEqual(parent_widget.clear_calls, 0)
         self.assertEqual(komorebic.activation_calls, 0)
+
+    def test_spatial_preview_requests_icons_from_shared_service(self):
+        class Screen:
+            @staticmethod
+            def devicePixelRatio() -> float:
+                return 1.5
+
+        icon = object()
+        icon_service = SimpleNamespace(get_icon=Mock(return_value=icon))
+        widget = SimpleNamespace(
+            config=SimpleNamespace(app_icons=SimpleNamespace(hide_duplicates=False, size=18)),
+            dpi=1.0,
+            _icons=icon_service,
+            screen=lambda: Screen(),
+        )
+
+        result = WorkspaceWidget._get_app_icon(cast(WorkspaceWidget, widget), 42, 0)
+
+        self.assertIs(result, icon)
+        icon_service.get_icon.assert_called_once_with(WindowIcon(42), 18, 1.5)
+
+    def test_icon_service_signal_refreshes_existing_preview_buttons(self):
+        class PreviewButton:
+            workspace_index = 0
+
+            def __init__(self) -> None:
+                self.refreshes = 0
+
+            def update_icons(self) -> None:
+                self.refreshes += 1
+
+        button = PreviewButton()
+        widget = SimpleNamespace(workspace_buttons=[button], _komorebi_workspaces=[{}])
+
+        with patch.object(workspaces_module, "WorkspaceButtonWithIcons", PreviewButton):
+            WorkspaceWidget._refresh_icons(cast(WorkspaceWidget, widget))
+
+        self.assertEqual(button.refreshes, 1)
 
 
 class WorkspaceValidationTests(unittest.TestCase):

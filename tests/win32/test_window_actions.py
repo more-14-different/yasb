@@ -1,65 +1,50 @@
-from collections.abc import Callable, Iterator
-from typing import TYPE_CHECKING
 from unittest.mock import Mock
 
 import pytest
-import win32api
-import win32con
-import win32gui
 
 import core.utils.win32.window_actions as window_actions
-from core.utils.win32.window_actions import can_minimize
-
-if TYPE_CHECKING:
-    from _win32typing import PyResourceId  # pyright: ignore[reportMissingModuleSource]
-
-WINDOWS = {
-    "normal": (win32con.WS_OVERLAPPEDWINDOW, True),
-    "popup with minimize box": (win32con.WS_POPUP | win32con.WS_SYSMENU | win32con.WS_MINIMIZEBOX, True),
-    "no minimize box": (win32con.WS_OVERLAPPED | win32con.WS_CAPTION | win32con.WS_SYSMENU, False),
-    "disabled": (win32con.WS_OVERLAPPEDWINDOW | win32con.WS_DISABLED, False),
-}
-
-
-@pytest.fixture(scope="module")
-def window_class() -> Iterator[PyResourceId]:
-    instance = win32api.GetModuleHandle(None)
-    wc = win32gui.WNDCLASS()
-    wc.hInstance = instance  # pyright: ignore[reportAttributeAccessIssue]
-    wc.lpszClassName = "YasbTestWindow"  # pyright: ignore[reportAttributeAccessIssue]
-    wc.lpfnWndProc = {}  # pyright: ignore[reportAttributeAccessIssue]
-    atom = win32gui.RegisterClass(wc)
-    yield atom
-    win32gui.UnregisterClass(atom, instance)
+from core.utils.win32.constants import (
+    GWL_STYLE,
+    HWND_TOP,
+    SC_MINIMIZE,
+    SC_RESTORE,
+    SW_MINIMIZE,
+    SWP_ASYNCWINDOWPOS,
+    SWP_NOACTIVATE,
+    SWP_NOMOVE,
+    SWP_NOSIZE,
+    WM_SYSCOMMAND,
+    WS_MINIMIZEBOX,
+)
 
 
-@pytest.fixture
-def make_window(window_class: PyResourceId) -> Iterator[Callable[[int], int]]:
-    created: list[int] = []
+@pytest.mark.parametrize(
+    ("style", "enabled", "expected"),
+    [
+        (WS_MINIMIZEBOX, True, True),
+        (WS_MINIMIZEBOX, False, False),
+        (0, True, False),
+    ],
+)
+def test_can_minimize(monkeypatch: pytest.MonkeyPatch, style: int, enabled: bool, expected: bool):
+    get_window_long = Mock(return_value=style)
+    is_window_enabled = Mock(return_value=enabled)
+    monkeypatch.setattr(window_actions, "GetWindowLong", get_window_long)
+    monkeypatch.setattr(window_actions, "IsWindowEnabled", is_window_enabled)
 
-    def make(style: int) -> int:
-        hwnd = win32gui.CreateWindow(
-            window_class, "YASB test window", style, 0, 0, 200, 100, 0, 0, win32api.GetModuleHandle(None), None
-        )
-        created.append(hwnd)
-        return hwnd
-
-    yield make
-    for hwnd in created:
-        if win32gui.IsWindow(hwnd):
-            win32gui.DestroyWindow(hwnd)
+    assert window_actions.can_minimize(123) is expected
+    get_window_long.assert_called_once_with(123, GWL_STYLE)
+    if style & WS_MINIMIZEBOX:
+        is_window_enabled.assert_called_once_with(123)
+    else:
+        is_window_enabled.assert_not_called()
 
 
-@pytest.mark.parametrize(("style", "expected"), list(WINDOWS.values()), ids=list(WINDOWS))
-def test_can_minimize(make_window: Callable[[int], int], style: int, expected: bool):
-    assert can_minimize(make_window(style)) is expected
+def test_can_minimize_closed_window(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(window_actions, "GetWindowLong", Mock(return_value=0))
+    monkeypatch.setattr(window_actions, "IsWindowEnabled", Mock(return_value=False))
 
-
-def test_can_minimize_closed_window(make_window: Callable[[int], int]):
-    hwnd = make_window(win32con.WS_OVERLAPPEDWINDOW)
-    win32gui.DestroyWindow(hwnd)
-
-    assert can_minimize(hwnd) is False
+    assert window_actions.can_minimize(456) is False
 
 
 def test_restore_posts_syscommand_without_waiting(monkeypatch: pytest.MonkeyPatch):
@@ -72,7 +57,7 @@ def test_restore_posts_syscommand_without_waiting(monkeypatch: pytest.MonkeyPatc
 
     window_actions.restore_window(123)
 
-    post_message.assert_called_once_with(123, win32con.WM_SYSCOMMAND, win32con.SC_RESTORE, 0)
+    post_message.assert_called_once_with(123, WM_SYSCOMMAND, SC_RESTORE, 0)
     send_message_timeout.assert_not_called()
     show_window_async.assert_not_called()
 
@@ -87,46 +72,32 @@ def test_failed_post_falls_back_to_show_window_async(monkeypatch: pytest.MonkeyP
 
     window_actions.minimize_window(456)
 
-    post_message.assert_called_once_with(456, win32con.WM_SYSCOMMAND, win32con.SC_MINIMIZE, 0)
+    post_message.assert_called_once_with(456, WM_SYSCOMMAND, SC_MINIMIZE, 0)
     send_message_timeout.assert_not_called()
-    show_window_async.assert_called_once_with(456, win32con.SW_MINIMIZE)
+    show_window_async.assert_called_once_with(456, SW_MINIMIZE)
 
 
 def test_set_foreground_uses_async_set_window_pos(monkeypatch: pytest.MonkeyPatch):
-    is_window = Mock(return_value=True)
-    is_hung = Mock(return_value=False)
-    get_window_thread = Mock(return_value=(1, 2))
-    get_current_thread = Mock(return_value=1)
-    bring_to_top = Mock(return_value=1)
-    set_active = Mock(return_value=1)
     set_window_pos = Mock(return_value=1)
     set_foreground_window = Mock(return_value=1)
-    monkeypatch.setattr(window_actions.win32gui, "IsWindow", is_window)
-    monkeypatch.setattr(window_actions.u32, "IsHungAppWindow", is_hung)
-    monkeypatch.setattr(window_actions.win32process, "GetWindowThreadProcessId", get_window_thread)
-    monkeypatch.setattr(window_actions.k32, "GetCurrentThreadId", get_current_thread)
-    monkeypatch.setattr(window_actions.u32, "BringWindowToTop", bring_to_top)
-    monkeypatch.setattr(window_actions.u32, "SetActiveWindow", set_active)
+    monkeypatch.setattr(window_actions, "IsWindow", Mock(return_value=True))
+    monkeypatch.setattr(window_actions, "IsHungAppWindow", Mock(return_value=False))
     monkeypatch.setattr(window_actions.u32, "SetWindowPos", set_window_pos)
     monkeypatch.setattr(window_actions.u32, "SetForegroundWindow", set_foreground_window)
 
     window_actions.set_foreground(789)
 
-    expected_flags = win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOACTIVATE | win32con.SWP_ASYNCWINDOWPOS
-    set_window_pos.assert_called_once_with(789, win32con.HWND_TOP, 0, 0, 0, 0, expected_flags)
+    expected_flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS
+    set_window_pos.assert_called_once_with(789, HWND_TOP, 0, 0, 0, 0, expected_flags)
     set_foreground_window.assert_called_once_with(789)
-    get_window_thread.assert_not_called()
-    get_current_thread.assert_not_called()
-    bring_to_top.assert_not_called()
-    set_active.assert_not_called()
 
 
 def test_hung_window_short_circuits_resolution_and_foreground(monkeypatch: pytest.MonkeyPatch):
     get_ancestor = Mock(side_effect=AssertionError("hung window must not be queried"))
     set_window_pos = Mock(side_effect=AssertionError("hung window must not be repositioned"))
     set_foreground_window = Mock(side_effect=AssertionError("hung window must not be focused"))
-    monkeypatch.setattr(window_actions.win32gui, "IsWindow", Mock(return_value=True))
-    monkeypatch.setattr(window_actions.u32, "IsHungAppWindow", Mock(return_value=True))
+    monkeypatch.setattr(window_actions, "IsWindow", Mock(return_value=True))
+    monkeypatch.setattr(window_actions, "IsHungAppWindow", Mock(return_value=True))
     monkeypatch.setattr(window_actions.u32, "GetAncestor", get_ancestor)
     monkeypatch.setattr(window_actions.u32, "SetWindowPos", set_window_pos, raising=False)
     monkeypatch.setattr(window_actions.u32, "SetForegroundWindow", set_foreground_window)

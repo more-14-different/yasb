@@ -1,11 +1,8 @@
 import asyncio
-import contextlib
-import ctypes
 import logging
 import os
 import signal
 import sys
-import time
 from sys import argv
 from types import FrameType, TracebackType
 
@@ -19,92 +16,16 @@ from core.log import enable_debug_logging, init_logger
 from core.tray import SystemTrayManager
 from core.ui.views.welcome import run_setup_wizard
 from core.utils.controller import start_cli_server
+from core.utils.single_instance import single_instance_lock
 from core.utils.system_colors import SystemColorsService
 from core.utils.update_service import get_update_service, start_update_checker
-from core.utils.win32.constants import ERROR_ALREADY_EXISTS
 from core.watcher import create_observer
 from env import load_env, set_font_engine
-
-
-def _get_arg_value(name: str) -> str | None:
-    try:
-        index = sys.argv.index(name)
-    except ValueError:
-        return None
-
-    if index + 1 >= len(sys.argv):
-        return None
-
-    return sys.argv[index + 1]
-
-
-def _wait_for_process_exit(process_id: int, timeout_s: float) -> bool:
-    SYNCHRONIZE = 0x00100000
-    WAIT_OBJECT_0 = 0x00000000
-    timeout_ms = max(0, int(timeout_s * 1000))
-
-    handle = ctypes.windll.kernel32.OpenProcess(SYNCHRONIZE, False, process_id)
-    if not handle:
-        return True
-
-    try:
-        wait_result = ctypes.windll.kernel32.WaitForSingleObject(handle, timeout_ms)
-        return wait_result == WAIT_OBJECT_0
-    finally:
-        ctypes.windll.kernel32.CloseHandle(handle)
 
 
 def _exit_process(exit_code: int) -> None:
     logging.shutdown()
     os._exit(exit_code)
-
-
-@contextlib.contextmanager
-def single_instance_lock(name: str = "yasb_reborn"):
-    """Hold a named mutex, waiting briefly when a reload replaces YASB."""
-
-    kernel32 = ctypes.windll.kernel32
-    deadline = time.monotonic() + (10.0 if "--restart-wait" in sys.argv else 0.0)
-    restart_parent_pid_value = _get_arg_value("--restart-parent-pid")
-    waiting = False
-
-    while True:
-        mutex = kernel32.CreateMutexW(None, False, name)
-        if not mutex:
-            logging.error("Failed to create mutex.")
-            sys.exit(1)
-
-        if kernel32.GetLastError() != ERROR_ALREADY_EXISTS:
-            break
-
-        kernel32.CloseHandle(mutex)
-        if time.monotonic() >= deadline:
-            logging.error(
-                "Timeout waiting for previous instance. Aborting start."
-                if waiting
-                else "Another instance of the YASB is already running."
-            )
-            sys.exit(1)
-        if not waiting:
-            logging.info("Waiting for previous YASB instance to exit...")
-            waiting = True
-        time.sleep(0.25)
-
-    if waiting:
-        logging.info("Previous instance exited, continuing startup.")
-
-    if restart_parent_pid_value and restart_parent_pid_value.isdigit():
-        restart_parent_pid = int(restart_parent_pid_value)
-        logging.info("Waiting for previous YASB process %s to terminate...", restart_parent_pid)
-        if not _wait_for_process_exit(restart_parent_pid, timeout_s=10):
-            kernel32.CloseHandle(mutex)
-            logging.error("Timeout waiting for previous YASB process to terminate. Aborting start.")
-            sys.exit(1)
-
-    try:
-        yield mutex
-    finally:
-        kernel32.CloseHandle(mutex)
 
 
 def main():

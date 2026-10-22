@@ -1,5 +1,4 @@
 import ctypes
-import ctypes.wintypes
 import logging
 import os
 import winreg
@@ -8,8 +7,6 @@ from datetime import datetime
 from functools import partial
 from typing import TYPE_CHECKING, Any, cast, override
 
-import win32gui
-import win32process
 from PyQt6.QtCore import (
     QAbstractNativeEventFilter,
     QEasingCurve,
@@ -33,15 +30,27 @@ from PyQt6.QtWidgets import (
     QWidget,
     QWidgetAction,
 )
-from win32con import HWND_BOTTOM, HWND_NOTOPMOST, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE
 
 from core.utils.controller import exit_application, reload_application
 from core.utils.shell_utils import shell_open
 from core.utils.utilities import refresh_widget_style
 from core.utils.win32.app_bar import APPBAR_CALLBACK_MESSAGE, AppBarNotify
-from core.utils.win32.bindings import SetWindowPos
-from core.utils.win32.bindings.user32 import KillTimer, RegisterWindowMessage, SetTimer, user32
-from core.utils.win32.structs import MSG
+from core.utils.win32.bindings.user32 import (
+    GetClassName,
+    GetForegroundWindow,
+    GetWindowText,
+    IsWindowVisible,
+    KillTimer,
+    MonitorFromWindow,
+    RegisterWindowMessage,
+    SetTimer,
+    SetWindowPos,
+    get_window_thread_process_id,
+    user32,
+)
+from core.utils.win32.constants import HWND_BOTTOM, HWND_NOTOPMOST, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE
+from core.utils.win32.registry_keys import PERSONALIZE_KEY
+from core.utils.win32.structs import MSG, WNDENUMPROC
 from core.utils.win32.utils import apply_qmenu_style
 
 if TYPE_CHECKING:
@@ -621,14 +630,14 @@ class AppBarManager(QAbstractNativeEventFilter):
     def _is_foreground_excluded(self) -> bool:
         """Check if the foreground window should be excluded from fullscreen detection."""
         try:
-            hwnd = win32gui.GetForegroundWindow()
+            hwnd = GetForegroundWindow()
             if not hwnd:
                 return False
             # Exclude our own process windows , overlays, modal dialogs and etc.
-            _, pid = win32process.GetWindowThreadProcessId(hwnd)
+            _, pid = get_window_thread_process_id(hwnd)
             if pid == os.getpid():
                 return True
-            window_class = win32gui.GetClassName(hwnd) or ""
+            window_class = GetClassName(hwnd) or ""
             if window_class in self.EXCLUDED_WINDOW_CLASSES or window_class.endswith(
                 self.EXCLUDED_WINDOW_CLASS_SUFFIXES
             ):
@@ -682,7 +691,7 @@ class MaximizedWindowWatcher(QObject):
     def _check_maximized_windows(self):
         """Check if any top-level window is maximized on the bar's monitor."""
         try:
-            from core.utils.win32.utils import get_monitor_hwnd, is_window_maximized
+            from core.utils.win32.utils import is_window_maximized
 
             bar_monitor = self.bar_widget.monitor_hwnd
             if not bar_monitor:
@@ -695,16 +704,16 @@ class MaximizedWindowWatcher(QObject):
                 if has_maximized:
                     return False
                 try:
-                    if not win32gui.IsWindowVisible(hwnd):
+                    if not IsWindowVisible(hwnd):
                         return True
-                    if not win32gui.GetWindowText(hwnd):
+                    if not GetWindowText(hwnd):
                         return True
-                    cls_name = win32gui.GetClassName(hwnd) or ""
+                    cls_name = GetClassName(hwnd) or ""
                     if cls_name in AppBarManager.EXCLUDED_WINDOW_CLASSES:
                         return True
                     if cls_name.endswith(AppBarManager.EXCLUDED_WINDOW_CLASS_SUFFIXES):
                         return True
-                    window_monitor = get_monitor_hwnd(hwnd)
+                    window_monitor = MonitorFromWindow(hwnd)
                     if window_monitor != bar_monitor:
                         return True
                     if is_window_maximized(hwnd):
@@ -714,9 +723,7 @@ class MaximizedWindowWatcher(QObject):
                     pass
                 return True
 
-            WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.wintypes.HWND, ctypes.POINTER(ctypes.c_long))
-            callback = WNDENUMPROC(enum_callback)
-            user32.EnumWindows(callback, 0)
+            user32.EnumWindows(WNDENUMPROC(enum_callback), 0)
 
             if has_maximized and not self._is_autohide_active:
                 self._enable_autohide()
@@ -773,7 +780,7 @@ class OsThemeManager(QObject):
         """Detect if OS is using dark theme"""
         try:
             with winreg.ConnectRegistry(None, winreg.HKEY_CURRENT_USER) as registry:
-                with winreg.OpenKey(registry, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize") as key:
+                with winreg.OpenKey(registry, PERSONALIZE_KEY) as key:
                     value, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
                     return value == 0
         except Exception as e:

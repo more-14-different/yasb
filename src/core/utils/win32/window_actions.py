@@ -1,22 +1,46 @@
 import ctypes
 import logging
 
-import win32con
-import win32gui
-import win32process
-
-from core.utils.win32.bindings import kernel32 as k32
-from core.utils.win32.bindings import user32 as u32
-from core.utils.win32.bindings.user32 import GetWindowLong, IsHungAppWindow, IsWindowEnabled, PostMessage
+from core.utils.win32.bindings.kernel32 import kernel32 as k32
+from core.utils.win32.bindings.user32 import (
+    GetWindowLong,
+    IsHungAppWindow,
+    IsWindow,
+    IsWindowEnabled,
+    PostMessage,
+    get_window_thread_process_id,
+)
+from core.utils.win32.bindings.user32 import user32 as u32
+from core.utils.win32.constants import (
+    GA_ROOT,
+    GA_ROOTOWNER,
+    GWL_STYLE,
+    HWND_TOP,
+    PROCESS_TERMINATE,
+    SC_CLOSE,
+    SC_MAXIMIZE,
+    SC_MINIMIZE,
+    SC_RESTORE,
+    SMTO_ABORTIFHUNG,
+    SW_MAXIMIZE,
+    SW_MINIMIZE,
+    SW_RESTORE,
+    SW_SHOW,
+    SWP_ASYNCWINDOWPOS,
+    SWP_NOACTIVATE,
+    SWP_NOMOVE,
+    SWP_NOSIZE,
+    WM_CLOSE,
+    WM_SYSCOMMAND,
+    WS_MINIMIZEBOX,
+)
 from core.utils.win32.utils import get_window_rect
 
 
 def resolve_base_and_focus(hwnd: int) -> tuple[int, int]:
     """Return (base_owner_root, focus_target). Focus target is the last active visible popup if any."""
-    if not hwnd or not win32gui.IsWindow(hwnd) or u32.IsHungAppWindow(int(hwnd)):
+    if not hwnd or not IsWindow(hwnd) or IsHungAppWindow(int(hwnd)):
         return int(hwnd), int(hwnd)
-    GA_ROOT = 2
-    GA_ROOTOWNER = 3
     base = hwnd
     try:
         base = u32.GetAncestor(hwnd, GA_ROOTOWNER) or u32.GetAncestor(hwnd, GA_ROOT) or hwnd
@@ -35,8 +59,6 @@ def resolve_base_and_focus(hwnd: int) -> tuple[int, int]:
 
 def is_owner_root_active(base: int) -> bool:
     """Check if the owner-root of the current foreground window matches base."""
-    GA_ROOT = 2
-    GA_ROOTOWNER = 3
     fg = u32.GetForegroundWindow()
     if not fg:
         return False
@@ -48,30 +70,30 @@ def is_owner_root_active(base: int) -> bool:
 
 
 def can_minimize(hwnd: int) -> bool:
-    style = GetWindowLong(int(hwnd), win32con.GWL_STYLE)
-    return bool(style & win32con.WS_MINIMIZEBOX) and bool(IsWindowEnabled(int(hwnd)))
+    style = GetWindowLong(int(hwnd), GWL_STYLE)
+    return bool(style & WS_MINIMIZEBOX) and bool(IsWindowEnabled(int(hwnd)))
 
 
 def _post_sys_command(hwnd: int, cmd: int, fallback_show_cmd: int) -> None:
     # elevated apps don't take posted messages (UIPI), ShowWindowAsync still works on them
-    if not PostMessage(int(hwnd), win32con.WM_SYSCOMMAND, cmd, 0):
+    if not PostMessage(int(hwnd), WM_SYSCOMMAND, cmd, 0):
         u32.ShowWindowAsync(int(hwnd), fallback_show_cmd)
 
 
 def restore_window(hwnd: int) -> None:
-    _post_sys_command(hwnd, win32con.SC_RESTORE, win32con.SW_RESTORE)
+    _post_sys_command(hwnd, SC_RESTORE, SW_RESTORE)
 
 
 def minimize_window(hwnd: int) -> None:
-    _post_sys_command(hwnd, win32con.SC_MINIMIZE, win32con.SW_MINIMIZE)
+    _post_sys_command(hwnd, SC_MINIMIZE, SW_MINIMIZE)
 
 
 def maximize_window(hwnd: int) -> None:
-    _post_sys_command(hwnd, win32con.SC_MAXIMIZE, win32con.SW_MAXIMIZE)
+    _post_sys_command(hwnd, SC_MAXIMIZE, SW_MAXIMIZE)
 
 
 def show_window(hwnd: int) -> None:
-    u32.ShowWindowAsync(int(hwnd), win32con.SW_SHOW)
+    u32.ShowWindowAsync(int(hwnd), SW_SHOW)
 
 
 def move_cursor_to_window_center(hwnd: int) -> None:
@@ -90,10 +112,10 @@ def move_cursor_to_window_center(hwnd: int) -> None:
 
 def set_foreground(hwnd: int) -> None:
     """Bring a responsive window to the front without waiting for its UI thread."""
-    if not hwnd or not win32gui.IsWindow(hwnd) or u32.IsHungAppWindow(int(hwnd)):
+    if not hwnd or not IsWindow(hwnd) or IsHungAppWindow(int(hwnd)):
         return
-    flags = win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOACTIVATE | win32con.SWP_ASYNCWINDOWPOS
-    u32.SetWindowPos(int(hwnd), win32con.HWND_TOP, 0, 0, 0, 0, flags)
+    flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS
+    u32.SetWindowPos(int(hwnd), HWND_TOP, 0, 0, 0, 0, flags)
     u32.SetForegroundWindow(int(hwnd))
 
 
@@ -104,7 +126,7 @@ def force_foreground_focus(hwnd: int) -> None:
     Args:
         hwnd: Window handle to set as foreground
     """
-    if not hwnd or not win32gui.IsWindow(hwnd) or u32.IsHungAppWindow(int(hwnd)):
+    if not hwnd or not IsWindow(hwnd) or IsHungAppWindow(int(hwnd)):
         return
 
     try:
@@ -112,7 +134,7 @@ def force_foreground_focus(hwnd: int) -> None:
         fg_hwnd = u32.GetForegroundWindow()
 
         if fg_hwnd:
-            fg_tid, _ = win32process.GetWindowThreadProcessId(fg_hwnd)
+            fg_tid, _ = get_window_thread_process_id(fg_hwnd)
             my_tid = k32.GetCurrentThreadId()
             if fg_tid and my_tid and fg_tid != my_tid:
                 u32.AttachThreadInput(my_tid, fg_tid, True)
@@ -153,8 +175,6 @@ def close_application(hwnd: int, force: bool = False):
             return
 
         # Resolve a better target: prefer GA_ROOTOWNER, then GA_ROOT
-        GA_ROOT = 2
-        GA_ROOTOWNER = 3
         try:
             root_owner = u32.GetAncestor(int(hwnd), GA_ROOTOWNER)
         except Exception:
@@ -169,7 +189,7 @@ def close_application(hwnd: int, force: bool = False):
             # Forced termination path
             # Get process ID for direct termination
             try:
-                _, process_id = win32process.GetWindowThreadProcessId(hwnd)
+                _, process_id = get_window_thread_process_id(hwnd)
             except Exception as e:
                 logging.error("Failed to get process ID for HWND %s: %s", hwnd, e)
                 return
@@ -190,7 +210,6 @@ def close_application(hwnd: int, force: bool = False):
                 logging.warning("Forced EndTask failed for HWND %s: %s", target_hwnd, et_ex)
 
             # Fallback: Direct process termination
-            PROCESS_TERMINATE = 0x0001
             try:
                 # Open process handle with terminate rights
                 process_handle = k32.OpenProcess(PROCESS_TERMINATE, False, process_id)
@@ -214,10 +233,6 @@ def close_application(hwnd: int, force: bool = False):
         else:
             # Graceful close path
             # First try: SC_CLOSE via SendMessageTimeout to avoid hangs
-            WM_SYSCOMMAND = 0x0112
-            SC_CLOSE = 0xF060
-            SMTO_ABORTIFHUNG = 0x0002
-
             lpdw_result = ctypes.c_size_t()
             sent = u32.SendMessageTimeoutW(
                 int(target_hwnd),
@@ -239,7 +254,6 @@ def close_application(hwnd: int, force: bool = False):
                 return
 
             # Fallback: WM_CLOSE via PostMessage
-            WM_CLOSE = 0x0010
             posted = PostMessage(int(target_hwnd), int(WM_CLOSE), 0, 0)
             if posted:
                 return

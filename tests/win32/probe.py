@@ -55,6 +55,10 @@ HEADERS = (
     "roapi.h",
     "shellscalingapi.h",
     "winver.h",
+    "msi.h",
+    "dbghelp.h",
+    "sddl.h",
+    "security.h",
 )
 
 MISSING_HEADER_HINT = (
@@ -77,8 +81,8 @@ template <class T> void head() {
     else if constexpr (!is_complete<U>::value) std::printf("\"?\",0");
     else if constexpr (std::is_array_v<U>) std::printf("\"a\",%zu", sizeof(U));
     else if constexpr (std::is_floating_point_v<U>) std::printf("\"f\",%zu", sizeof(U));
-    else if constexpr (std::is_enum_v<U> || std::is_integral_v<U>)
-        std::printf(is_signed<U>::value ? "\"i\",%zu" : "\"u\",%zu", sizeof(U));
+    else if constexpr (std::is_enum_v<U>) std::printf("\"e\",%zu", sizeof(U));
+    else if constexpr (std::is_integral_v<U>) std::printf(is_signed<U>::value ? "\"i\",%zu" : "\"u\",%zu", sizeof(U));
     else std::printf("\"s\",%zu", sizeof(U));
 }
 
@@ -137,10 +141,17 @@ template <class T> void constant(const char* key, T value) {
     using U = std::decay_t<T>;
     if constexpr (std::is_pointer_v<U>) {
         using P = std::remove_cv_t<std::remove_pointer_t<U>>;
-        if constexpr (std::is_function_v<P> || std::is_same_v<P, char> || std::is_same_v<P, wchar_t>)
+        if constexpr (std::is_function_v<P>) {
             std::printf("{\"k\":\"%s\",\"skip\":true}\n", key);
-        else
+        } else if constexpr (std::is_same_v<P, char> || std::is_same_v<P, wchar_t>) {
+            // MAKEINTRESOURCE IDs such as RT_GROUP_ICON are string pointers that hold a 16-bit number.
+            if (IS_INTRESOURCE(value))
+                std::printf("{\"k\":\"%s\",\"value\":%lld,\"size\":%zu}\n", key, (long long)(intptr_t)value, sizeof(U));
+            else
+                std::printf("{\"k\":\"%s\",\"skip\":true}\n", key);
+        } else {
             std::printf("{\"k\":\"%s\",\"value\":%lld,\"size\":%zu}\n", key, (long long)(intptr_t)value, sizeof(U));
+        }
     } else if constexpr (std::is_enum_v<U> || std::is_integral_v<U>) {
         if constexpr (is_signed<U>::value)
             std::printf("{\"k\":\"%s\",\"value\":%lld,\"size\":%zu}\n", key, (long long)value, sizeof(U));
@@ -273,6 +284,8 @@ def _render(items: dict[str, _Item], vendored: str) -> tuple[str, dict[int, str]
     lines.append("#define CINTERFACE")
     # Declarations such as EndTask sit behind the legacy WINNT macro.
     lines.append("#define WINNT 1")
+    # security.h declares GetUserNameEx only for user-mode callers that define SECURITY_WIN32.
+    lines.append("#define SECURITY_WIN32")
     lines += [f"#include <{header}>" for header in HEADERS]
     lines += ["namespace vendored {", *vendored.splitlines(), "}  // namespace vendored"]
     line_map: dict[int, str] = {}
@@ -350,7 +363,7 @@ def _parse(output: str, result: ProbeResult) -> None:
         elif kind == "VM":
             owner, _, name = rest.rpartition("|")
             result.methods.setdefault(owner, {})[name] = record
-        elif kind == "C" and not record.get("skip"):
+        elif kind == "C":
             result.constants[rest] = record
 
 

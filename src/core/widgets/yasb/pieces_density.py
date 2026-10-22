@@ -21,9 +21,9 @@ from PyQt6.QtGui import (
     QShowEvent,
 )
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QToolTip, QWidget
-from win32con import SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE
 
-from core.utils.win32.bindings import SetWindowPos
+from core.utils.win32.bindings.user32 import SetWindowPos
+from core.utils.win32.constants import SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE
 from core.validation.widgets.yasb.pieces_density import PiecesDensityConfig
 from core.widgets.base import BaseWidget
 from core.widgets.yasb.pieces_density_source import (

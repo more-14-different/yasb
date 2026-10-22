@@ -1,73 +1,56 @@
 import sys
 import unittest
 from pathlib import Path
-from typing import NoReturn
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-import main as yasb_main  # noqa: E402
-
-
-class Kernel32Fake:
-    def __init__(self) -> None:
-        self._handles = iter((101, 102))
-        self._errors = iter((183, 0))
-        self.initial_owner_values: list[bool] = []
-        self.closed_handles: list[int] = []
-
-    def CreateMutexW(self, _security: object | None, initial_owner: bool, _name: str) -> int:
-        self.initial_owner_values.append(initial_owner)
-        return next(self._handles)
-
-    def GetLastError(self) -> int:
-        return next(self._errors)
-
-    def CloseHandle(self, handle: int) -> None:
-        self.closed_handles.append(handle)
-
-    def ReleaseMutex(self, _handle: int) -> NoReturn:
-        raise AssertionError("a non-owned mutex must never be released")
+from core.utils import single_instance  # noqa: E402
 
 
 class SingleInstanceTests(unittest.TestCase):
-    def test_restart_wait_retries_without_claiming_or_releasing_mutex_ownership(self):
-        kernel32 = Kernel32Fake()
+    def test_restart_wait_retries_without_claiming_mutex_ownership(self):
+        create_mutex = Mock(side_effect=(101, 102))
+        get_last_error = Mock(side_effect=(183, 0))
+        close_handle = Mock()
 
         with (
-            patch.object(yasb_main.ctypes.windll, "kernel32", kernel32),
-            patch.object(yasb_main.sys, "argv", ["yasb", "--restart-wait"]),
-            patch.object(yasb_main.time, "time", side_effect=(0.0, 0.0)),
-            patch.object(yasb_main.time, "monotonic", side_effect=(0.0, 0.0)),
-            patch.object(yasb_main.time, "sleep", return_value=None),
+            patch.object(single_instance, "CreateMutex", create_mutex),
+            patch.object(single_instance, "GetLastError", get_last_error),
+            patch.object(single_instance, "CloseHandle", close_handle),
+            patch.object(single_instance.sys, "argv", ["yasb", "--restart-wait"]),
+            patch.object(single_instance.time, "monotonic", side_effect=(0.0, 0.0)),
+            patch.object(single_instance.time, "sleep", return_value=None),
         ):
-            with yasb_main.single_instance_lock() as handle:
+            with single_instance.single_instance_lock() as handle:
                 self.assertEqual(handle, 102)
 
-        self.assertEqual(kernel32.initial_owner_values, [False, False])
-        self.assertEqual(kernel32.closed_handles, [101, 102])
+        self.assertEqual(
+            [call.args[1] for call in create_mutex.call_args_list],
+            [False, False],
+        )
+        close_handle.assert_called_once_with(101)
 
     def test_parent_timeout_closes_acquired_mutex_before_aborting(self):
-        kernel32 = Kernel32Fake()
+        close_handle = Mock()
 
         with (
-            patch.object(yasb_main.ctypes.windll, "kernel32", kernel32),
+            patch.object(single_instance, "CreateMutex", return_value=102),
+            patch.object(single_instance, "GetLastError", return_value=0),
+            patch.object(single_instance, "CloseHandle", close_handle),
             patch.object(
-                yasb_main.sys,
+                single_instance.sys,
                 "argv",
                 ["yasb", "--restart-wait", "--restart-parent-pid", "999"],
             ),
-            patch.object(yasb_main.time, "time", side_effect=(0.0, 0.0)),
-            patch.object(yasb_main.time, "monotonic", side_effect=(0.0, 0.0)),
-            patch.object(yasb_main.time, "sleep", return_value=None),
-            patch.object(yasb_main, "_wait_for_process_exit", return_value=False),
+            patch.object(single_instance, "_wait_for_process_exit", return_value=False),
         ):
             with self.assertRaises(SystemExit):
-                with yasb_main.single_instance_lock():
+                with single_instance.single_instance_lock():
                     self.fail("the application must not start while its restart parent is alive")
 
-        self.assertEqual(kernel32.closed_handles, [101, 102])
+        close_handle.assert_called_once_with(102)
 
 
 if __name__ == "__main__":

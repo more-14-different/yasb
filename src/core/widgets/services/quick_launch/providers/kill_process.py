@@ -1,12 +1,12 @@
 import ctypes
 import logging
-from ctypes import wintypes
 from typing import Any, TypedDict
 
-from core.utils.win32.bindings.kernel32 import kernel32
+from core.utils.process import terminate_process
+from core.utils.win32.bindings.kernel32 import kernel32, snapshot_processes
 from core.utils.win32.bindings.psapi import psapi
-from core.utils.win32.constants import PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE, TH32CS_SNAPPROCESS
-from core.utils.win32.structs import PROCESS_MEMORY_COUNTERS, PROCESSENTRY32
+from core.utils.win32.constants import PROCESS_QUERY_LIMITED_INFORMATION
+from core.utils.win32.structs import PROCESS_MEMORY_COUNTERS
 from core.widgets.services.quick_launch.base_provider import BaseProvider, ProviderResult
 from core.widgets.services.quick_launch.providers.resources.icons import ICON_KILL_PROCESS
 
@@ -49,37 +49,6 @@ def _get_process_memory(pid: int) -> int:
         kernel32.CloseHandle(h)
 
 
-def _enumerate_processes() -> list[tuple[int, str]]:
-    """Return list of (pid, exe_name) for all running processes."""
-    results: list[tuple[int, str]] = []
-    snapshot = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
-    if snapshot == wintypes.HANDLE(-1).value:
-        return results
-    try:
-        entry = PROCESSENTRY32()
-        entry.dwSize = ctypes.sizeof(PROCESSENTRY32)
-        if not kernel32.Process32FirstW(snapshot, ctypes.byref(entry)):
-            return results
-        while True:
-            results.append((entry.th32ProcessID, entry.szExeFile))
-            if not kernel32.Process32NextW(snapshot, ctypes.byref(entry)):
-                break
-    finally:
-        kernel32.CloseHandle(snapshot)
-    return results
-
-
-def _terminate_process(pid: int) -> bool:
-    """Terminate a process by PID. Returns True on success."""
-    h = kernel32.OpenProcess(PROCESS_TERMINATE, False, pid)
-    if not h:
-        return False
-    try:
-        return bool(kernel32.TerminateProcess(h, 1))
-    finally:
-        kernel32.CloseHandle(h)
-
-
 class KillProcessProvider(BaseProvider):
     """Search and kill running processes."""
 
@@ -118,7 +87,8 @@ class KillProcessProvider(BaseProvider):
         # Gather matching processes, grouped by name
         proc_map: dict[str, _ProcessGroup] = {}
         try:
-            for pid, exe_name in _enumerate_processes():
+            for process in snapshot_processes():
+                pid, exe_name = process.pid, process.exe
                 name_lower = exe_name.lower()
                 if name_lower in _PROTECTED_PROCESSES:
                     continue
@@ -159,7 +129,7 @@ class KillProcessProvider(BaseProvider):
         killed = 0
         for pid in pids:
             try:
-                if _terminate_process(pid):
+                if terminate_process(pid):
                     killed += 1
                 else:
                     logging.debug("Failed to terminate PID %s (%s)", pid, name)

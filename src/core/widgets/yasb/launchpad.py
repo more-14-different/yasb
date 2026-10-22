@@ -6,7 +6,7 @@ import tempfile
 import time
 from collections.abc import Callable
 from functools import lru_cache, partial
-from typing import Any, cast, override
+from typing import Any, override
 
 from PyQt6.QtCore import (
     QAbstractAnimation,
@@ -62,12 +62,15 @@ from PyQt6.QtWidgets import (
 )
 
 from core.config import HOME_CONFIGURATION_DIR
+from core.utils.icons.sources import FileIcon, IconSource, load_icon
+from core.utils.icons.web_icon import get_web_icon
 from core.utils.shell_utils import shell_open
 from core.utils.utilities import refresh_widget_style
-from core.utils.win32.app_loader import AppEntry, AppListLoader, ShortcutResolver
+from core.utils.win32.app_loader import AppEntry, AppListLoader, ShortcutResolver, app_icon_source
 from core.utils.win32.backdrop import enable_blur
-from core.utils.win32.icon_extractor import IconExtractorUtil, UrlExtractorUtil
-from core.utils.win32.utils import apply_qmenu_style, get_foreground_hwnd, set_foreground_hwnd
+from core.utils.win32.bindings.user32 import GetForegroundWindow, SetForegroundWindow
+from core.utils.win32.bindings.version import get_version_strings
+from core.utils.win32.utils import apply_qmenu_style
 from core.utils.win32.window_actions import force_foreground_focus
 from core.validation.widgets.yasb.launchpad import LaunchpadConfig
 from core.widgets.base import BaseWidget
@@ -76,6 +79,20 @@ type AppData = dict[str, Any]
 type IconRequest = tuple[str, int, float]
 
 _ICON_CACHE: dict[str, QPixmap] = {}
+
+SAVED_ICON_SIZE = 256
+
+
+def save_app_icon(source: IconSource, folder: str) -> str | None:
+    image = load_icon(source, SAVED_ICON_SIZE).image
+    if image is None:
+        return None
+    path = os.path.join(folder, f"icon_{time.time_ns()}.png")
+    try:
+        image.save(path, format="PNG")
+    except OSError:
+        return None
+    return path
 
 
 @lru_cache(maxsize=256)
@@ -138,14 +155,13 @@ class IconLoadWorker(QThread):
 class UrlFetchWorker(QThread):
     finished = pyqtSignal(object, object)  # icon_path, title
 
-    def __init__(self, url: str, icons_dir: str | None):
+    def __init__(self, url: str):
         super().__init__()
         self.url = url
-        self.icons_dir = icons_dir
 
     def run(self):
         try:
-            icon, title = UrlExtractorUtil.extract_from_url(self.url, self.icons_dir)
+            icon, title = get_web_icon(self.url)
             self.finished.emit(icon, title)
         except Exception:
             self.finished.emit(None, None)
@@ -344,37 +360,15 @@ class AppDialog(QDialog):
                         # Control Panel item - launch via control.exe
                         canonical = path.split("::", 2)[-1]
                         self.path_edit.setText(f"control.exe /name {canonical}")
-                        temp_dir = tempfile.gettempdir()
-                        icon_path = IconExtractorUtil.extract_cpl_icon(path, temp_dir, size=256)
-                        if icon_path:
-                            self.icon_edit.setText(icon_path)
-                        else:
-                            self._show_warning("Could not extract icon for this Control Panel item.")
-                            self.icon_edit.setText("")
-
                     elif path.startswith("UWP::"):
                         appid = path.replace("UWP::", "")
                         self.path_edit.setText(f"explorer.exe shell:AppsFolder\\{appid}")
-
-                        temp_dir = tempfile.gettempdir()
-                        shell_icon = IconExtractorUtil.extract_shell_appid_icon(appid, temp_dir, size=256)
-                        if shell_icon:
-                            self.icon_edit.setText(shell_icon)
-                        else:
-                            self.icon_edit.setText("")
-                            self._show_warning("Could not locate icon for this UWP app.")
-
                     else:
                         self.path_edit.setText(path)
-                        temp_dir = tempfile.gettempdir()
-                        if os.path.isfile(path):
-                            icon_path = IconExtractorUtil.extract_icon_from_path(path, temp_dir, size=256)
-                            if icon_path:
-                                self.icon_edit.setText(icon_path)
-                            else:
-                                self._show_warning("Failed to extract icon for the selected application.")
-                        else:
-                            self._show_warning("No valid icon source found for the selected application.")
+                    icon_path = save_app_icon(app_icon_source(path), tempfile.gettempdir())
+                    self.icon_edit.setText(icon_path or "")
+                    if not icon_path:
+                        self._show_warning("Failed to extract icon for the selected application.")
                     break
 
         self._completer.activated.connect(on_title_selected)
@@ -404,7 +398,7 @@ class AppDialog(QDialog):
                     else:
                         self._show_warning("Could not find an icon for this website.")
 
-                self._url_fetch_worker = UrlFetchWorker(path, self.icons_dir)
+                self._url_fetch_worker = UrlFetchWorker(path)
                 self._url_fetch_worker.finished.connect(on_icon_fetched)
                 self._url_fetch_worker.start()
 
@@ -892,7 +886,7 @@ class LaunchpadWidget(BaseWidget):
             self._dpr = screen.devicePixelRatio()
 
         # Save current foreground window before showing popup
-        self._previous_hwnd = get_foreground_hwnd()
+        self._previous_hwnd = GetForegroundWindow()
 
         if not self._launchpad_popup:
             self._launchpad_popup = self._create_launchpad_popup()
@@ -1351,30 +1345,21 @@ class LaunchpadWidget(BaseWidget):
 
     def _get_file_description(self, path: str) -> str:
         """Get the file description from Windows file properties."""
-        import win32api
-
-        try:
-            translations = cast(list[tuple[int, int]], win32api.GetFileVersionInfo(path, "\\VarFileInfo\\Translation"))
-            language, codepage = translations[0]
-            stringFileInfo = f"\\StringFileInfo\\{language:04X}{codepage:04X}\\FileDescription"
-            description = cast(str, win32api.GetFileVersionInfo(path, stringFileInfo))
-        except:
-            description = "unknown"
-
-        return description
+        return get_version_strings(path, ("FileDescription",)).get("FileDescription", "unknown")
 
     def _handle_file_drop(self, file_path: str, refresh_grid: bool = True):
         ext = os.path.splitext(file_path)[1].lower()
         app_data: tuple[str, str, str] | None = None
 
         if ext == ".lnk":
-            target_path, icon_path, app_name = ShortcutResolver.resolve_lnk_target(file_path, self._warning_dialog)
+            target_path, app_name = ShortcutResolver.resolve_lnk_target(file_path, self._warning_dialog)
+            if app_name and not target_path:
+                # Shortcuts to shell items such as File Explorer have no file target; the shortcut launches them
+                target_path = file_path
             if not app_name or not target_path:
                 self._warning_dialog(f"Failed to resolve shortcut: {file_path}")
                 return
-            if not icon_path:
-                icon_path = target_path
-            icon_png = IconExtractorUtil.extract_icon_from_path(icon_path, self._icons_dir, size=256)
+            icon_png = save_app_icon(FileIcon(file_path), self._icons_dir)
             if not icon_png:
                 self._warning_dialog(
                     f"Failed to extract icon for application<br><b>{file_path}</b><br>Please select an icon manually."
@@ -1387,7 +1372,7 @@ class LaunchpadWidget(BaseWidget):
             if not title:
                 self._warning_dialog(f"Failed to get description for executable: {file_path}")
                 return
-            icon_png = IconExtractorUtil.extract_icon_from_path(file_path, self._icons_dir, size=256)
+            icon_png = save_app_icon(FileIcon(file_path), self._icons_dir)
 
             if not icon_png:
                 self._warning_dialog(
@@ -1438,7 +1423,8 @@ class LaunchpadWidget(BaseWidget):
         self._hide_drop_overlay()
         mime_data = event.mimeData()
         if mime_data is not None and mime_data.hasUrls():
-            file_paths = [url.toLocalFile() for url in mime_data.urls()]
+            # Qt gives forward slashes, which the shell icon lookup does not accept
+            file_paths = [os.path.normpath(url.toLocalFile()) for url in mime_data.urls()]
             for file_path in file_paths:
                 self._handle_file_drop(file_path, refresh_grid=False)
 
@@ -1962,7 +1948,7 @@ class LaunchpadWidget(BaseWidget):
 
             # Restore focus to previous window
             if self._previous_hwnd:
-                set_foreground_hwnd(self._previous_hwnd)
+                SetForegroundWindow(self._previous_hwnd)
                 self._previous_hwnd = 0
 
     def _cleanup_overlay(self):

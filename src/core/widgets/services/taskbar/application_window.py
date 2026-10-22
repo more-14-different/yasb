@@ -1,27 +1,34 @@
 import ctypes
-from ctypes import wintypes
 
-import win32api
-import win32con
-import win32gui
-
-from core.utils.win32.bindings import CoCreateInstance, DwmGetWindowAttribute, IsWindowEnabled
-from core.utils.win32.bindings.user32 import GetProp, GetWindowLong
-from core.utils.win32.structs import GUID
-from core.utils.win32.typecheck import CFunctionType
+from core.utils.win32.bindings.dwmapi import DwmGetWindowAttribute
+from core.utils.win32.bindings.ole32 import create_com_object
+from core.utils.win32.bindings.shell32 import CLSID_VirtualDesktopManager, IVirtualDesktopManager
+from core.utils.win32.bindings.user32 import (
+    GetAncestor,
+    GetClassName,
+    GetProp,
+    GetWindow,
+    GetWindowLong,
+    GetWindowText,
+    IsWindow,
+    IsWindowEnabled,
+    IsWindowVisible,
+    MonitorFromWindow,
+)
+from core.utils.win32.constants import (
+    CLSCTX_INPROC_SERVER,
+    DWMWA_CLOAKED,
+    GA_ROOT,
+    GW_OWNER,
+    GWL_EXSTYLE,
+    GWL_STYLE,
+    WS_EX_APPWINDOW,
+    WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW,
+    WS_EX_WINDOWEDGE,
+    WS_MINIMIZEBOX,
+)
 from core.utils.win32.utils import get_process_info
-
-# CLSID_VirtualDesktopManager = {aa509086-5ca9-4c25-8f95-589d3c07b48a}
-CLSID_VirtualDesktopManager = GUID(
-    0xAA509086, 0x5CA9, 0x4C25, (ctypes.c_ubyte * 8)(0x8F, 0x95, 0x58, 0x9D, 0x3C, 0x07, 0xB4, 0x8A)
-)
-# IID_IVirtualDesktopManager = {a5cd92ff-29be-454c-8d04-d82879fb3f1b}
-IID_IVirtualDesktopManager = GUID(
-    0xA5CD92FF, 0x29BE, 0x454C, (ctypes.c_ubyte * 8)(0x8D, 0x04, 0xD8, 0x28, 0x79, 0xFB, 0x3F, 0x1B)
-)
-
-GetWindowDesktopId_Proto = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_void_p, wintypes.HWND, ctypes.POINTER(GUID))
-Release_Proto = ctypes.WINFUNCTYPE(ctypes.c_ulong, ctypes.c_void_p)
 
 
 class ApplicationWindow:
@@ -30,8 +37,7 @@ class ApplicationWindow:
     Holds identity (hwnd) and metadata used for filtering and UI state.
     """
 
-    _vdm_ptr: ctypes.c_void_p | None = None
-    _vdm_get_id_func: CFunctionType | None = None
+    _vdm: IVirtualDesktopManager | None = None
 
     DEFAULT_IGNORED_PROCESSES = {"SearchHost.exe"}
 
@@ -74,12 +80,7 @@ class ApplicationWindow:
 
     def as_dict(self):
         # Get monitor handle for this window
-        monitor_handle = None
-        try:
-            mh = win32api.MonitorFromWindow(self.hwnd, 0)
-            monitor_handle = int(mh) if mh is not None else None  # pyright: ignore[reportUnnecessaryComparison]
-        except Exception:
-            pass
+        monitor_handle = MonitorFromWindow(self.hwnd)
 
         self._refresh_process_info()
 
@@ -115,20 +116,19 @@ class ApplicationWindow:
 
     def get_title(self):
         try:
-            return win32gui.GetWindowText(self.hwnd)
+            return GetWindowText(self.hwnd)
         except Exception:
             return ""
 
     def _get_class_name(self):
         try:
-            return win32gui.GetClassName(self.hwnd)
+            return GetClassName(self.hwnd)
         except Exception:
             return ""
 
     def is_cloaked(self) -> bool:
         """Return True if the window is cloaked (hidden by the system, e.g., UWP)."""
         try:
-            DWMWA_CLOAKED = 14
             cloaked = ctypes.c_uint(0)
             res = DwmGetWindowAttribute(int(self.hwnd), DWMWA_CLOAKED, ctypes.byref(cloaked), ctypes.sizeof(cloaked))
             return res == 0 and cloaked.value > 0
@@ -143,7 +143,7 @@ class ApplicationWindow:
             cls = self.class_name
             if not cls:
                 return False
-            ex_style = GetWindowLong(self.hwnd, win32con.GWL_EXSTYLE)
+            ex_style = GetWindowLong(self.hwnd, GWL_EXSTYLE)
 
             if cls in (
                 "ApplicationFrameWindow",
@@ -151,7 +151,7 @@ class ApplicationWindow:
                 "StartMenuSizingFrame",
                 "Shell_LightDismissOverlay",
             ):
-                if (ex_style & win32con.WS_EX_WINDOWEDGE) == 0:
+                if (ex_style & WS_EX_WINDOWEDGE) == 0:
                     return True
             elif cls in (
                 "ImmersiveBackgroundWindow",
@@ -173,13 +173,13 @@ class ApplicationWindow:
     def can_add_to_taskbar(self) -> bool:
         """Policy for showing the window on the taskbar (top-level, visible, app window, minimizable)."""
         try:
-            extended = GetWindowLong(self.hwnd, win32con.GWL_EXSTYLE)
-            is_window = bool(win32gui.IsWindow(self.hwnd))
-            is_visible = bool(win32gui.IsWindowVisible(self.hwnd))
-            is_toolwindow = bool(extended & win32con.WS_EX_TOOLWINDOW)
-            is_appwindow = bool(extended & win32con.WS_EX_APPWINDOW)
-            is_noactivate = bool(extended & win32con.WS_EX_NOACTIVATE)
-            owner = win32gui.GetWindow(self.hwnd, 4)  # GW_OWNER
+            extended = GetWindowLong(self.hwnd, GWL_EXSTYLE)
+            is_window = bool(IsWindow(self.hwnd))
+            is_visible = bool(IsWindowVisible(self.hwnd))
+            is_toolwindow = bool(extended & WS_EX_TOOLWINDOW)
+            is_appwindow = bool(extended & WS_EX_APPWINDOW)
+            is_noactivate = bool(extended & WS_EX_NOACTIVATE)
+            owner = GetWindow(self.hwnd, GW_OWNER)
             # ITaskList_Deleted property
             is_deleted = False
             try:
@@ -213,49 +213,25 @@ class ApplicationWindow:
             return False
 
         try:
-            # Initialize the COM object globally on the first call
-            if ApplicationWindow._vdm_ptr is None:
-                ptr = ctypes.c_void_p()
-                hr = CoCreateInstance(
-                    ctypes.byref(CLSID_VirtualDesktopManager),
-                    None,
-                    1,
-                    ctypes.byref(IID_IVirtualDesktopManager),
-                    ctypes.byref(ptr),
+            if ApplicationWindow._vdm is None:
+                ApplicationWindow._vdm = create_com_object(
+                    CLSID_VirtualDesktopManager, IVirtualDesktopManager, CLSCTX_INPROC_SERVER
                 )
-                if hr != 0:
-                    return True
-
-                vtable = ctypes.cast(ptr, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p)))
-                get_id_addr = vtable[0][4]
-                ApplicationWindow._vdm_get_id_func = GetWindowDesktopId_Proto(get_id_addr)
-                ApplicationWindow._vdm_ptr = ptr
-
-            get_desktop_id = ApplicationWindow._vdm_get_id_func
-            if get_desktop_id is None:
+            manager = ApplicationWindow._vdm
+            if manager is None:
                 return True
 
-            desktop_id = GUID()
-            hr = get_desktop_id(ApplicationWindow._vdm_ptr, int(self.hwnd), ctypes.byref(desktop_id))
-
-            # Binary check for empty GUID (Null Desktop ID)
-            if hr != 0 or bytes(desktop_id) == b"\x00" * 16:
-                return True
-
-            return False
-
+            # A window that belongs to no desktop has the null desktop ID
+            return bytes(manager.GetWindowDesktopId(int(self.hwnd))) == b"\x00" * 16
         except Exception:
             return True
 
     def can_minimize(self) -> bool:
         """Return True if the window has a minimize box and is enabled."""
         try:
-            styles = GetWindowLong(self.hwnd, win32con.GWL_STYLE)
-            has_minimize_box = bool(styles & win32con.WS_MINIMIZEBOX)
-            try:
-                is_enabled = bool(win32gui.IsWindowEnabled(self.hwnd))
-            except AttributeError:
-                is_enabled = bool(IsWindowEnabled(int(self.hwnd)))
+            styles = GetWindowLong(self.hwnd, GWL_STYLE)
+            has_minimize_box = bool(styles & WS_MINIMIZEBOX)
+            is_enabled = bool(IsWindowEnabled(self.hwnd))
             return has_minimize_box and is_enabled
         except Exception:
             return False
@@ -264,8 +240,7 @@ class ApplicationWindow:
         """Main filter: top-level, titled, not cloaked/immersive shell, passes policy and ignore lists."""
         try:
             # Must be a top-level window
-            GA_ROOT = 2
-            if win32gui.GetAncestor(self.hwnd, GA_ROOT) != self.hwnd:
+            if GetAncestor(self.hwnd, GA_ROOT) != self.hwnd:
                 return False
 
             # Must have a non-empty title

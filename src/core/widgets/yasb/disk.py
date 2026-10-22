@@ -2,7 +2,6 @@ import os
 from functools import partial
 from typing import override
 
-import win32api
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QMouseEvent
 from PyQt6.QtWidgets import QHBoxLayout, QLabel, QProgressBar, QVBoxLayout, QWidget
@@ -12,6 +11,7 @@ from core.utils.utilities import (
     build_progress_widget,
     refresh_widget_style,
 )
+from core.utils.win32.bindings.kernel32 import GetDiskFreeSpaceEx, get_volume_label
 from core.validation.widgets.yasb.disk import DiskConfig
 from core.widgets.base import BaseWidget
 
@@ -98,11 +98,7 @@ class DiskWidget(BaseWidget):
     def _get_volume_label(self, drive_letter: str) -> str | None:
         if not self.config.group_label.show_label_name:
             return None
-        try:
-            volume_label = win32api.GetVolumeInformation(f"{drive_letter}:\\")[0]
-            return volume_label
-        except Exception:
-            return None
+        return get_volume_label(f"{drive_letter}:\\")
 
     def show_group_label(self):
         self.dialog = PopupWidget(
@@ -189,10 +185,10 @@ class DiskWidget(BaseWidget):
         if volume_label is None:
             volume_label = self.config.volume_label.upper()
 
-        try:
-            free_bytes, total_bytes, _ = win32api.GetDiskFreeSpaceEx(f"{volume_label}:\\")
-        except Exception:
+        space = GetDiskFreeSpaceEx(f"{volume_label}:\\")
+        if space is None:
             return None
+        free_bytes, total_bytes, _ = space
 
         if total_bytes == 0:
             return None
