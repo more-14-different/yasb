@@ -131,8 +131,23 @@ results more clearly and pins its tooling more predictably.
   Pydantic schema exporter.
 - Other adopted dependency updates include Pillow `13.0.0`, tzdata `2026.5`,
   and holidays `0.106`.
-- Although the upstream range contains a cx_Freeze `8.7.2` bump, the final fork
-  configuration deliberately retains its existing cx_Freeze `8.6.4` pin.
+- After the five-stage sync was completed, the packaging pin was also updated
+  from cx_Freeze `8.6.4` to `8.7.2`, matching the upstream packaging level.
+
+### Post-sync cx_Freeze supplement
+
+The cx_Freeze update is a post-sync packaging supplement on top of the final
+integration commit `fc8a0cb3`. It changes the packaging dependency only; it
+does not widen the absorbed official upstream range beyond
+`a237644a..ff3d431e`.
+
+The upgrade preserves the fork's explicit package-boundary files in
+`core/utils/win32/bindings` and
+`core/widgets/services/quick_launch/providers/resources`, together with the
+existing `python3.dll` and versioned Python runtime DLL inclusion. A clean
+cx_Freeze `8.7.2` build contained the required `comtypes.stream` module and no
+`pywin32`, `pythoncom`, or `win32com` artifacts, consistent with the native
+Windows layer adopted in Stage 2.
 
 ## Configuration Compatibility
 
@@ -183,6 +198,24 @@ The final Stage 5 candidate passed:
   and Pieces widgets after startup and reload.
 - Clean startup/reload logs apart from existing configuration deprecation
   warnings.
+
+The post-sync cx_Freeze `8.7.2` candidate repeated the full static and runtime
+gate rather than relying only on the Stage 5 result:
+
+- Ruff formatting and lint passed across `472` files; Pyright reported `0`
+  errors and `0` warnings.
+- The complete test suite passed with `2189` tests and `2` subtests.
+- The clean frozen bundle contained `212` files, including both executables,
+  both Python runtime DLLs, the Everything DLL, and `YASBTrayHook.dll`.
+- Package inspection found `comtypes.stream` and zero `pywin32`, `pythoncom`,
+  or `win32com` entries or physical artifacts.
+- `yasbc reload` replaced process `48892` with process `56232`, leaving exactly
+  one fork instance; the new startup logged both Pieces data sources and a
+  successful Komorebi named-pipe connection without errors or tracebacks.
+- A disposable managed window completed the route `1/2 -> 1/3 -> 0/0 -> 1/2`,
+  covering same-monitor movement, cross-monitor movement, and restoration.
+- Post-reload visual capture retained workspace digits `1` through `9`, the
+  spatial workspace preview, and the Pieces activity/resource presentation.
 
 Server Monitor was not mounted in the active fork config, so its runtime logic
 was covered by the upstream local HTTP/HTTPS/TLS test suite rather than by
