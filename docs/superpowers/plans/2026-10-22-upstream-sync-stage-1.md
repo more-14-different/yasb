@@ -48,7 +48,7 @@ Run:
 git status --short --branch
 & 'E:\MCP\Projects\yasb-fork\.venv\Scripts\python.exe' -m pytest tests/win32/test_window_actions.py tests/test_komorebi_workspaces.py tests/widgets/test_native_windows.py -q
 & 'E:\MCP\Projects\yasb-fork\.venv\Scripts\python.exe' -m ruff check .
-& 'E:\MCP\Projects\yasb-fork\.venv\Scripts\python.exe' -m pyright
+& 'E:\MCP\Projects\yasb-fork\.venv\Scripts\python.exe' -m pyright --pythonpath 'E:\MCP\Projects\yasb-fork\.venv\Scripts\python.exe'
 ```
 
 Expected: clean `sync/upstream-20261021-staged` worktree except the committed plan/spec history; all commands exit 0. If an existing baseline check fails, diagnose it before merging.
@@ -171,8 +171,10 @@ Run:
 ```powershell
 & 'E:\MCP\Projects\yasb-fork\.venv\Scripts\python.exe' -m ruff format --check .
 & 'E:\MCP\Projects\yasb-fork\.venv\Scripts\python.exe' -m ruff check .
-& 'E:\MCP\Projects\yasb-fork\.venv\Scripts\python.exe' -m pyright
-rg -n '^(<<<<<<<|=======|>>>>>>>)' . --glob '!src/build/**' --glob '!src/dist/**'
+& 'E:\MCP\Projects\yasb-fork\.venv\Scripts\python.exe' -m pyright --pythonpath 'E:\MCP\Projects\yasb-fork\.venv\Scripts\python.exe'
+$markers = rg -n '^(<<<<<<<|=======|>>>>>>>)' . --glob '!src/build/**' --glob '!src/dist/**'
+if ($LASTEXITCODE -eq 0) { $markers; throw 'Unresolved conflict markers found' }
+if ($LASTEXITCODE -ne 1) { throw 'Conflict-marker scan failed' }
 ```
 
 Expected: all tool commands exit 0 and no conflict markers are found.
@@ -204,7 +206,7 @@ Expected: exit 0 and `src/dist/yasb.exe` exists in the isolated worktree.
 
 - [ ] **Step 4: Verify frozen runtime files**
 
-Check `src/dist` for `yasb.exe`, `python3.dll`, `python314.dll`, `YASBTrayHook.dll`, and `Everything64.dll` (or the correct architecture equivalents).
+Check `src/dist` for `yasb.exe`, `python3.dll`, and `python314.dll`. Check `src/dist/lib` for `YASBTrayHook.dll` and `Everything64.dll` (or the correct architecture equivalents); cx_Freeze places the extension DLLs under `lib` in this build layout.
 
 Expected: every required runtime file exists and the executable path resolves inside the isolated worktree.
 
