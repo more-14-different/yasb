@@ -466,6 +466,9 @@ class AppTimelineStageTests(unittest.TestCase):
         self.assertEqual(len(layouts), 2)
         self.assertLess(layouts[0].icons[0].y, layouts[0].icons[1].y)
         self.assertGreater(layouts[1].icons[0].y, layouts[1].icons[1].y)
+        for layout in layouts:
+            self.assertAlmostEqual(max(icon.y + icon.size for icon in layout.icons), 60)
+            self.assertGreaterEqual(min(icon.y for icon in layout.icons), 0)
 
     def test_similar_scores_form_a_diagonal_stack_with_lower_opacity(self):
         stage = TimelineStage(0, 4, 2, (self.app("code", 100), self.app("terminal", 80)))

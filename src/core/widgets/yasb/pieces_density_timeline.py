@@ -287,6 +287,12 @@ def layout_timeline_stages(
             )
             previous_score = app.score
         if placements:
+            # Keep every stage attached to the density timeline.  The alternating
+            # direction controls the order inside a stage, not whether its icon
+            # group hangs from the top or rises from the bottom of the band.
+            bottom_shift = band_height - max(item.y + item.size for item in placements)
+            if bottom_shift:
+                placements = [replace(item, y=item.y + bottom_shift) for item in placements]
             previous_right = max(item.x + item.size for item in placements)
             layouts.append(StageLayout(stage, tuple(placements)))
     return layouts
