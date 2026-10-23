@@ -305,3 +305,16 @@ Each completed phase appends:
 - `.venv\Scripts\python.exe -m ruff check src tests` — passed.
 - No production database, cold bundle, configuration, or running service was modified in Phase 3.
 
+### Phase 4 evidence — 2026-10-23
+
+- `yasb-fork` adds a Qt-independent immutable activity layout contract with semantic app components, focus-only bridge metadata, separate robust `log1p` app/global scales, downsampled direct/non-direct envelopes, residual channels, pins, tracks, icon geometry, and hit-test-ready bounds.
+- Component construction is linear over app-minute facts after deterministic per-app ordering. Focus-only minutes can bridge a bounded credible gap but cannot create a component or add signal weight; a single direct event always retains its pin even if its component exceeds the visible track budget.
+- Interval packing uses a sweep/free-track heap. Icon placement uses bounded valley candidates and a spatial grid; only highly overlapping components with similar signal distributions may diagonally stack, while their envelopes remain separate.
+- Persisted representative RGB is preferred. Missing color metadata receives a stable canonical-app hash palette color without dependence on neighboring apps.
+- Envelopes retain at most one sample per drawable pixel column. A 200-component overlap fixture remains bounded to five visible tracks and fewer than 100 local icon collision candidates rather than comparing all component pairs.
+- Incremental layout reuses semantic components, envelopes, icons, and geometry outside a conservative bridge/search boundary. On the fixed 1,440-minute, six-app, 8,640-app-minute fixture at 3,840 px, 50 warm suffix rebuilds measured 12.23 ms minimum, 13.01 ms median, 14.37 ms p95, and 17.75 ms maximum; 1,919 of 1,921 components were reused. Twenty cold layout samples measured 31.94 ms minimum, 38.29 ms median, and 43.37 ms p95.
+- `.venv\Scripts\python.exe -m pytest tests\test_pieces_density_activity.py tests\test_pieces_density.py -q` — 53 tests plus 2 subtests passed.
+- `.venv\Scripts\python.exe -m pytest -q` — 1,238 tests plus 2 subtests passed in 48.66 s.
+- `.venv\Scripts\python.exe -m ruff check src tests` — passed.
+- No production database, cold bundle, configuration, Qt rendering path, or running service was modified in Phase 4.
+
