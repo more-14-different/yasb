@@ -11,6 +11,7 @@ from core.widgets.yasb.pieces_density import (
     DensityOverlay,
     PiecesDensityWidget,
     activity_tooltip_html,
+    mix_color_with_white,
     render_activity_image,
 )
 from core.widgets.yasb.pieces_density_activity import build_activity_layout
@@ -83,6 +84,37 @@ def test_worker_raster_restores_multicolor_smooth_density_surface():
     assert hot.red() > hot.blue()
     assert middle.red() > middle.blue()
     assert cool.blue() > cool.red()
+
+
+def test_activity_hover_draws_ten_minute_global_and_app_curve_outlines(qapp: QApplication):
+    base_rgb = 0x204060
+    records = [app_minute(bucket, non_direct=5, icon=False, color=base_rgb) for bucket in range(21)]
+    globals_ = [global_minute(bucket, 0, 5) for bucket in range(21)]
+    layout = build_activity_layout(records, globals_, 21, 210, 50)
+    overlay = DensityOverlay(cast(PiecesDensityWidget, _WidgetStub()), PiecesDensityConfig())
+    overlay.resize(210, 85)
+    overlay.is_streaming = True
+    overlay.buckets = [5] * 21
+    overlay.set_timeline([], {}, ActivityTimelineData(tuple(records), tuple(globals_), 2), layout)
+
+    overlay.set_hover_bucket(10)
+
+    assert overlay._activity_hover_layer is not None
+    image = overlay._activity_hover_layer.toImage()
+    highlighted_x = [x for x in range(image.width()) if image.pixelColor(x, 30).alpha() > 0]
+    assert 104 <= highlighted_x[-1] - highlighted_x[0] <= 106
+    assert image.pixelColor(40, 30).alpha() == 0
+    assert image.pixelColor(170, 30).alpha() == 0
+
+    global_curve = image.pixelColor(105, 50)
+    assert min(global_curve.red(), global_curve.green(), global_curve.blue()) >= 245
+
+    app_curve = image.pixelColor(100, 8)
+    expected = mix_color_with_white(base_rgb)
+    assert abs(app_curve.red() - expected.red()) <= 4
+    assert abs(app_curve.green() - expected.green()) <= 4
+    assert abs(app_curve.blue() - expected.blue()) <= 4
+    assert app_curve.blue() > app_curve.green() > app_curve.red()
 
 
 def test_cold_layout_plus_worker_raster_p95_stays_within_budget():

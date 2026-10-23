@@ -4,6 +4,7 @@ import os
 import sqlite3
 import sys
 import time
+from bisect import bisect_left, bisect_right
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -66,6 +67,8 @@ _ICON_BYTE_CACHE = IconByteCache()
 _ICON_IMAGE_CACHE = ImageLru()
 TIMELINE_MAJOR_TICK_HEIGHT = 10.0
 TIMELINE_ICON_RULER_GAP = 2.0
+HOVER_CURVE_RADIUS_BUCKETS = 5
+APP_HOVER_WHITE_BLEND = 0.55
 
 
 @dataclass(frozen=True)
@@ -308,6 +311,47 @@ def color_with_alpha(rgb: int, alpha: int) -> QColor:
     return color
 
 
+def mix_color_with_white(rgb: int, white_weight: float = APP_HOVER_WHITE_BLEND, alpha: int = 245) -> QColor:
+    """Return an app color brightened toward white without losing its identity."""
+    weight = min(max(white_weight, 0.0), 1.0)
+    color = QColor.fromRgb(rgb)
+    return QColor(
+        round(color.red() + (255 - color.red()) * weight),
+        round(color.green() + (255 - color.green()) * weight),
+        round(color.blue() + (255 - color.blue()) * weight),
+        alpha,
+    )
+
+
+def density_curve_points(
+    buckets: Sequence[int],
+    width: int,
+    height: int,
+    density_top: float,
+) -> list[QPointF]:
+    maximum = max(buckets, default=0)
+    if len(buckets) <= 1 or maximum <= 0:
+        return []
+    step_x = width / (len(buckets) - 1)
+    y_scale = max(height - density_top, 1.0) / maximum
+    return [QPointF(index * step_x, height - value * y_scale) for index, value in enumerate(buckets)]
+
+
+def smooth_curve_path(points: Sequence[QPointF], start_index: int = 0, end_index: int | None = None) -> QPainterPath:
+    path = QPainterPath()
+    if not points:
+        return path
+    last_index = len(points) - 1 if end_index is None else min(end_index, len(points) - 1)
+    first_index = min(max(start_index, 0), last_index)
+    path.moveTo(points[first_index])
+    for index in range(first_index, last_index):
+        left = points[index]
+        right = points[index + 1]
+        midpoint = (left.x() + right.x()) / 2
+        path.cubicTo(QPointF(midpoint, left.y()), QPointF(midpoint, right.y()), right)
+    return path
+
+
 def draw_density_heatmap(
     painter: QPainter,
     buckets: Sequence[int],
@@ -328,16 +372,11 @@ def draw_density_heatmap(
 
     path = QPainterPath()
     path.moveTo(0, height)
-    maximum = max(buckets, default=0)
-    points: list[QPointF] = []
-    if len(buckets) > 1 and maximum > 0:
-        step_x = width / (len(buckets) - 1)
-        y_scale = max(height - density_top, 1.0) / maximum
-        points = [QPointF(index * step_x, height - value * y_scale) for index, value in enumerate(buckets)]
+    points = density_curve_points(buckets, width, height, density_top)
+    if points:
         path.lineTo(points[0])
-        for left, right in zip(points, points[1:]):
-            midpoint = (left.x() + right.x()) / 2
-            path.cubicTo(QPointF(midpoint, left.y()), QPointF(midpoint, right.y()), right)
+        curve = smooth_curve_path(points)
+        path.connectPath(curve)
     else:
         baseline = height - 5
         path.lineTo(0, baseline)
@@ -988,20 +1027,50 @@ class DensityOverlay(QFrame):
             return
         layer = self._new_render_layer()
         painter = QPainter(layer)
-        left_bucket = max(self.hover_idx - 5, 0)
-        right_bucket = min(self.hover_idx + 5, layout.bucket_count - 1)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        left_bucket = max(self.hover_idx - HOVER_CURVE_RADIUS_BUCKETS, 0)
+        right_bucket = min(self.hover_idx + HOVER_CURVE_RADIUS_BUCKETS, layout.bucket_count - 1)
         left = left_bucket / max(layout.bucket_count - 1, 1) * self.width()
         right = right_bucket / max(layout.bucket_count - 1, 1) * self.width()
         painter.fillRect(QRectF(left, 0, max(right - left, 1), self.height()), QColor(255, 255, 255, 20))
+
+        density_points = density_curve_points(
+            self.buckets,
+            self.width(),
+            self.height(),
+            min(layout.band_height, self.height()),
+        )
+        if len(density_points) == layout.bucket_count:
+            painter.strokePath(
+                smooth_curve_path(density_points, left_bucket, right_bucket),
+                QPen(QColor(255, 255, 255, 220), 1.5),
+            )
+
         track_height = layout.band_height / max(layout.policy.max_tracks, 1)
+        cloud_height = max(track_height - 4, 1)
+        painter.save()
+        painter.setClipRect(QRectF(left, 0, max(right - left, 1), layout.band_height))
         for geometry in layout.components:
-            if geometry.track < 0 or not (
-                geometry.component.start_bucket <= self.hover_idx < geometry.component.end_bucket
-            ):
+            if geometry.track < 0 or geometry.x_end < left or geometry.x_start > right or not geometry.envelope:
                 continue
             baseline = geometry.track * track_height + 2.0
-            painter.setPen(QPen(color_with_alpha(geometry.component.color.rgb, 245), 2.0))
-            painter.drawLine(QPointF(geometry.x_start, baseline), QPointF(geometry.x_end, baseline))
+            first_sample = max(bisect_left(geometry.envelope, left, key=lambda sample: sample.pixel) - 1, 0)
+            last_sample = min(
+                bisect_right(geometry.envelope, right, key=lambda sample: sample.pixel) + 1,
+                len(geometry.envelope),
+            )
+            points = [
+                QPointF(sample.pixel, baseline + sample.non_direct_level * cloud_height)
+                for sample in geometry.envelope[first_sample:last_sample]
+            ]
+            pen = QPen(mix_color_with_white(geometry.component.color.rgb), 1.5)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            if len(points) == 1:
+                painter.setPen(pen)
+                painter.drawPoint(points[0])
+            else:
+                painter.strokePath(smooth_curve_path(points), pen)
+        painter.restore()
         painter.end()
         self._activity_hover_layer = layer
 
@@ -1056,8 +1125,8 @@ class DensityOverlay(QFrame):
 
         # Draw Hover Highlight (±5 mins)
         if self.hover_idx is not None:
-            x_min = max(0, self.hover_idx - 5) * step_x
-            x_max = min(n - 1, self.hover_idx + 5) * step_x
+            x_min = max(0, self.hover_idx - HOVER_CURVE_RADIUS_BUCKETS) * step_x
+            x_max = min(n - 1, self.hover_idx + HOVER_CURVE_RADIUS_BUCKETS) * step_x
             # Faint background for the highlighted section
             painter.fillRect(QRectF(x_min, 0, x_max - x_min, h), QColor(255, 255, 255, 20))
 
@@ -1090,16 +1159,9 @@ class DensityOverlay(QFrame):
 
         # Hover stroke highlight (solid bright curve over the hovered ±5min section)
         if self.hover_idx is not None and n > 1 and max_val > 0 and len(points) == n:
-            hl_path = QPainterPath()
-            start_i = max(0, self.hover_idx - 5)
-            end_i = min(n - 1, self.hover_idx + 5)
-            hl_path.moveTo(points[start_i])
-            for i in range(start_i, end_i):
-                p1 = points[i]
-                p2 = points[i + 1]
-                cp1 = QPointF((p1.x() + p2.x()) / 2, p1.y())
-                cp2 = QPointF((p1.x() + p2.x()) / 2, p2.y())
-                hl_path.cubicTo(cp1, cp2, p2)
+            start_i = max(0, self.hover_idx - HOVER_CURVE_RADIUS_BUCKETS)
+            end_i = min(n - 1, self.hover_idx + HOVER_CURVE_RADIUS_BUCKETS)
+            hl_path = smooth_curve_path(points, start_i, end_i)
 
             pen = QPen(QColor(255, 255, 255, 220))
             pen.setWidthF(1.5)
@@ -1118,7 +1180,9 @@ class DensityOverlay(QFrame):
                 dt = datetime.fromtimestamp(ts)
 
                 is_hovered = False
-                if self.hover_idx is not None and (self.hover_idx - 5 <= i <= self.hover_idx + 5):
+                if self.hover_idx is not None and (
+                    self.hover_idx - HOVER_CURVE_RADIUS_BUCKETS <= i <= self.hover_idx + HOVER_CURVE_RADIUS_BUCKETS
+                ):
                     is_hovered = True
 
                 # Determine which minor ticks to show based on duration
