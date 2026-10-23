@@ -4,6 +4,7 @@ import os
 import sqlite3
 import sys
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from html import escape
@@ -307,8 +308,49 @@ def color_with_alpha(rgb: int, alpha: int) -> QColor:
     return color
 
 
+def draw_density_heatmap(
+    painter: QPainter,
+    buckets: Sequence[int],
+    config: PiecesDensityConfig,
+    width: int,
+    height: int,
+    *,
+    density_top: float = 0.0,
+) -> list[QPointF]:
+    """Paint the legacy smooth, multicolor density surface and return its curve."""
+    if width <= 0 or height <= 0:
+        return []
+    density_top = min(max(density_top, 0.0), float(height))
+    gradient = QLinearGradient(0, height, 0, density_top)
+    gradient.setColorAt(0.0, parse_color(config.color_low))
+    gradient.setColorAt(0.5, parse_color(config.color_mid))
+    gradient.setColorAt(1.0, parse_color(config.color_high))
+
+    path = QPainterPath()
+    path.moveTo(0, height)
+    maximum = max(buckets, default=0)
+    points: list[QPointF] = []
+    if len(buckets) > 1 and maximum > 0:
+        step_x = width / (len(buckets) - 1)
+        y_scale = max(height - density_top, 1.0) / maximum
+        points = [QPointF(index * step_x, height - value * y_scale) for index, value in enumerate(buckets)]
+        path.lineTo(points[0])
+        for left, right in zip(points, points[1:]):
+            midpoint = (left.x() + right.x()) / 2
+            path.cubicTo(QPointF(midpoint, left.y()), QPointF(midpoint, right.y()), right)
+    else:
+        baseline = height - 5
+        path.lineTo(0, baseline)
+        path.lineTo(width, baseline)
+    path.lineTo(width, height)
+    path.closeSubpath()
+    painter.fillPath(path, QBrush(gradient))
+    return points
+
+
 def render_activity_image(
     layout: ActivityLayoutSnapshot,
+    density_buckets: Sequence[int],
     icon_bytes: dict[str, bytes],
     config: PiecesDensityConfig,
     height: int,
@@ -324,19 +366,17 @@ def render_activity_image(
     painter = QPainter(image)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
     global_height = max(height - TIMELINE_MAJOR_TICK_HEIGHT, 1.0)
+    draw_density_heatmap(
+        painter,
+        density_buckets,
+        config,
+        layout.width,
+        height,
+        density_top=min(layout.band_height, height),
+    )
 
     if layout.global_envelope:
-        mountain = QPainterPath()
         first = layout.global_envelope[0]
-        mountain.moveTo(first.pixel, height)
-        for sample in layout.global_envelope:
-            mountain.lineTo(sample.pixel, height - sample.non_direct_level * global_height)
-        mountain.lineTo(layout.global_envelope[-1].pixel, height)
-        mountain.closeSubpath()
-        mountain_color = parse_color(config.color_high)
-        mountain_color.setAlpha(92)
-        painter.fillPath(mountain, QBrush(mountain_color))
-
         if config.show_unattributed_residual:
             residual = QPainterPath()
             residual.moveTo(first.pixel, height)
@@ -917,6 +957,7 @@ class DensityOverlay(QFrame):
         if image is None:
             image = render_activity_image(
                 layout,
+                self.buckets,
                 self.icon_bytes,
                 self.config,
                 self.height(),
@@ -1003,7 +1044,6 @@ class DensityOverlay(QFrame):
 
         step_x = w / (n - 1) if n > 1 else w
         density_top = min(self.config.icon_band_height, h) if self.timeline_layouts else 0
-        density_height = max(h - density_top, 1)
 
         # Draw Hover Highlight (±5 mins)
         if self.hover_idx is not None:
@@ -1012,43 +1052,15 @@ class DensityOverlay(QFrame):
             # Faint background for the highlighted section
             painter.fillRect(QRectF(x_min, 0, x_max - x_min, h), QColor(255, 255, 255, 20))
 
-        # Create gradient
-        gradient = QLinearGradient(0, h, 0, density_top)
-
-        gradient.setColorAt(0.0, parse_color(self.config.color_low))
-        gradient.setColorAt(0.5, parse_color(self.config.color_mid))
-        gradient.setColorAt(1.0, parse_color(self.config.color_high))
-
-        path = QPainterPath()
-        path.moveTo(0, h)
-
         max_val = max(self.buckets) if self.buckets else 0
-
-        # Normalize: Highest point reaches full height
-        y_scale = density_height / max_val if max_val > 0 else 0
-
-        # Draw smooth curve
-        points: list[QPointF] = []
-        if n > 1 and max_val > 0:
-            points = [QPointF(i * step_x, h - (self.buckets[i] * y_scale)) for i in range(n)]
-
-            path.lineTo(points[0])
-            for i in range(n - 1):
-                p1 = points[i]
-                p2 = points[i + 1]
-                # Bezier control points for smooth wave
-                cp1 = QPointF((p1.x() + p2.x()) / 2, p1.y())
-                cp2 = QPointF((p1.x() + p2.x()) / 2, p2.y())
-                path.cubicTo(cp1, cp2, p2)
-        else:
-            val_y = h - 5
-            path.lineTo(0, val_y)
-            path.lineTo(w, val_y)
-
-        path.lineTo(w, h)
-        path.closeSubpath()
-
-        painter.fillPath(path, QBrush(gradient))
+        points = draw_density_heatmap(
+            painter,
+            self.buckets,
+            self.config,
+            w,
+            h,
+            density_top=density_top,
+        )
 
         dpr = self.devicePixelRatioF()
         for layout in self.timeline_layouts:
@@ -1165,6 +1177,7 @@ class FetchWorker(QThread):
         layout_dpr: float = 1.0,
         previous_activity_layout: ActivityLayoutSnapshot | None = None,
         previous_activity_image: QImage | None = None,
+        previous_density_buckets: tuple[int, ...] = (),
     ):
         super().__init__()
         self.session_end_bound = session_end_bound
@@ -1180,6 +1193,7 @@ class FetchWorker(QThread):
         self.layout_dpr = max(layout_dpr, 1.0)
         self.previous_activity_layout = previous_activity_layout
         self.previous_activity_image = previous_activity_image
+        self.previous_density_buckets = previous_density_buckets
         self._is_running = True
 
     def cancel(self):
@@ -1342,6 +1356,7 @@ class FetchWorker(QThread):
                         if (
                             activity_layout is self.previous_activity_layout
                             and self.previous_activity_image is not None
+                            and tuple(buckets) == self.previous_density_buckets
                         ):
                             activity_image = self.previous_activity_image
                             timings.append(("activity_raster", 0.0))
@@ -1349,6 +1364,7 @@ class FetchWorker(QThread):
                             raster_started = time.perf_counter()
                             activity_image = render_activity_image(
                                 activity_layout,
+                                buckets,
                                 icon_bytes,
                                 self.config,
                                 self.layout_height,
@@ -1571,6 +1587,7 @@ class PiecesDensityWidget(BaseWidget):
             self._overlay.devicePixelRatioF(),
             self._overlay.activity_layout,
             self._overlay.activity_image,
+            tuple(self._overlay.buckets),
         )
         self._worker.data_fetched.connect(self._on_data_fetched)
         self._worker.finished.connect(self._on_worker_finished)

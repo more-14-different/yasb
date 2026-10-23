@@ -66,11 +66,23 @@ def test_worker_raster_contains_global_direct_and_non_direct_channels():
     globals_ = [global_minute(1, 3, 4)]
     layout = build_activity_layout(records, globals_, 4, 400, 50)
 
-    image = render_activity_image(layout, {}, PiecesDensityConfig(), 85, 1.0)
+    image = render_activity_image(layout, [0, 4, 0, 0], {}, PiecesDensityConfig(), 85, 1.0)
 
     assert not image.isNull()
     assert image.pixelColor(100, 82).alpha() > 0
     assert any(image.pixelColor(100, y).alpha() > 0 for y in range(10, 80))
+
+
+def test_worker_raster_restores_multicolor_smooth_density_surface():
+    layout = build_activity_layout([], [], 4, 400, 50)
+    image = render_activity_image(layout, [0, 8, 0, 0], {}, PiecesDensityConfig(), 85, 1.0)
+
+    hot = image.pixelColor(133, 52)
+    middle = image.pixelColor(133, 66)
+    cool = image.pixelColor(133, 81)
+    assert hot.red() > hot.blue()
+    assert middle.red() > middle.blue()
+    assert cool.blue() > cool.red()
 
 
 def test_cold_layout_plus_worker_raster_p95_stays_within_budget():
@@ -80,7 +92,7 @@ def test_cold_layout_plus_worker_raster_p95_stays_within_budget():
     for _ in range(20):
         started = time.perf_counter()
         layout = build_activity_layout(records, globals_, 1_440, 3_840, 50)
-        render_activity_image(layout, {}, config, 85, 1.0)
+        render_activity_image(layout, [index % 11 for index in range(1_440)], {}, config, 85, 1.0)
         samples.append((time.perf_counter() - started) * 1000)
 
     p95 = sorted(samples)[math.ceil(len(samples) * 0.95) - 1]
@@ -90,7 +102,7 @@ def test_cold_layout_plus_worker_raster_p95_stays_within_budget():
 def test_cached_overlay_swap_and_paint_stay_within_budgets(qapp: QApplication):
     _, _, layout = _fixture()
     config = PiecesDensityConfig()
-    raster = render_activity_image(layout, {}, config, 85, 1.0)
+    raster = render_activity_image(layout, [1] * 1_440, {}, config, 85, 1.0)
     overlay = DensityOverlay(cast(PiecesDensityWidget, _WidgetStub()), config)
     overlay.resize(3_840, 85)
     overlay.is_streaming = True
