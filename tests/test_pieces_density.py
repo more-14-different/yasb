@@ -106,6 +106,33 @@ class SessionManagerSchemaTests(unittest.TestCase):
                 self.assertEqual(manager.livestream_intervals(), [(1_800_000_000.0, 1_800_000_060.0)])
                 self.assertEqual(manager.last_error, "")
 
+    def test_historical_open_interval_is_bounded_by_the_next_canonical_start(self):
+        self._create_database(version=2)
+        conn = sqlite3.connect(self.database_path)
+        try:
+            conn.executemany(
+                "insert into livestreams values (?, ?)",
+                [
+                    (1_800_000_000_000_000, None),
+                    (1_800_003_600_000_000, 1_800_003_900_000_000),
+                    (1_800_007_200_000_000, None),
+                ],
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        manager = SessionManager(str(self.database_path))
+
+        self.assertEqual(
+            manager.livestream_intervals(),
+            [
+                (1_800_000_000.0, 1_800_003_600.0),
+                (1_800_003_600.0, 1_800_003_900.0),
+                (1_800_007_200.0, None),
+            ],
+        )
+
 
 class SessionSelectionTests(unittest.TestCase):
     def test_new_latest_session_does_not_shift_an_older_selection(self):
@@ -505,6 +532,34 @@ class AppTimelineSourceTests(unittest.TestCase):
             self.assertEqual(first.app_records[0].canonical_app_id, "app:code")
             self.assertEqual(second.app_records[0].canonical_app_id, "app:edge")
 
+    def test_unrelated_database_append_keeps_closed_activity_cache_warm(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            database_path = Path(temporary_directory) / "graph.sqlite3"
+            self._create_v1_graph(database_path)
+            start = datetime.fromisoformat("2026-07-19T10:00:00+00:00").timestamp()
+            resolved = ResolvedDensitySource(DensitySource.SCREENPIPE_GRAPH, str(database_path), None)
+            cache = AppTimelineCache()
+            first = cache.load_activity(resolved, start, start + 60, True)
+            connection = sqlite3.connect(database_path)
+            try:
+                connection.executescript(
+                    "insert into source_acquisitions values ('future-pack','2026-07-19T10:02:00Z');"
+                    "insert into source_activity_minutes values "
+                    "('2026-07-19T10:02:00Z',1,1,'future-pack');"
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            with patch(
+                "core.widgets.yasb.pieces_density_source.query_activity_timeline",
+                side_effect=AssertionError("unrelated append reloaded a closed interval"),
+            ):
+                second = cache.load_activity(resolved, start, start + 60, True)
+
+            self.assertEqual(second.app_records, first.app_records)
+            self.assertTrue(second.cache_hit)
+
     def test_changed_watermark_refreshes_only_the_affected_activity_suffix(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             database_path = Path(temporary_directory) / "graph.sqlite3"
@@ -595,6 +650,8 @@ class AppTimelineSourceTests(unittest.TestCase):
                 record for record in data.app_records if record.canonical_app_id == "app:terminal"
             )
             self.assertEqual(code.direct_event_count, 2)
+            self.assertEqual(code.engaged_score_milli, 9000)
+            self.assertEqual(code.engaged_milliseconds, 3000)
             self.assertEqual(code.non_direct_activity_count, 5)
             self.assertEqual(code.representative_color_rgb, 2121983)
             self.assertEqual(focus_only.direct_event_count, 0)

@@ -526,10 +526,19 @@ class SessionManager:
             self._validate_schema(conn)
             rows = conn.execute(sql).fetchall()
             self.last_error = ""
-            return [
+            intervals = [
                 (start_us / 1_000_000, end_us / 1_000_000 if end_us else None)
                 for start_us, end_us in rows
                 if start_us and start_us / 1_000_000 > self._MIN_VALID_TIMESTAMP
+            ]
+            # A stale unfinished historical interval must not stretch all the
+            # way to the present. The next canonical start is its safe upper
+            # bound; only the newest interval may still be genuinely live.
+            return [
+                (start, end if end is not None else intervals[index + 1][0])
+                if index + 1 < len(intervals)
+                else (start, end)
+                for index, (start, end) in enumerate(intervals)
             ]
         except (sqlite3.Error, TruthTimeSchemaError) as error:
             self._schema_validated = False
@@ -1297,6 +1306,8 @@ class FetchWorker(QThread):
                         closed_interval=self.session_end_bound > 0,
                         cancelled=lambda: not self._is_running,
                     )
+                    if not self._is_running:
+                        return
                     timings.append(("activity_load", (time.perf_counter() - activity_started) * 1000))
                     if activity_data.contract_version >= 2:
                         policy = ActivityLayoutPolicy(
@@ -1372,6 +1383,8 @@ class FetchWorker(QThread):
                             )
                             timings.append(("activity_raster", (time.perf_counter() - raster_started) * 1000))
                 except Exception as error:
+                    if not self._is_running:
+                        return
                     activity_data = None
                     activity_layout = None
                     activity_image = None
@@ -1398,6 +1411,8 @@ class FetchWorker(QThread):
             )
 
         except Exception as e:
+            if not self._is_running:
+                return
             logging.error("Error fetching activity density: %s", e)
             self._emit_snapshot([], True, 0.0, 0.0, f"Error: {e}")
 
@@ -1440,6 +1455,7 @@ class PiecesDensityWidget(BaseWidget):
         self._refresh_pending = False
         self._stream_start_time = 0.0
         self._last_streaming_time = 0.0
+        self._activity_interval_key: tuple[str, float] | None = None
         self._connected_anim = False
 
         self._timer = QTimer(self)
@@ -1572,6 +1588,8 @@ class PiecesDensityWidget(BaseWidget):
 
         force_session = override_time > 0
         interval_error = self._session_manager.last_error
+        requested_interval_key = (self._time_source.value, override_time)
+        same_interval = self._activity_interval_key == requested_interval_key
 
         self._worker = FetchWorker(
             self.config,
@@ -1585,9 +1603,9 @@ class PiecesDensityWidget(BaseWidget):
             self._overlay.width(),
             self._overlay.height(),
             self._overlay.devicePixelRatioF(),
-            self._overlay.activity_layout,
-            self._overlay.activity_image,
-            tuple(self._overlay.buckets),
+            self._overlay.activity_layout if same_interval else None,
+            self._overlay.activity_image if same_interval else None,
+            tuple(self._overlay.buckets) if same_interval else (),
         )
         self._worker.data_fetched.connect(self._on_data_fetched)
         self._worker.finished.connect(self._on_worker_finished)
@@ -1643,6 +1661,7 @@ class PiecesDensityWidget(BaseWidget):
         self._overlay.is_streaming = snapshot.has_interval
         self._overlay.stream_start_time = snapshot.start_time
         self._overlay.error_msg = snapshot.error
+        self._activity_interval_key = (snapshot.source_value, snapshot.start_time)
         if not unchanged_visual:
             self._overlay.set_timeline(
                 snapshot.stages,

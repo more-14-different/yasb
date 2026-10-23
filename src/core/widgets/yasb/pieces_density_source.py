@@ -123,6 +123,7 @@ class _AppCacheEntry:
     contract_version: int
     complete: bool
     source_watermark: _ScreenpipeWatermark | None = None
+    data_version: tuple[int, int, int, int] | None = None
 
 
 _APP_TIMELINE_COLUMNS = {
@@ -351,9 +352,11 @@ def _query_screenpipe_refresh_state(
     database_path: str,
     previous_watermark: _ScreenpipeWatermark | None,
     features: ScreenpipeGraphFeatures | None = None,
+    cancelled: Callable[[], bool] = lambda: False,
 ) -> _ScreenpipeRefreshState | None:
     connection = _open_read_only(database_path)
     try:
+        connection.set_progress_handler(lambda: int(cancelled()), 1_000)
         features = features or _inspect_screenpipe_graph_features(connection)
         if not features.supports_acquisition_watermark:
             return None
@@ -396,9 +399,12 @@ def query_density_buckets(
     stream_start: float,
     query_start: float,
     query_end: float,
+    *,
+    cancelled: Callable[[], bool] = lambda: False,
 ) -> list[tuple[int, int]]:
     connection = _open_read_only(resolved.database_path)
     try:
+        connection.set_progress_handler(lambda: int(cancelled()), 1_000)
         if resolved.source is DensitySource.SCREENPIPE_GRAPH:
             start_text = _rfc3339(query_start)
             end_text = _rfc3339(query_end)
@@ -479,40 +485,33 @@ def query_activity_timeline(
     query_end: float,
     *,
     features: ScreenpipeGraphFeatures | None = None,
+    cancelled: Callable[[], bool] = lambda: False,
 ) -> ActivityTimelineData:
     if resolved.source is not DensitySource.SCREENPIPE_GRAPH:
         return ActivityTimelineData((), (), 1)
     features = features or inspect_screenpipe_graph_features(resolved.database_path)
     connection = _open_read_only(resolved.database_path)
     try:
+        connection.set_progress_handler(lambda: int(cancelled()), 1_000)
         start_text = _rfc3339(query_start)
         end_text = _rfc3339(query_end)
         records: dict[tuple[int, str], AppMinuteRecord] = {}
         has_v2 = features.supports_app_timeline_v2 and features.supports_global_timeline_v2
-        if features.supports_app_timeline and not has_v2:
-            records = _query_v1_app_records(
+        legacy_records = (
+            _query_v1_app_records(
                 connection,
                 stream_start,
                 start_text,
                 end_text,
                 supports_projection_kind=features.supports_app_timeline_projection_kind,
             )
+            if features.supports_app_timeline
+            else {}
+        )
+        if not has_v2:
+            records = legacy_records
 
         if has_v2:
-            v1_join = (
-                "left join timeline_app_minutes_v1 legacy "
-                "on legacy.minute_start=v2.minute_start "
-                "and legacy.canonical_app_id=v2.canonical_app_id "
-                if features.supports_app_timeline
-                else ""
-            )
-            score_projection = (
-                "coalesce(legacy.engaged_score_milli, "
-                "v2.direct_input_count * 2000 + v2.non_direct_activity_count * 100), "
-                "coalesce(legacy.engaged_milliseconds, 0), "
-                if features.supports_app_timeline
-                else "v2.direct_input_count * 2000 + v2.non_direct_activity_count * 100, 0, "
-            )
             color_join = (
                 "left join app_icon_versions color on color.app_id=v2.canonical_app_id "
                 "and color.icon_sha256=v2.icon_sha256 and color.valid_to is null "
@@ -527,7 +526,7 @@ def query_activity_timeline(
             rows = connection.execute(
                 "select cast((unixepoch(v2.minute_start, 'subsec') - ?) / 60 as integer), "
                 "v2.canonical_app_id, v2.display_name, v2.icon_sha256, "
-                f"{score_projection}"
+                "v2.direct_input_count * 2000 + v2.non_direct_activity_count * 100, 0, "
                 "v2.foreground_milliseconds, v2.direct_input_count, v2.interaction_level, "
                 "v2.attribution_confidence_milli, v2.direct_input_count, v2.key_count, "
                 "v2.click_count, v2.scroll_count, v2.text_count, v2.clipboard_count, "
@@ -535,7 +534,7 @@ def query_activity_timeline(
                 "v2.effective_non_direct_ui_event_count, v2.projection_kind, "
                 f"{color_projection}"
                 "from timeline_app_minutes_v2 v2 "
-                f"{v1_join}{color_join}"
+                f"{color_join}"
                 "where v2.minute_start >= ? and v2.minute_start < ? "
                 "order by v2.minute_start, v2.direct_input_count desc, "
                 "v2.non_direct_activity_count desc, v2.canonical_app_id",
@@ -552,13 +551,14 @@ def query_activity_timeline(
                     raise sqlite3.DatabaseError("screenpipe graph violates app direct activity v2 conservation")
                 if non_direct != frames + non_direct_ui:
                     raise sqlite3.DatabaseError("screenpipe graph violates app non-direct activity v2 conservation")
+                legacy = legacy_records.get((int(row[0]), str(row[1])))
                 record = AppMinuteRecord(
                     bucket=int(row[0]),
                     canonical_app_id=str(row[1]),
                     display_name=str(row[2]),
                     icon_sha256=str(row[3]) if row[3] is not None else None,
-                    engaged_score_milli=int(row[4]),
-                    engaged_milliseconds=int(row[5]),
+                    engaged_score_milli=(legacy.engaged_score_milli if legacy else int(row[4])),
+                    engaged_milliseconds=(legacy.engaged_milliseconds if legacy else int(row[5])),
                     foreground_milliseconds=int(row[6]),
                     direct_event_count=int(row[7]),
                     interaction_level=str(row[8]),
@@ -648,6 +648,7 @@ def query_activity_timeline(
                     )
                 )
         effective_contract_version = 2 if has_v2 else 1
+        global_buckets: set[int] = set()
         if has_v2:
             global_buckets = {record.bucket for record in global_records}
             signal_buckets = {
@@ -659,25 +660,8 @@ def query_activity_timeline(
                 raise sqlite3.DatabaseError(
                     "screenpipe graph has signal-bearing app activity v2 facts without global v2 facts"
                 )
-        has_legacy_gap = False
-        if has_v2 and features.supports_app_timeline:
-            has_legacy_gap = bool(
-                connection.execute(
-                    "select exists(select 1 from timeline_app_minutes_v1 legacy "
-                    "where legacy.minute_start >= ? and legacy.minute_start < ? "
-                    "and not exists(select 1 from timeline_global_minutes_v2 global "
-                    "where global.minute_start=legacy.minute_start))",
-                    (start_text, end_text),
-                ).fetchone()[0]
-            )
+        has_legacy_gap = has_v2 and any(record.bucket not in global_buckets for record in legacy_records.values())
         if has_v2 and has_legacy_gap:
-            legacy_records = _query_v1_app_records(
-                connection,
-                stream_start,
-                start_text,
-                end_text,
-                supports_projection_kind=features.supports_app_timeline_projection_kind,
-            )
             if global_records:
                 exact_buckets = {record.bucket for record in global_records}
                 for key, legacy in legacy_records.items():
@@ -725,7 +709,7 @@ class AppTimelineCache:
 
     def __init__(self):
         self._entries: dict[
-            tuple[_GraphIdentity, float, float | None, int, _GraphDataVersion | None],
+            tuple[_GraphIdentity, float, float | None, int],
             _AppCacheEntry,
         ] = {}
         self._lock = threading.Lock()
@@ -767,12 +751,13 @@ class AppTimelineCache:
             stream_start,
             interval_end if closed_interval else None,
             contract_version,
-            data_version,
         )
         with self._lock:
             entry = self._entries.get(key)
-            if entry and entry.complete:
+            if entry and entry.complete and entry.data_version == data_version:
                 bucket_count = max(math.ceil((interval_end - stream_start) / 60), 1)
+                self._entries.pop(key)
+                self._entries[key] = entry
                 return ActivityTimelineData(
                     tuple(entry.records),
                     tuple(entry.global_records),
@@ -786,10 +771,15 @@ class AppTimelineCache:
                 resolved.database_path,
                 entry.source_watermark if entry else None,
                 features,
+                cancelled,
             )
             watermark = refresh.watermark if refresh else None
             if entry and refresh is not None and refresh.earliest_changed_minute is None:
                 bucket_count = max(math.ceil((interval_end - stream_start) / 60), 1)
+                entry.source_watermark = watermark
+                entry.data_version = data_version
+                self._entries.pop(key)
+                self._entries[key] = entry
                 return ActivityTimelineData(
                     tuple(entry.records),
                     tuple(entry.global_records),
@@ -805,6 +795,19 @@ class AppTimelineCache:
                     if math.isfinite(earliest_changed_minute)
                     else 0
                 )
+                bucket_count = max(math.ceil((interval_end - stream_start) / 60), 1)
+                if refresh_bucket >= bucket_count:
+                    entry.source_watermark = watermark
+                    entry.data_version = data_version
+                    self._entries.pop(key)
+                    self._entries[key] = entry
+                    return ActivityTimelineData(
+                        tuple(entry.records),
+                        tuple(entry.global_records),
+                        entry.contract_version,
+                        bucket_count,
+                        True,
+                    )
                 records = [record for record in entry.records if record.bucket < refresh_bucket]
                 global_records = [record for record in entry.global_records if record.bucket < refresh_bucket]
             else:
@@ -817,6 +820,7 @@ class AppTimelineCache:
                 stream_start + refresh_bucket * 60,
                 interval_end,
                 features=features,
+                cancelled=cancelled,
             )
             if entry is not None and entry.contract_version != refreshed.contract_version:
                 refresh_bucket = 0
@@ -828,6 +832,7 @@ class AppTimelineCache:
                     stream_start,
                     interval_end,
                     features=features,
+                    cancelled=cancelled,
                 )
             records.extend(refreshed.app_records)
             global_records.extend(refreshed.global_records)
@@ -850,6 +855,7 @@ class AppTimelineCache:
                 result_contract_version,
                 closed_interval,
                 watermark,
+                data_version,
             )
             while len(self._entries) > self._MAX_ENTRIES:
                 self._entries.pop(next(iter(self._entries)))
@@ -930,7 +936,13 @@ class DensityBucketCache:
                 raw_buckets[index] = 0
 
             query_start = stream_start + refresh_index * 60
-            for bucket, count in query_density_buckets(resolved, stream_start, query_start, interval_end):
+            for bucket, count in query_density_buckets(
+                resolved,
+                stream_start,
+                query_start,
+                interval_end,
+                cancelled=cancelled,
+            ):
                 if refresh_index <= bucket < bucket_count:
                     raw_buckets[bucket] = count
             if cancelled():
