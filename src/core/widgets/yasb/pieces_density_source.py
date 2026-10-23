@@ -55,6 +55,27 @@ class _CacheEntry:
     source_watermark: _ScreenpipeWatermark | None = None
 
 
+@dataclass(frozen=True)
+class AppMinuteRecord:
+    bucket: int
+    canonical_app_id: str
+    display_name: str
+    icon_sha256: str | None
+    engaged_score_milli: int
+    engaged_milliseconds: int
+    foreground_milliseconds: int
+    direct_event_count: int
+    interaction_level: str
+    attribution_confidence_milli: int
+
+
+@dataclass
+class _AppCacheEntry:
+    records: list[AppMinuteRecord]
+    complete: bool
+    source_watermark: _ScreenpipeWatermark | None = None
+
+
 _APP_TIMELINE_COLUMNS = {
     "minute_start",
     "canonical_app_id",
@@ -276,6 +297,110 @@ def query_density_buckets(
         connection.close()
 
 
+def query_app_minutes(
+    resolved: ResolvedDensitySource,
+    stream_start: float,
+    query_start: float,
+    query_end: float,
+) -> list[AppMinuteRecord]:
+    if resolved.source is not DensitySource.SCREENPIPE_GRAPH:
+        return []
+    connection = _open_read_only(resolved.database_path)
+    try:
+        if not _inspect_screenpipe_graph_features(connection).supports_app_timeline:
+            return []
+        rows = connection.execute(
+            "select cast((unixepoch(minute_start, 'subsec') - ?) / 60 as integer), "
+            "canonical_app_id, display_name, icon_sha256, engaged_score_milli, "
+            "engaged_milliseconds, foreground_milliseconds, direct_event_count, "
+            "interaction_level, attribution_confidence_milli "
+            "from timeline_app_minutes_v1 where minute_start >= ? and minute_start < ? "
+            "order by minute_start, engaged_score_milli desc, canonical_app_id",
+            (stream_start, _rfc3339(query_start), _rfc3339(query_end)),
+        ).fetchall()
+        return [
+            AppMinuteRecord(
+                bucket=int(row[0]),
+                canonical_app_id=str(row[1]),
+                display_name=str(row[2]),
+                icon_sha256=str(row[3]) if row[3] is not None else None,
+                engaged_score_milli=int(row[4]),
+                engaged_milliseconds=int(row[5]),
+                foreground_milliseconds=int(row[6]),
+                direct_event_count=int(row[7]),
+                interaction_level=str(row[8]),
+                attribution_confidence_milli=int(row[9]),
+            )
+            for row in rows
+        ]
+    finally:
+        connection.close()
+
+
+class AppTimelineCache:
+    _MAX_ENTRIES = 8
+
+    def __init__(self):
+        self._entries: dict[tuple[str, float, float | None], _AppCacheEntry] = {}
+        self._lock = threading.Lock()
+
+    def load(
+        self,
+        resolved: ResolvedDensitySource,
+        stream_start: float,
+        interval_end: float,
+        closed_interval: bool,
+        cancelled: Callable[[], bool] = lambda: False,
+    ) -> list[AppMinuteRecord]:
+        if resolved.source is not DensitySource.SCREENPIPE_GRAPH:
+            return []
+        key = (
+            os.path.normcase(resolved.database_path),
+            stream_start,
+            interval_end if closed_interval else None,
+        )
+        with self._lock:
+            entry = self._entries.get(key)
+            if entry and entry.complete:
+                return list(entry.records)
+            if cancelled():
+                return []
+            refresh = _query_screenpipe_refresh_state(
+                resolved.database_path,
+                entry.source_watermark if entry else None,
+            )
+            watermark = refresh.watermark if refresh else None
+            if entry and refresh is not None and refresh.earliest_changed_minute is None:
+                return list(entry.records)
+            if entry and refresh is not None:
+                earliest_changed_minute = refresh.earliest_changed_minute
+                assert earliest_changed_minute is not None
+                refresh_bucket = (
+                    max(int((earliest_changed_minute - stream_start) // 60), 0)
+                    if math.isfinite(earliest_changed_minute)
+                    else 0
+                )
+                records = [record for record in entry.records if record.bucket < refresh_bucket]
+            else:
+                refresh_bucket = 0
+                records = []
+            records.extend(
+                query_app_minutes(
+                    resolved,
+                    stream_start,
+                    stream_start + refresh_bucket * 60,
+                    interval_end,
+                )
+            )
+            if cancelled():
+                return []
+            records.sort(key=lambda item: (item.bucket, -item.engaged_score_milli, item.canonical_app_id))
+            self._entries[key] = _AppCacheEntry(records, closed_interval, watermark)
+            while len(self._entries) > self._MAX_ENTRIES:
+                self._entries.pop(next(iter(self._entries)))
+            return list(records)
+
+
 class DensityBucketCache:
     """Caches closed intervals and incrementally refreshes safe live sources.
 
@@ -328,9 +453,15 @@ class DensityBucketCache:
             elif entry and refresh_state is not None and refresh_state.earliest_changed_minute is None:
                 refresh_index = bucket_count
             elif entry and refresh_state is not None:
-                refresh_index = max(
-                    min(int((refresh_state.earliest_changed_minute - stream_start) // 60), bucket_count),
-                    0,
+                earliest_changed_minute = refresh_state.earliest_changed_minute
+                assert earliest_changed_minute is not None
+                refresh_index = (
+                    max(
+                        min(int((earliest_changed_minute - stream_start) // 60), bucket_count),
+                        0,
+                    )
+                    if math.isfinite(earliest_changed_minute)
+                    else 0
                 )
             else:
                 refresh_index = 0

@@ -3,7 +3,9 @@ import os
 import sqlite3
 import sys
 import time
+from dataclasses import dataclass
 from datetime import datetime
+from html import escape
 from pathlib import Path
 from typing import Protocol, cast, override
 
@@ -18,6 +20,7 @@ from PyQt6.QtGui import (
     QPainterPath,
     QPaintEvent,
     QPen,
+    QResizeEvent,
     QShowEvent,
 )
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QToolTip, QWidget
@@ -26,10 +29,18 @@ from win32con import SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE
 from core.utils.win32.bindings import SetWindowPos
 from core.validation.widgets.yasb.pieces_density import PiecesDensityConfig
 from core.widgets.base import BaseWidget
+from core.widgets.yasb.pieces_density_icons import IconByteCache, PixmapLru
 from core.widgets.yasb.pieces_density_source import (
+    AppTimelineCache,
     DensityBucketCache,
     integrate_density,
     resolve_density_source,
+)
+from core.widgets.yasb.pieces_density_timeline import (
+    StageLayout,
+    TimelineStage,
+    build_timeline_stages,
+    layout_timeline_stages,
 )
 from core.widgets.yasb.pieces_time_source import TimeSource
 
@@ -40,6 +51,20 @@ TRUTH_TIME_REQUIRED_COLUMNS = {
     "machine_sessions": {"boot_at_utc_us", "shutdown_at_utc_us", "shutdown_upper_bound_utc_us"},
 }
 _DENSITY_BUCKET_CACHE = DensityBucketCache()
+_APP_TIMELINE_CACHE = AppTimelineCache()
+_ICON_BYTE_CACHE = IconByteCache()
+
+
+@dataclass(frozen=True)
+class DensityTimelineSnapshot:
+    buckets: list[int]
+    has_interval: bool
+    start_time: float
+    duration: float
+    error: str
+    source_value: str
+    stages: list[TimelineStage]
+    icon_bytes: dict[str, bytes]
 
 
 class _AnimatedBar(Protocol):
@@ -93,6 +118,23 @@ def density_tooltip_html(event_count: int, value: datetime) -> str:
         for background, foreground, text in units
     )
     return f'<table cellspacing="3" cellpadding="4"><tr>{cells}</tr></table>'
+
+
+def stage_tooltip_html(stage: TimelineStage | None) -> str:
+    if stage is None:
+        return ""
+    rows = []
+    for app in stage.apps[:5]:
+        seconds = app.engaged_milliseconds / 1000
+        rows.append(
+            "<tr>"
+            f'<td style="white-space: nowrap;"><b>{escape(app.display_name)}</b></td>'
+            f'<td style="white-space: nowrap;">{app.direct_event_count} inputs</td>'
+            f'<td style="white-space: nowrap;">{seconds:.1f}s engaged</td>'
+            f'<td style="white-space: nowrap;">{app.confidence_milli / 10:.0f}%</td>'
+            "</tr>"
+        )
+    return f'<table cellspacing="3" cellpadding="3">{"".join(rows)}</table>' if rows else ""
 
 
 def ruler_label_x(
@@ -482,6 +524,47 @@ class DensityOverlay(QFrame):
         self.is_streaming = False
         self.error_msg = ""
         self.hover_idx: int | None = None
+        self.timeline_stages: list[TimelineStage] = []
+        self.timeline_layouts: list[StageLayout] = []
+        self.icon_bytes: dict[str, bytes] = {}
+        self._pixmaps = PixmapLru()
+
+    def set_timeline(self, stages: list[TimelineStage], icon_bytes: dict[str, bytes]) -> None:
+        self.timeline_stages = stages
+        self.icon_bytes = icon_bytes
+        self._rebuild_timeline_layout()
+
+    def _rebuild_timeline_layout(self) -> None:
+        self.timeline_layouts = layout_timeline_stages(
+            self.timeline_stages,
+            self.width(),
+            min(self.config.icon_band_height, self.height()),
+            min_size=self.config.icon_min_size,
+            max_size=self.config.icon_max_size,
+            max_icons=self.config.max_stage_icons,
+            min_gap=self.config.icon_min_gap,
+            stack_similarity_ratio=self.config.stack_similarity_ratio,
+            stack_offset_ratio=self.config.stack_offset_ratio,
+            show_passive_foreground=self.config.show_passive_foreground,
+        )
+        dpr = self.devicePixelRatioF()
+        for layout in self.timeline_layouts:
+            for placement in layout.icons:
+                icon_hash = placement.app.icon_sha256
+                payload = self.icon_bytes.get(icon_hash or "")
+                if icon_hash and payload:
+                    self._pixmaps.prepare(icon_hash, payload, placement.size, dpr)
+
+    def stage_at(self, bucket: int) -> TimelineStage | None:
+        return next(
+            (stage for stage in self.timeline_stages if stage.start_bucket <= bucket < stage.end_bucket),
+            None,
+        )
+
+    @override
+    def resizeEvent(self, a0: QResizeEvent | None) -> None:
+        super().resizeEvent(a0)
+        self._rebuild_timeline_layout()
 
     def _control_exclusion_rects(self) -> list[QRectF]:
         overlay_geometry = self.geometry()
@@ -526,6 +609,8 @@ class DensityOverlay(QFrame):
             self.hover_idx = None
 
         step_x = w / (n - 1) if n > 1 else w
+        density_top = min(self.config.icon_band_height, h) if self.timeline_layouts else 0
+        density_height = max(h - density_top, 1)
 
         # Draw Hover Highlight (±5 mins)
         if self.hover_idx is not None:
@@ -535,7 +620,7 @@ class DensityOverlay(QFrame):
             painter.fillRect(QRectF(x_min, 0, x_max - x_min, h), QColor(255, 255, 255, 20))
 
         # Create gradient
-        gradient = QLinearGradient(0, h, 0, 0)
+        gradient = QLinearGradient(0, h, 0, density_top)
 
         gradient.setColorAt(0.0, parse_color(self.config.color_low))
         gradient.setColorAt(0.5, parse_color(self.config.color_mid))
@@ -547,7 +632,7 @@ class DensityOverlay(QFrame):
         max_val = max(self.buckets) if self.buckets else 0
 
         # Normalize: Highest point reaches full height
-        y_scale = h / max_val if max_val > 0 else 0
+        y_scale = density_height / max_val if max_val > 0 else 0
 
         # Draw smooth curve
         points: list[QPointF] = []
@@ -571,6 +656,23 @@ class DensityOverlay(QFrame):
         path.closeSubpath()
 
         painter.fillPath(path, QBrush(gradient))
+
+        dpr = self.devicePixelRatioF()
+        for layout in self.timeline_layouts:
+            for placement in layout.icons:
+                icon_hash = placement.app.icon_sha256
+                if not icon_hash:
+                    continue
+                pixmap = self._pixmaps.get(icon_hash, placement.size, dpr)
+                if pixmap is None:
+                    continue
+                painter.setOpacity(placement.opacity)
+                painter.drawPixmap(
+                    QRectF(placement.x, placement.y, placement.size, placement.size),
+                    pixmap,
+                    QRectF(pixmap.rect()),
+                )
+        painter.setOpacity(1.0)
 
         # Hover stroke highlight (solid bright curve over the hovered ±5min section)
         if self.hover_idx is not None and n > 1 and max_val > 0 and len(points) == n:
@@ -653,8 +755,7 @@ class DensityOverlay(QFrame):
 
 
 class FetchWorker(QThread):
-    # buckets, has_interval, start_time, duration, error, source
-    data_fetched = pyqtSignal(list, bool, float, float, str, str)
+    data_fetched = pyqtSignal(object)
 
     def __init__(
         self,
@@ -681,21 +782,43 @@ class FetchWorker(QThread):
     def cancel(self):
         self._is_running = False
 
+    def _emit_snapshot(
+        self,
+        buckets: list[int],
+        has_interval: bool,
+        start_time: float,
+        duration: float,
+        error: str,
+        stages: list[TimelineStage] | None = None,
+        icon_bytes: dict[str, bytes] | None = None,
+    ) -> None:
+        self.data_fetched.emit(
+            DensityTimelineSnapshot(
+                buckets,
+                has_interval,
+                start_time,
+                duration,
+                error,
+                self.time_source.value,
+                stages or [],
+                icon_bytes or {},
+            )
+        )
+
     def run(self):
         try:
             # event-logger is the only provider of interval boundaries.
             if self.interval_error:
-                self.data_fetched.emit([], True, 0.0, 0.0, self.interval_error, self.time_source.value)
+                self._emit_snapshot([], True, 0.0, 0.0, self.interval_error)
                 return
 
             if self.session_override <= 0:
-                self.data_fetched.emit(
+                self._emit_snapshot(
                     [],
                     False,
                     0.0,
                     0.0,
                     f"No canonical interval in {self.config.truth_time_db_path}",
-                    self.time_source.value,
                 )
                 return
 
@@ -713,13 +836,12 @@ class FetchWorker(QThread):
                 self.config.pieces_db_path,
             )
             if not os.path.exists(resolved_source.database_path):
-                self.data_fetched.emit(
+                self._emit_snapshot(
                     [],
                     True,
                     0.0,
                     0.0,
                     f"{resolved_source.source.value} DB missing at: {resolved_source.database_path}",
-                    self.time_source.value,
                 )
                 return
             raw_buckets = _DENSITY_BUCKET_CACHE.load(
@@ -732,6 +854,27 @@ class FetchWorker(QThread):
             if not self._is_running:
                 return
             buckets = integrate_density(raw_buckets)
+            stages: list[TimelineStage] = []
+            icon_bytes: dict[str, bytes] = {}
+            if self.config.show_app_timeline:
+                try:
+                    app_minutes = _APP_TIMELINE_CACHE.load(
+                        resolved_source,
+                        stream_start_time,
+                        interval_end,
+                        closed_interval=self.session_end_bound > 0,
+                        cancelled=lambda: not self._is_running,
+                    )
+                    stages = build_timeline_stages(app_minutes, len(raw_buckets))
+                    icon_hashes = {
+                        app.icon_sha256
+                        for stage in stages
+                        for app in stage.apps[: self.config.max_stage_icons]
+                        if app.icon_sha256
+                    }
+                    icon_bytes = _ICON_BYTE_CACHE.load(resolved_source.database_path, icon_hashes)
+                except Exception as error:
+                    logging.warning("App timeline unavailable; keeping heatmap-only rendering: %s", error)
 
             # Keep leading zero-activity buckets so the heatmap remains aligned with the
             # canonical interval selected from event-logger.
@@ -739,11 +882,19 @@ class FetchWorker(QThread):
             if not self._is_running:
                 return
 
-            self.data_fetched.emit(buckets, True, stream_start_time, total_duration_sec, "", self.time_source.value)
+            self._emit_snapshot(
+                buckets,
+                True,
+                stream_start_time,
+                total_duration_sec,
+                "",
+                stages,
+                icon_bytes,
+            )
 
         except Exception as e:
             logging.error("Error fetching activity density: %s", e)
-            self.data_fetched.emit([], True, 0.0, 0.0, f"Error: {e}", self.time_source.value)
+            self._emit_snapshot([], True, 0.0, 0.0, f"Error: {e}")
 
 
 class PiecesDensityWidget(BaseWidget):
@@ -881,6 +1032,9 @@ class PiecesDensityWidget(BaseWidget):
             val = self._overlay.buckets[bucket_index]
             ts = self._overlay.stream_start_time + bucket_index * 60
             tooltip_text = density_tooltip_html(val, datetime.fromtimestamp(ts))
+            app_tooltip = stage_tooltip_html(self._overlay.stage_at(bucket_index))
+            if app_tooltip:
+                tooltip_text = f"{tooltip_text}<br>{app_tooltip}"
 
             QToolTip.showText(cursor_pos, tooltip_text)
         else:
@@ -954,32 +1108,25 @@ class PiecesDensityWidget(BaseWidget):
             self._selected_session_start = None
         return index
 
-    def _on_data_fetched(
-        self,
-        buckets: list[int],
-        is_streaming: bool,
-        start_time: float,
-        total_duration_sec: float,
-        error_msg: str,
-        source_value: str,
-    ):
+    def _on_data_fetched(self, snapshot: DensityTimelineSnapshot):
         if not getattr(self, "_is_active", True):
             return
         # Discard stale result: time source was toggled while the worker was running.
         # The next timer tick will re-fetch with the correct source.
-        if TimeSource.parse(source_value) is not self._time_source:
+        if TimeSource.parse(snapshot.source_value) is not self._time_source:
             return
 
         self._controls_left.update_buttons()
-        self._controls_right.update_buttons(total_duration_sec)
+        self._controls_right.update_buttons(snapshot.duration)
 
-        self._overlay.buckets = buckets
-        self._overlay.is_streaming = is_streaming
-        self._overlay.stream_start_time = start_time
-        self._overlay.error_msg = error_msg
+        self._overlay.buckets = snapshot.buckets
+        self._overlay.is_streaming = snapshot.has_interval
+        self._overlay.stream_start_time = snapshot.start_time
+        self._overlay.error_msg = snapshot.error
+        self._overlay.set_timeline(snapshot.stages, snapshot.icon_bytes)
 
-        if is_streaming:
-            self._stream_start_time = start_time
+        if snapshot.has_interval:
+            self._stream_start_time = snapshot.start_time
             self._last_streaming_time = time.time()
             if not self._overlay.isVisible():
                 self._show_overlay_below_bar()

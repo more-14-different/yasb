@@ -1,3 +1,4 @@
+import hashlib
 import sqlite3
 import sys
 import tempfile
@@ -23,7 +24,10 @@ from core.widgets.yasb.pieces_density import (  # noqa: E402
     ruler_label_x,
     selected_session_index,
 )
+from core.widgets.yasb.pieces_density_icons import IconByteCache, icon_asset_path  # noqa: E402
 from core.widgets.yasb.pieces_density_source import (  # noqa: E402
+    AppMinuteRecord,
+    AppTimelineCache,
     DensityBucketCache,
     DensitySource,
     ResolvedDensitySource,
@@ -32,8 +36,15 @@ from core.widgets.yasb.pieces_density_source import (  # noqa: E402
     _ScreenpipeWatermark,
     inspect_screenpipe_graph_features,
     integrate_density,
+    query_app_minutes,
     query_density_buckets,
     resolve_density_source,
+)
+from core.widgets.yasb.pieces_density_timeline import (  # noqa: E402
+    StageApp,
+    TimelineStage,
+    build_timeline_stages,
+    layout_timeline_stages,
 )
 
 
@@ -369,6 +380,123 @@ class DensitySourceTests(unittest.TestCase):
 
     def test_sliding_density_is_linear_and_keeps_edge_windows(self):
         self.assertEqual(integrate_density([1, 2, 3], radius=1), [3, 6, 5])
+
+
+class AppTimelineSourceTests(unittest.TestCase):
+    def test_v5_timeline_query_returns_relative_minutes_and_app_facts(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            database_path = Path(temporary_directory) / "graph.sqlite3"
+            connection = sqlite3.connect(database_path)
+            try:
+                connection.executescript(
+                    "create table graph_schema (singleton integer primary key, version integer);"
+                    "insert into graph_schema values (1, 5);"
+                    "create table source_activity_minutes (minute_start text, frame_count integer, "
+                    "ui_event_count integer, source_pack_sha256 text);"
+                    "create table source_acquisitions (source_pack_sha256 text, observed_at text);"
+                    "create table timeline_app_minutes_v1 ("
+                    "minute_start text, canonical_app_id text, display_name text, icon_sha256 text, "
+                    "engaged_score_milli integer, engaged_milliseconds integer, foreground_milliseconds integer, "
+                    "direct_event_count integer, interaction_level text, attribution_confidence_milli integer);"
+                    "insert into timeline_app_minutes_v1 values "
+                    "('2026-07-19T10:01:00Z','app:code','Code','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',9000,3000,3000,2,'direct',950);"
+                )
+                connection.commit()
+            finally:
+                connection.close()
+            start = datetime.fromisoformat("2026-07-19T10:00:00+00:00").timestamp()
+            resolved = ResolvedDensitySource(DensitySource.SCREENPIPE_GRAPH, str(database_path), None)
+
+            records = query_app_minutes(resolved, start, start, start + 120)
+
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0].bucket, 1)
+            self.assertEqual(records[0].canonical_app_id, "app:code")
+            self.assertEqual(records[0].direct_event_count, 2)
+
+    def test_non_screenpipe_source_keeps_heatmap_only(self):
+        resolved = ResolvedDensitySource(DensitySource.PIECES, "unused.sqlite", None)
+        self.assertEqual(query_app_minutes(resolved, 0, 0, 60), [])
+        self.assertEqual(AppTimelineCache().load(resolved, 0, 60, False), [])
+
+
+class AppTimelineStageTests(unittest.TestCase):
+    @staticmethod
+    def record(bucket: int, app_id: str, score: int, *, direct: int = 1) -> AppMinuteRecord:
+        return AppMinuteRecord(
+            bucket,
+            app_id,
+            app_id.title(),
+            "a" * 64,
+            score,
+            min(score, 3000),
+            min(score, 3000),
+            direct,
+            "direct" if direct else "passive",
+            950,
+        )
+
+    @staticmethod
+    def app(app_id: str, score: int) -> StageApp:
+        return StageApp(app_id, app_id.title(), "a" * 64, score, 3000, 3000, 1, "direct", 950)
+
+    def test_one_minute_noise_does_not_split_a_stable_dominant_app(self):
+        records = [
+            self.record(0, "code", 10),
+            self.record(1, "code", 10),
+            self.record(2, "chat", 11),
+            self.record(3, "code", 10),
+            self.record(4, "code", 10),
+        ]
+
+        stages = build_timeline_stages(records, 5)
+
+        self.assertEqual(len(stages), 1)
+        self.assertEqual(stages[0].dominant_app_id, "code")
+
+    def test_alternating_stage_layout_puts_largest_icon_at_opposite_edges(self):
+        stages = [
+            TimelineStage(0, 4, 1, (self.app("code", 100), self.app("terminal", 50))),
+            TimelineStage(4, 8, 6, (self.app("browser", 100), self.app("chat", 50))),
+        ]
+
+        layouts = layout_timeline_stages(stages, 800, 60)
+
+        self.assertEqual(len(layouts), 2)
+        self.assertLess(layouts[0].icons[0].y, layouts[0].icons[1].y)
+        self.assertGreater(layouts[1].icons[0].y, layouts[1].icons[1].y)
+
+    def test_similar_scores_form_a_diagonal_stack_with_lower_opacity(self):
+        stage = TimelineStage(0, 4, 2, (self.app("code", 100), self.app("terminal", 80)))
+
+        layout = layout_timeline_stages([stage], 400, 50)[0]
+
+        self.assertEqual(layout.icons[1].stack_depth, 1)
+        self.assertGreater(layout.icons[1].x, layout.icons[0].x)
+        self.assertLess(layout.icons[1].opacity, layout.icons[0].opacity)
+
+
+class AppIconCacheTests(unittest.TestCase):
+    def test_cas_loader_rejects_tampering_and_deduplicates_verified_bytes(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            graph = root / "graph.sqlite3"
+            payload = b"\x89PNG\r\n\x1a\nverified-test-payload"
+            icon_hash = hashlib.sha256(payload).hexdigest()
+            path = icon_asset_path(str(graph), icon_hash)
+            assert path is not None
+            path.parent.mkdir(parents=True)
+            path.write_bytes(payload)
+            cache = IconByteCache(maximum_entries=2)
+
+            self.assertEqual(cache.load(str(graph), {icon_hash}), {icon_hash: payload})
+            path.write_bytes(b"\x89PNG\r\n\x1a\ntampered")
+            self.assertEqual(cache.load(str(graph), {icon_hash}), {icon_hash: payload})
+            self.assertEqual(IconByteCache().load(str(graph), {icon_hash}), {})
+
+    def test_invalid_hash_cannot_escape_the_graph_bundle(self):
+        self.assertIsNone(icon_asset_path("C:/bundle/graph.sqlite3", "../outside"))
 
 
 class RefreshTests(unittest.TestCase):
