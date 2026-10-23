@@ -1,10 +1,10 @@
 # Pieces Density App Timeline：技术审计与实施方案
 
-状态：Phase 0–2 已完成，Phase 3 尚未开始
+状态：Phase 0–3 已完成，Phase 4 尚未开始
 
 规划分支：`plan/timeline-app-icons-audit`
 
-实施分支：按阶段递进；当前为两个仓库的 `feat/timeline-app-icons-phase2`
+实施分支：按阶段递进；当前为两个仓库的 `feat/timeline-app-icons-phase3`
 
 审计日期：2026-10-23
 
@@ -47,6 +47,19 @@ Phase 2 实施记录：
   到 SHA-256 CAS；current manifest 使用 Windows replace-existing/write-through 原子替换。
 - Rust lib tests 316/316 通过，`cargo clippy --all-targets -- -D warnings` 通过；Phase 2 仍未迁移
   production graph。
+
+Phase 3 实施记录：
+
+- yasb-fork `5304b6c8`：增加 v5 timeline view 的只读 range query 与 acquisition-watermark
+  delta cache；v4、Pieces fallback、view 缺失和 App reader failure 均保持 heatmap-only。
+- worker 线程构建稳定阶段、完成像素压缩并校验/预取 CAS PNG；paint path 不读取 SQLite、文件、
+  EXE 或 Screenpipe API，也不进行 PNG decode/resize。
+- renderer 使用面积感知的平方根尺寸、最多 5 个 App、相近权重 diagonal stack、可见阶段正倒
+  三角交替、stack opacity 衰减和 confidence opacity cap；过密且不相似的阶段保留事实但隐藏图标。
+- scaled pixmap 以 `(icon_sha256, logical_size, DPR)` 为 key，LRU 上限 256；tooltip 附带 App、
+  direct inputs、engaged seconds 和 confidence。
+- 相关测试 32 项（另含 2 subtests）通过，7 日/10,080 minute 合成输入阶段构建约 10.8ms、
+  layout 约 1ms；self-contained frozen dev bundle 构建通过。Phase 3 未修改用户 config/theme。
 
 ## 1. 结论
 
