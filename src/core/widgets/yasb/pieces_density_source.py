@@ -4,7 +4,7 @@ import os
 import sqlite3
 import threading
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -30,6 +30,7 @@ class ScreenpipeGraphFeatures:
     density_ui_column: str | None
     supports_acquisition_watermark: bool
     supports_app_timeline: bool
+    supports_app_timeline_projection_kind: bool = False
     supports_app_timeline_v2: bool = False
     supports_global_timeline_v2: bool = False
     supports_icon_colors: bool = False
@@ -317,6 +318,7 @@ def _inspect_screenpipe_graph_features(connection: sqlite3.Connection) -> Screen
         supports_acquisition_watermark={"source_pack_sha256", "observed_at"}.issubset(acquisition_columns)
         and "source_pack_sha256" in minute_columns,
         supports_app_timeline=_APP_TIMELINE_COLUMNS.issubset(timeline_columns),
+        supports_app_timeline_projection_kind="projection_kind" in timeline_columns,
         supports_app_timeline_v2=_APP_TIMELINE_V2_COLUMNS.issubset(timeline_v2_columns),
         supports_global_timeline_v2=_GLOBAL_TIMELINE_V2_COLUMNS.issubset(global_v2_columns),
         supports_icon_colors={"representative_color_rgb", "color_algorithm_version"}.issubset(icon_columns),
@@ -436,13 +438,17 @@ def _query_v1_app_records(
     stream_start: float,
     start_text: str,
     end_text: str,
+    *,
+    supports_projection_kind: bool = False,
 ) -> dict[tuple[int, str], AppMinuteRecord]:
     records: dict[tuple[int, str], AppMinuteRecord] = {}
+    projection_kind = "projection_kind" if supports_projection_kind else "'exact'"
     rows = connection.execute(
         "select cast((unixepoch(minute_start, 'subsec') - ?) / 60 as integer), "
         "canonical_app_id, display_name, icon_sha256, engaged_score_milli, "
         "engaged_milliseconds, foreground_milliseconds, direct_event_count, "
-        "interaction_level, attribution_confidence_milli "
+        "interaction_level, attribution_confidence_milli, "
+        f"{projection_kind} "
         "from timeline_app_minutes_v1 where minute_start >= ? and minute_start < ? "
         "order by minute_start, engaged_score_milli desc, canonical_app_id",
         (stream_start, start_text, end_text),
@@ -460,6 +466,7 @@ def _query_v1_app_records(
             interaction_level=str(row[8]),
             attribution_confidence_milli=int(row[9]),
             direct_input_count=int(row[7]),
+            projection_kind=str(row[10]),
         )
         records[(record.bucket, record.canonical_app_id)] = record
     return records
@@ -483,7 +490,13 @@ def query_activity_timeline(
         records: dict[tuple[int, str], AppMinuteRecord] = {}
         has_v2 = features.supports_app_timeline_v2 and features.supports_global_timeline_v2
         if features.supports_app_timeline and not has_v2:
-            records = _query_v1_app_records(connection, stream_start, start_text, end_text)
+            records = _query_v1_app_records(
+                connection,
+                stream_start,
+                start_text,
+                end_text,
+                supports_projection_kind=features.supports_app_timeline_projection_kind,
+            )
 
         if has_v2:
             v1_join = (
@@ -635,6 +648,17 @@ def query_activity_timeline(
                     )
                 )
         effective_contract_version = 2 if has_v2 else 1
+        if has_v2:
+            global_buckets = {record.bucket for record in global_records}
+            signal_buckets = {
+                record.bucket
+                for record in records.values()
+                if record.direct_input_count > 0 or record.non_direct_activity_count > 0
+            }
+            if not signal_buckets.issubset(global_buckets):
+                raise sqlite3.DatabaseError(
+                    "screenpipe graph has signal-bearing app activity v2 facts without global v2 facts"
+                )
         has_legacy_gap = False
         if has_v2 and features.supports_app_timeline:
             has_legacy_gap = bool(
@@ -646,18 +670,39 @@ def query_activity_timeline(
                     (start_text, end_text),
                 ).fetchone()[0]
             )
-        if has_v2 and (not global_records or has_legacy_gap):
-            if records:
-                if not global_records:
-                    raise sqlite3.DatabaseError("screenpipe graph has app activity v2 facts without global v2 facts")
-                records.clear()
-            global_records.clear()
-            records = (
-                _query_v1_app_records(connection, stream_start, start_text, end_text)
-                if features.supports_app_timeline
-                else {}
+        if has_v2 and has_legacy_gap:
+            legacy_records = _query_v1_app_records(
+                connection,
+                stream_start,
+                start_text,
+                end_text,
+                supports_projection_kind=features.supports_app_timeline_projection_kind,
             )
-            effective_contract_version = 1
+            if global_records:
+                exact_buckets = {record.bucket for record in global_records}
+                for key, legacy in legacy_records.items():
+                    if legacy.bucket in exact_buckets:
+                        continue
+                    focus = records.get(key)
+                    legacy = replace(
+                        legacy,
+                        foreground_milliseconds=0,
+                        projection_kind="historical_approx",
+                    )
+                    if focus is not None and focus.foreground_milliseconds > 0:
+                        legacy = replace(
+                            legacy,
+                            foreground_milliseconds=focus.foreground_milliseconds,
+                            attribution_confidence_milli=min(
+                                legacy.attribution_confidence_milli,
+                                focus.attribution_confidence_milli,
+                            ),
+                        )
+                    records[key] = legacy
+            else:
+                records = legacy_records
+                global_records.clear()
+                effective_contract_version = 1
         ordered_records = tuple(
             sorted(
                 records.values(),

@@ -536,14 +536,14 @@ class AppTimelineSourceTests(unittest.TestCase):
             self.assertEqual(query.call_args.args[2], start + 60)
             self.assertEqual([record.bucket for record in data.app_records], [0, 1])
 
-    def test_v7_query_prefers_conserved_v2_signals_and_color_metadata(self):
+    def test_v8_query_prefers_conserved_v2_signals_and_allows_focus_only_rows(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             database_path = Path(temporary_directory) / "graph.sqlite3"
             connection = sqlite3.connect(database_path)
             try:
                 connection.executescript(
                     "create table graph_schema (singleton integer primary key, version integer);"
-                    "insert into graph_schema values (1, 7);"
+                    "insert into graph_schema values (1, 8);"
                     "create table source_activity_minutes (minute_start text, effective_frame_count integer, "
                     "effective_ui_event_count integer, source_pack_sha256 text);"
                     "create table source_acquisitions (source_pack_sha256 text, observed_at text);"
@@ -571,6 +571,9 @@ class AppTimelineSourceTests(unittest.TestCase):
                     "insert into timeline_app_minutes_v2 values "
                     "('2026-07-19T10:01:00Z','app:code','Code','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',2,1,1,0,0,0,0,5,4,1,3000,'direct',950,'exact');"
+                    "insert into timeline_app_minutes_v2 values "
+                    "('2026-07-19T10:00:00Z','app:terminal','Terminal',null,"
+                    "0,0,0,0,0,0,0,0,0,0,45000,'passive',925,'exact');"
                     "insert into timeline_global_minutes_v2 values "
                     "('2026-07-19T10:01:00Z',3,7,2,5,1,2,"
                     "'{\"direct_input:missing_app_identity\":1,\"non_direct_activity:missing_app_identity\":2}');"
@@ -586,10 +589,18 @@ class AppTimelineSourceTests(unittest.TestCase):
             data = query_activity_timeline(resolved, start, start, start + 120)
 
             self.assertEqual(data.contract_version, 2)
-            self.assertEqual(len(data.app_records), 1)
-            self.assertEqual(data.app_records[0].direct_event_count, 2)
-            self.assertEqual(data.app_records[0].non_direct_activity_count, 5)
-            self.assertEqual(data.app_records[0].representative_color_rgb, 2121983)
+            self.assertEqual(len(data.app_records), 2)
+            code = next(record for record in data.app_records if record.canonical_app_id == "app:code")
+            focus_only = next(
+                record for record in data.app_records if record.canonical_app_id == "app:terminal"
+            )
+            self.assertEqual(code.direct_event_count, 2)
+            self.assertEqual(code.non_direct_activity_count, 5)
+            self.assertEqual(code.representative_color_rgb, 2121983)
+            self.assertEqual(focus_only.direct_event_count, 0)
+            self.assertEqual(focus_only.non_direct_activity_count, 0)
+            self.assertEqual(focus_only.foreground_milliseconds, 45000)
+            self.assertEqual(len(data.global_records), 1)
             self.assertEqual(data.global_records[0].unattributed_direct_input_count, 1)
             self.assertIn(
                 UnattributedReasonCount("non_direct_activity", "missing_app_identity", 2),
@@ -623,9 +634,17 @@ class AppTimelineSourceTests(unittest.TestCase):
             finally:
                 connection.close()
             fallback = query_activity_timeline(resolved, start, start, start + 120)
-            self.assertEqual(fallback.contract_version, 1)
-            self.assertEqual(fallback.global_records, ())
-            self.assertEqual({record.canonical_app_id for record in fallback.app_records}, {"app:legacy", "app:code"})
+            self.assertEqual(fallback.contract_version, 2)
+            self.assertEqual(len(fallback.global_records), 1)
+            self.assertEqual(
+                {record.canonical_app_id for record in fallback.app_records},
+                {"app:legacy", "app:terminal", "app:code"},
+            )
+            legacy = next(
+                record for record in fallback.app_records if record.canonical_app_id == "app:legacy"
+            )
+            self.assertEqual(legacy.projection_kind, "historical_approx")
+            self.assertEqual(legacy.foreground_milliseconds, 0)
 
     def test_v2_malformed_residuals_are_rejected(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
