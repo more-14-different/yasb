@@ -27,6 +27,10 @@ from core.widgets.yasb.pieces_density_source import (  # noqa: E402
     DensityBucketCache,
     DensitySource,
     ResolvedDensitySource,
+    _query_screenpipe_refresh_state,
+    _ScreenpipeRefreshState,
+    _ScreenpipeWatermark,
+    inspect_screenpipe_graph_features,
     integrate_density,
     query_density_buckets,
     resolve_density_source,
@@ -201,6 +205,72 @@ class DensitySourceTests(unittest.TestCase):
                 [(0, 5)],
             )
 
+    def test_v4_graph_features_keep_heatmap_without_app_timeline(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            database_path = Path(temporary_directory) / "screenpipe-graph.sqlite"
+            connection = sqlite3.connect(database_path)
+            try:
+                connection.executescript(
+                    "create table graph_schema (singleton integer primary key, version integer not null);"
+                    "insert into graph_schema values (1, 4);"
+                    "create table source_acquisitions ("
+                    "source_pack_sha256 text primary key, observed_at text not null);"
+                    "create table source_activity_minutes ("
+                    "source_generation_id text, minute_start text, frame_count integer, "
+                    "effective_frame_count integer, ui_event_count integer, "
+                    "effective_ui_event_count integer, source_pack_sha256 text);"
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            features = inspect_screenpipe_graph_features(str(database_path))
+
+            self.assertEqual(features.schema_version, 4)
+            self.assertTrue(features.supports_density)
+            self.assertTrue(features.supports_acquisition_watermark)
+            self.assertFalse(features.supports_app_timeline)
+
+    def test_screenpipe_watermark_detects_historical_rows_inserted_by_merge(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            database_path = Path(temporary_directory) / "screenpipe-graph.sqlite"
+            connection = sqlite3.connect(database_path)
+            try:
+                connection.executescript(
+                    "create table source_acquisitions ("
+                    "source_pack_sha256 text primary key, observed_at text not null);"
+                    "create table source_activity_minutes ("
+                    "minute_start text, frame_count integer, ui_event_count integer, "
+                    "source_pack_sha256 text);"
+                    "insert into source_acquisitions values ('live', '2026-10-23T10:00:00Z');"
+                    "insert into source_activity_minutes values "
+                    "('2026-10-23T09:59:00Z', 1, 1, 'live');"
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            initial = _query_screenpipe_refresh_state(str(database_path), None)
+            assert initial is not None
+
+            connection = sqlite3.connect(database_path)
+            try:
+                connection.executescript(
+                    "insert into source_acquisitions values ('restored', '2026-09-01T00:00:00Z');"
+                    "insert into source_activity_minutes values "
+                    "('2026-08-31T23:59:00Z', 2, 2, 'restored');"
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            refreshed = _query_screenpipe_refresh_state(str(database_path), initial.watermark)
+            assert refreshed is not None
+            self.assertEqual(
+                refreshed.earliest_changed_minute,
+                datetime.fromisoformat("2026-08-31T23:59:00+00:00").timestamp(),
+            )
+
     def test_active_pieces_cache_only_refreshes_the_two_newest_minutes(self):
         cache = DensityBucketCache()
         resolved = ResolvedDensitySource(DensitySource.PIECES, "unused.sqlite", None)
@@ -214,18 +284,46 @@ class DensitySourceTests(unittest.TestCase):
         self.assertEqual(query.call_count, 2)
         self.assertEqual(query.call_args_list[1].args[2:], (120, 240))
 
-    def test_active_screenpipe_cache_reloads_late_minutes_from_the_full_interval(self):
+    def test_legacy_screenpipe_cache_reloads_late_minutes_from_the_full_interval(self):
         cache = DensityBucketCache()
         resolved = ResolvedDensitySource(DensitySource.SCREENPIPE_GRAPH, "unused.sqlite", None)
-        with patch(
-            "core.widgets.yasb.pieces_density_source.query_density_buckets",
-            side_effect=[[(2, 3)], [(0, 1), (1, 2), (2, 3), (3, 4)]],
-        ) as query:
+        with (
+            patch(
+                "core.widgets.yasb.pieces_density_source._query_screenpipe_refresh_state",
+                return_value=None,
+            ),
+            patch(
+                "core.widgets.yasb.pieces_density_source.query_density_buckets",
+                side_effect=[[(2, 3)], [(0, 1), (1, 2), (2, 3), (3, 4)]],
+            ) as query,
+        ):
             self.assertEqual(cache.load(resolved, 0, 180, False), [0, 0, 3])
             self.assertEqual(cache.load(resolved, 0, 240, False), [1, 2, 3, 4])
 
         self.assertEqual(query.call_count, 2)
         self.assertEqual(query.call_args_list[1].args[2:], (0, 240))
+
+    def test_active_screenpipe_cache_refreshes_only_acquisition_minutes(self):
+        cache = DensityBucketCache()
+        resolved = ResolvedDensitySource(DensitySource.SCREENPIPE_GRAPH, "unused.sqlite", None)
+        with (
+            patch(
+                "core.widgets.yasb.pieces_density_source._query_screenpipe_refresh_state",
+                side_effect=[
+                    _ScreenpipeRefreshState(_ScreenpipeWatermark(1, "2026-10-23T10:00:00Z"), None),
+                    _ScreenpipeRefreshState(_ScreenpipeWatermark(2, "2026-10-23T10:01:00Z"), 60),
+                ],
+            ),
+            patch(
+                "core.widgets.yasb.pieces_density_source.query_density_buckets",
+                side_effect=[[(0, 1), (1, 2), (2, 3)], [(1, 20), (2, 3), (3, 4)]],
+            ) as query,
+        ):
+            self.assertEqual(cache.load(resolved, 0, 180, False), [1, 2, 3])
+            self.assertEqual(cache.load(resolved, 0, 240, False), [1, 20, 3, 4])
+
+        self.assertEqual(query.call_count, 2)
+        self.assertEqual(query.call_args_list[1].args[2:], (60, 240))
 
     def test_closed_interval_cache_avoids_reopening_the_database(self):
         cache = DensityBucketCache()
