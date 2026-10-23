@@ -1,4 +1,4 @@
-import statistics
+import math
 import sys
 import time
 import unittest
@@ -265,7 +265,7 @@ class ActivityLayoutPerformanceTests(unittest.TestCase):
         globals_ = [global_minute(bucket, bucket % 4, (bucket % 9) + 1) for bucket in range(1_440)]
         first = build_activity_layout(records, globals_, 1_440, 3_840, 96)
         samples = []
-        for _ in range(20):
+        for _ in range(50):
             started = time.perf_counter()
             snapshot = build_activity_layout(
                 records,
@@ -278,7 +278,7 @@ class ActivityLayoutPerformanceTests(unittest.TestCase):
             )
             samples.append(time.perf_counter() - started)
 
-        p95 = statistics.quantiles(samples, n=20)[18]
+        p95 = sorted(samples)[math.ceil(len(samples) * 0.95) - 1]
         self.assertGreater(snapshot.metrics.reused_component_count, 0)
         self.assertLessEqual(p95, 0.025, f"warm incremental layout p95 was {p95 * 1000:.2f} ms")
 

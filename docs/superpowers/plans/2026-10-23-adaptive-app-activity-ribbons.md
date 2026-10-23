@@ -318,3 +318,16 @@ Each completed phase appends:
 - `.venv\Scripts\python.exe -m ruff check src tests` — passed.
 - No production database, cold bundle, configuration, Qt rendering path, or running service was modified in Phase 4.
 
+### Phase 5 evidence — 2026-10-23
+
+- `yasb-fork` replaces v2 point columns with a cached Qt activity layer: app ownership baselines, direct-input ribbons and pins, downward non-direct clouds, passive hatch/dash, focus bridges, leader lines, representative-color icons, plus the directly visible global direct ribbon, upward non-direct mountain, and unattributed residual overlay.
+- The lowest icon edge remains above the ruler. Similar app icons may use bounded diagonal stacking, while independent app envelopes remain separately hit-testable and their hover details report interval, category counts, direct/non-direct split, focus residency, confidence/projection kind, and residual reasons.
+- Stable pixels are rasterized into a `QImage` on the worker thread. The GUI thread only converts the completed image into a cached `QPixmap`, adds the ruler/control exclusions, swaps an immutable snapshot, and paints the cached layer plus the current hover highlight; resize and data invalidations are coalesced.
+- Worker-side decoded/scaled image reuse is bounded by an LRU, and unchanged visual snapshots do not trigger cache replacement or repaint.
+- On the fixed synthetic 3,840 px fixture, worker rasterization measured 62.5 ms, GUI ruler/cache construction 1.144 ms, and snapshot swap 2.880 ms. Cached paint measured 0.051 ms median, 0.082 ms p95, and 2.373 ms maximum. The combined cold layout/raster acceptance test remains below 150 ms.
+- `.venv\Scripts\python.exe -m pytest tests\test_pieces_density.py tests\test_pieces_density_activity.py tests\test_pieces_density_rendering.py -q` — 57 tests plus 2 subtests passed in 3.70 s.
+- `.venv\Scripts\python.exe -m pytest -q` — 1,242 tests plus 2 subtests passed in 51.19 s. `.venv\Scripts\python.exe -m ruff check src tests` and `git diff --check` passed.
+- `restart-dev-dist.ps1` rebuilt and relaunched `src\dist\yasb.exe`; the frozen process responded, emitted no new error/critical activity-timeline records, and the live consumer verifier reported five healthy, three access-restricted, and zero failing contracts, including a healthy runtime-source marker for `yasb-pieces-density`.
+- A full virtual-desktop capture verified that the fork bar remained correctly positioned on both monitors. A separate v2 renderer preview used real production icon assets to verify the approved two-signal grammar without modifying the production graph or YASB configuration.
+- The production graph remained schema v5 throughout Phase 5, so the deployed bar intentionally exercised the compatible v1 fallback. No production database, cold bundle, configuration, or source service was modified.
+

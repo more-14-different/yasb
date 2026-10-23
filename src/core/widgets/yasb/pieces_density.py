@@ -1,4 +1,5 @@
 import logging
+import math
 import os
 import sqlite3
 import sys
@@ -15,11 +16,13 @@ from PyQt6.QtGui import (
     QColor,
     QCursor,
     QHideEvent,
+    QImage,
     QLinearGradient,
     QPainter,
     QPainterPath,
     QPaintEvent,
     QPen,
+    QPixmap,
     QResizeEvent,
     QShowEvent,
 )
@@ -29,8 +32,14 @@ from win32con import SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE
 from core.utils.win32.bindings import SetWindowPos
 from core.validation.widgets.yasb.pieces_density import PiecesDensityConfig
 from core.widgets.base import BaseWidget
-from core.widgets.yasb.pieces_density_icons import IconByteCache, PixmapLru
+from core.widgets.yasb.pieces_density_activity import (
+    ActivityLayoutPolicy,
+    ActivityLayoutSnapshot,
+    build_activity_layout,
+)
+from core.widgets.yasb.pieces_density_icons import IconByteCache, ImageLru, PixmapLru
 from core.widgets.yasb.pieces_density_source import (
+    ActivityTimelineData,
     AppTimelineCache,
     DensityBucketCache,
     integrate_density,
@@ -53,6 +62,7 @@ TRUTH_TIME_REQUIRED_COLUMNS = {
 _DENSITY_BUCKET_CACHE = DensityBucketCache()
 _APP_TIMELINE_CACHE = AppTimelineCache()
 _ICON_BYTE_CACHE = IconByteCache()
+_ICON_IMAGE_CACHE = ImageLru()
 TIMELINE_MAJOR_TICK_HEIGHT = 10.0
 TIMELINE_ICON_RULER_GAP = 2.0
 
@@ -67,6 +77,10 @@ class DensityTimelineSnapshot:
     source_value: str
     stages: list[TimelineStage]
     icon_bytes: dict[str, bytes]
+    activity_data: ActivityTimelineData | None = None
+    activity_layout: ActivityLayoutSnapshot | None = None
+    activity_image: QImage | None = None
+    timings_ms: tuple[tuple[str, float], ...] = ()
 
 
 class _AnimatedBar(Protocol):
@@ -134,6 +148,76 @@ def stage_tooltip_html(stage: TimelineStage | None) -> str:
             f'<td style="white-space: nowrap;">{app.direct_event_count} inputs</td>'
             f'<td style="white-space: nowrap;">{seconds:.1f}s engaged</td>'
             f'<td style="white-space: nowrap;">{app.confidence_milli / 10:.0f}%</td>'
+            "</tr>"
+        )
+    return f'<table cellspacing="3" cellpadding="3">{"".join(rows)}</table>' if rows else ""
+
+
+def activity_tooltip_html(
+    layout: ActivityLayoutSnapshot | None,
+    data: ActivityTimelineData | None,
+    bucket: int,
+) -> str:
+    if layout is None or data is None:
+        return ""
+    global_record = next((record for record in data.global_records if record.bucket == bucket), None)
+    app_records = {
+        record.canonical_app_id: record for record in data.app_records if record.bucket == bucket
+    }
+    components = [
+        geometry
+        for geometry in layout.components
+        if geometry.component.start_bucket <= bucket < geometry.component.end_bucket
+    ]
+    components.sort(
+        key=lambda geometry: (
+            -(app_records.get(geometry.component.app_id).direct_input_count if geometry.component.app_id in app_records else 0),
+            -(
+                app_records.get(geometry.component.app_id).non_direct_activity_count
+                if geometry.component.app_id in app_records
+                else 0
+            ),
+            geometry.component.app_id,
+        )
+    )
+    rows: list[str] = []
+    for geometry in components[:8]:
+        component = geometry.component
+        record = app_records.get(component.app_id)
+        direct = record.direct_input_count if record else 0
+        non_direct = record.non_direct_activity_count if record else 0
+        if bucket in component.bridge_buckets:
+            state = "focus bridge"
+        elif direct:
+            state = "direct"
+        elif non_direct:
+            state = "observable"
+        else:
+            state = "interval"
+        rows.append(
+            "<tr>"
+            f'<td><font color="{component.color.hex_rgb}">●</font></td>'
+            f'<td style="white-space: nowrap;"><b>{escape(component.display_name)}</b></td>'
+            f'<td style="white-space: nowrap;">{direct} input</td>'
+            f'<td style="white-space: nowrap;">{non_direct} activity</td>'
+            f'<td style="white-space: nowrap;">{state}</td>'
+            f'<td style="white-space: nowrap;">{component.confidence_milli / 10:.0f}%</td>'
+            "</tr>"
+        )
+    if global_record is not None:
+        residual = global_record.unattributed_direct_input_count + global_record.unattributed_non_direct_activity_count
+        reasons = ", ".join(
+            f"{reason.signal_kind}:{escape(reason.reason)}={reason.count}"
+            for reason in global_record.unattributed_reason_counts
+        )
+        rows.append(
+            "<tr>"
+            '<td><font color="#a0a0a0">◆</font></td>'
+            '<td style="white-space: nowrap;"><b>Global</b></td>'
+            f'<td style="white-space: nowrap;">{global_record.direct_input_count} input</td>'
+            f'<td style="white-space: nowrap;">{global_record.non_direct_activity_count} activity</td>'
+            f'<td style="white-space: nowrap;">{residual} residual</td>'
+            f'<td style="white-space: nowrap;">{reasons or "fully attributed"}</td>'
             "</tr>"
         )
     return f'<table cellspacing="3" cellpadding="3">{"".join(rows)}</table>' if rows else ""
@@ -215,6 +299,142 @@ def parse_color(color_str: str) -> QColor:
             except ValueError:
                 pass
     return QColor(color_str)
+
+
+def color_with_alpha(rgb: int, alpha: int) -> QColor:
+    color = QColor.fromRgb(rgb)
+    color.setAlpha(alpha)
+    return color
+
+
+def render_activity_image(
+    layout: ActivityLayoutSnapshot,
+    icon_bytes: dict[str, bytes],
+    config: PiecesDensityConfig,
+    height: int,
+    dpr: float,
+) -> QImage:
+    image = QImage(
+        max(round(layout.width * dpr), 1),
+        max(round(height * dpr), 1),
+        QImage.Format.Format_ARGB32_Premultiplied,
+    )
+    image.setDevicePixelRatio(dpr)
+    image.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(image)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    global_height = max(height - TIMELINE_MAJOR_TICK_HEIGHT, 1.0)
+
+    if layout.global_envelope:
+        mountain = QPainterPath()
+        first = layout.global_envelope[0]
+        mountain.moveTo(first.pixel, height)
+        for sample in layout.global_envelope:
+            mountain.lineTo(sample.pixel, height - sample.non_direct_level * global_height)
+        mountain.lineTo(layout.global_envelope[-1].pixel, height)
+        mountain.closeSubpath()
+        mountain_color = parse_color(config.color_high)
+        mountain_color.setAlpha(92)
+        painter.fillPath(mountain, QBrush(mountain_color))
+
+        if config.show_unattributed_residual:
+            residual = QPainterPath()
+            residual.moveTo(first.pixel, height)
+            for sample in layout.global_envelope:
+                residual.lineTo(sample.pixel, height - sample.residual_non_direct_level * global_height)
+            residual.lineTo(layout.global_envelope[-1].pixel, height)
+            residual.closeSubpath()
+            painter.fillPath(
+                residual,
+                QBrush(QColor(175, 175, 175, 95), Qt.BrushStyle.Dense4Pattern),
+            )
+
+        if config.show_direct_ribbon:
+            for index, sample in enumerate(layout.global_envelope):
+                if sample.direct_level <= 0:
+                    continue
+                next_x = (
+                    layout.global_envelope[index + 1].pixel
+                    if index + 1 < len(layout.global_envelope)
+                    else sample.pixel + 1
+                )
+                painter.fillRect(
+                    QRectF(sample.pixel, height - 6, max(next_x - sample.pixel, 1), 5),
+                    QColor(100, 224, 255, round(45 + sample.direct_level * 190)),
+                )
+                if config.show_unattributed_residual and sample.residual_direct_level > 0:
+                    painter.setPen(QPen(QColor(210, 210, 210, 180), 1.0, Qt.PenStyle.DashLine))
+                    painter.drawLine(QPointF(sample.pixel, height - 7), QPointF(next_x, height - 7))
+
+    track_height = layout.band_height / max(layout.policy.max_tracks, 1)
+    for geometry in layout.components:
+        component = geometry.component
+        if geometry.track >= 0:
+            baseline = geometry.track * track_height + 2.0
+            painter.setPen(QPen(color_with_alpha(component.color.rgb, 210), 1.0))
+            painter.drawLine(QPointF(geometry.x_start, baseline), QPointF(geometry.x_end, baseline))
+            if config.show_non_direct_cloud and geometry.envelope:
+                cloud = QPainterPath()
+                cloud.moveTo(geometry.x_start, baseline)
+                for sample in geometry.envelope:
+                    cloud.lineTo(sample.pixel, baseline + sample.non_direct_level * max(track_height - 4, 1))
+                cloud.lineTo(geometry.x_end, baseline)
+                cloud.closeSubpath()
+                painter.fillPath(cloud, QBrush(color_with_alpha(component.color.rgb, 72)))
+                painter.strokePath(cloud, QPen(color_with_alpha(component.color.rgb, 145), 0.8))
+            if config.show_direct_ribbon:
+                for index, sample in enumerate(geometry.envelope):
+                    if sample.direct_level <= 0:
+                        continue
+                    next_x = (
+                        geometry.envelope[index + 1].pixel
+                        if index + 1 < len(geometry.envelope)
+                        else sample.pixel + 1
+                    )
+                    painter.fillRect(
+                        QRectF(sample.pixel, baseline - 1.5, max(next_x - sample.pixel, 1), 3.0),
+                        color_with_alpha(component.color.rgb, round(48 + sample.direct_level * 207)),
+                    )
+            if geometry.bridge_segments:
+                painter.setPen(QPen(color_with_alpha(component.color.rgb, 175), 1.0, Qt.PenStyle.DotLine))
+                for left, right in geometry.bridge_segments:
+                    painter.drawLine(QPointF(left, baseline), QPointF(right, baseline))
+        else:
+            baseline = max(layout.band_height - 3, 1)
+        if geometry.direct_pin_x is not None:
+            painter.setPen(QPen(color_with_alpha(component.color.rgb, 235), 1.4))
+            painter.drawLine(
+                QPointF(geometry.direct_pin_x, max(baseline - 4, 0)),
+                QPointF(geometry.direct_pin_x, min(baseline + 6, layout.band_height)),
+            )
+
+    for geometry in layout.components:
+        icon = geometry.icon
+        icon_hash = geometry.component.icon_sha256
+        if icon is None or not icon_hash:
+            continue
+        if icon.leader_from_x is not None:
+            baseline = geometry.track * track_height + 2.0
+            painter.setPen(QPen(color_with_alpha(geometry.component.color.rgb, 150), 0.8))
+            painter.drawLine(
+                QPointF(icon.leader_from_x, baseline),
+                QPointF(icon.x + icon.size / 2, icon.y + icon.size),
+            )
+        payload = icon_bytes.get(icon_hash)
+        if payload is None:
+            continue
+        icon_image = _ICON_IMAGE_CACHE.get_or_prepare(icon_hash, payload, icon.size, dpr)
+        if icon_image is None:
+            continue
+        painter.setOpacity(icon.opacity)
+        painter.drawImage(
+            QRectF(icon.x, icon.y, icon.size, icon.size),
+            icon_image,
+            QRectF(icon_image.rect()),
+        )
+        painter.setOpacity(1.0)
+    painter.end()
+    return image
 
 
 class SessionManager:
@@ -529,12 +749,36 @@ class DensityOverlay(QFrame):
         self.timeline_stages: list[TimelineStage] = []
         self.timeline_layouts: list[StageLayout] = []
         self.icon_bytes: dict[str, bytes] = {}
+        self.activity_data: ActivityTimelineData | None = None
+        self.activity_layout: ActivityLayoutSnapshot | None = None
+        self.activity_image: QImage | None = None
+        self._activity_static_layer: QPixmap | None = None
+        self._activity_hover_layer: QPixmap | None = None
+        self._activity_cache_build_ms = 0.0
+        self._activity_paint_samples_ms: list[float] = []
+        self._layout_refresh_size: tuple[int, int] | None = None
         self._pixmaps = PixmapLru()
 
-    def set_timeline(self, stages: list[TimelineStage], icon_bytes: dict[str, bytes]) -> None:
+    def set_timeline(
+        self,
+        stages: list[TimelineStage],
+        icon_bytes: dict[str, bytes],
+        activity_data: ActivityTimelineData | None = None,
+        activity_layout: ActivityLayoutSnapshot | None = None,
+        activity_image: QImage | None = None,
+    ) -> None:
         self.timeline_stages = stages
         self.icon_bytes = icon_bytes
-        self._rebuild_timeline_layout()
+        self.activity_data = activity_data
+        self.activity_layout = activity_layout
+        self.activity_image = activity_image
+        self._activity_hover_layer = None
+        if activity_layout is not None:
+            self.timeline_layouts = []
+            self._rebuild_activity_render_cache()
+        else:
+            self._activity_static_layer = None
+            self._rebuild_timeline_layout()
 
     def _rebuild_timeline_layout(self) -> None:
         icon_bottom = max(self.height() - TIMELINE_MAJOR_TICK_HEIGHT - TIMELINE_ICON_RULER_GAP, 0)
@@ -566,10 +810,23 @@ class DensityOverlay(QFrame):
             None,
         )
 
+    def activity_tooltip_at(self, bucket: int) -> str:
+        return activity_tooltip_html(self.activity_layout, self.activity_data, bucket)
+
     @override
     def resizeEvent(self, a0: QResizeEvent | None) -> None:
         super().resizeEvent(a0)
-        self._rebuild_timeline_layout()
+        if self.activity_layout is None:
+            self._rebuild_timeline_layout()
+            return
+        size = (self.width(), self.height())
+        if self.activity_layout.width == self.width():
+            self._rebuild_activity_render_cache()
+            return
+        self._activity_static_layer = None
+        if self._layout_refresh_size != size:
+            self._layout_refresh_size = size
+            QTimer.singleShot(0, self.widget.request_refresh)
 
     def _control_exclusion_rects(self) -> list[QRectF]:
         overlay_geometry = self.geometry()
@@ -586,8 +843,121 @@ class DensityOverlay(QFrame):
             exclusions.append(exclusion)
         return exclusions
 
+    def set_hover_bucket(self, bucket: int | None) -> None:
+        if self.hover_idx == bucket:
+            return
+        self.hover_idx = bucket
+        if self.activity_layout is not None:
+            self._rebuild_activity_hover_layer()
+        self.update()
+
+    def _new_render_layer(self) -> QPixmap:
+        dpr = self.devicePixelRatioF()
+        layer = QPixmap(max(round(self.width() * dpr), 1), max(round(self.height() * dpr), 1))
+        layer.setDevicePixelRatio(dpr)
+        layer.fill(Qt.GlobalColor.transparent)
+        return layer
+
+    def _draw_cached_ruler(self, painter: QPainter, bucket_count: int) -> None:
+        if bucket_count <= 1:
+            return
+        width = self.width()
+        height = self.height()
+        step_x = width / (bucket_count - 1)
+        font = painter.font()
+        font.setPointSize(8)
+        painter.setFont(font)
+        font_metrics = painter.fontMetrics()
+        exclusions = self._control_exclusion_rects()
+        for index in range(bucket_count):
+            value = datetime.fromtimestamp(self.stream_start_time + index * 60)
+            if bucket_count > 720:
+                minor_tick = value.minute == 30
+            else:
+                minor_tick = value.minute % 10 == 0
+            x = index * step_x
+            if value.minute == 0:
+                painter.setPen(QPen(QColor(255, 255, 255, 150), 1.5))
+                painter.drawLine(QPointF(x, height), QPointF(x, height - TIMELINE_MAJOR_TICK_HEIGHT))
+                label = format_compact_time(value)
+                label_width = font_metrics.horizontalAdvance(label)
+                label_x = ruler_label_x(
+                    x,
+                    font_metrics.horizontalAdvance(str(value.hour)),
+                    font_metrics.horizontalAdvance(":"),
+                    label_width,
+                    width,
+                )
+                normal_baseline = height - 14
+                label_rect = QRectF(
+                    label_x,
+                    normal_baseline - font_metrics.ascent(),
+                    label_width,
+                    font_metrics.height(),
+                )
+                label_baseline = ruler_label_baseline(
+                    normal_baseline,
+                    label_rect,
+                    exclusions,
+                    font_metrics.descent(),
+                )
+                painter.setPen(QColor(255, 255, 255, 200))
+                painter.drawText(QPointF(label_x, label_baseline), label)
+            elif minor_tick:
+                painter.setPen(QPen(QColor(255, 255, 255, 60), 1.0))
+                painter.drawLine(QPointF(x, height), QPointF(x, height - 5))
+
+    def _rebuild_activity_render_cache(self) -> None:
+        layout = self.activity_layout
+        if layout is None or self.width() <= 0 or self.height() <= 0 or layout.width != self.width():
+            self._activity_static_layer = None
+            return
+        started = time.perf_counter()
+        image = self.activity_image
+        if image is None:
+            image = render_activity_image(
+                layout,
+                self.icon_bytes,
+                self.config,
+                self.height(),
+                self.devicePixelRatioF(),
+            )
+        layer = QPixmap.fromImage(image)
+        painter = QPainter(layer)
+        self._draw_cached_ruler(painter, layout.bucket_count)
+        painter.end()
+        self._activity_static_layer = layer
+        self._activity_cache_build_ms = (time.perf_counter() - started) * 1000
+        self._layout_refresh_size = None
+        self._rebuild_activity_hover_layer()
+
+    def _rebuild_activity_hover_layer(self) -> None:
+        layout = self.activity_layout
+        if layout is None or self.hover_idx is None or self.width() <= 0 or self.height() <= 0:
+            self._activity_hover_layer = None
+            return
+        layer = self._new_render_layer()
+        painter = QPainter(layer)
+        left_bucket = max(self.hover_idx - 5, 0)
+        right_bucket = min(self.hover_idx + 5, layout.bucket_count - 1)
+        left = left_bucket / max(layout.bucket_count - 1, 1) * self.width()
+        right = right_bucket / max(layout.bucket_count - 1, 1) * self.width()
+        painter.fillRect(QRectF(left, 0, max(right - left, 1), self.height()), QColor(255, 255, 255, 20))
+        track_height = layout.band_height / max(layout.policy.max_tracks, 1)
+        for geometry in layout.components:
+            if geometry.track < 0 or not (
+                geometry.component.start_bucket <= self.hover_idx < geometry.component.end_bucket
+            ):
+                continue
+            baseline = geometry.track * track_height + 2.0
+            painter.setPen(QPen(color_with_alpha(geometry.component.color.rgb, 245), 2.0))
+            painter.drawLine(QPointF(geometry.x_start, baseline), QPointF(geometry.x_end, baseline))
+        painter.end()
+        self._activity_hover_layer = layer
+
     @override
     def paintEvent(self, a0: QPaintEvent | None) -> None:
+        paint_started = time.perf_counter()
         if not self.is_streaming:
             return
 
@@ -607,6 +977,24 @@ class DensityOverlay(QFrame):
             font.setPointSize(10)
             painter.setFont(font)
             painter.drawText(QRectF(0, h * 0.75, w, 20), Qt.AlignmentFlag.AlignCenter, self.error_msg)
+            return
+
+        if self.activity_layout is not None:
+            if self._activity_static_layer is not None:
+                painter.drawPixmap(QPointF(0, 0), self._activity_static_layer)
+            if self._activity_hover_layer is not None:
+                painter.drawPixmap(QPointF(0, 0), self._activity_hover_layer)
+            self._activity_paint_samples_ms.append((time.perf_counter() - paint_started) * 1000)
+            if len(self._activity_paint_samples_ms) >= 120:
+                ordered = sorted(self._activity_paint_samples_ms)
+                p95 = ordered[math.ceil(len(ordered) * 0.95) - 1]
+                logging.debug(
+                    "pieces activity paint metrics p95_ms=%.3f max_ms=%.3f samples=%d",
+                    p95,
+                    max(ordered),
+                    len(ordered),
+                )
+                self._activity_paint_samples_ms.clear()
             return
 
         n = len(self.buckets)
@@ -772,6 +1160,11 @@ class FetchWorker(QThread):
         force_session: bool = False,
         session_end_bound: float = 0.0,
         interval_error: str = "",
+        layout_width: int = 1,
+        layout_height: int = 1,
+        layout_dpr: float = 1.0,
+        previous_activity_layout: ActivityLayoutSnapshot | None = None,
+        previous_activity_image: QImage | None = None,
     ):
         super().__init__()
         self.session_end_bound = session_end_bound
@@ -782,6 +1175,11 @@ class FetchWorker(QThread):
         self.session_override = session_override
         self.force_session = force_session
         self.interval_error = interval_error
+        self.layout_width = max(layout_width, 1)
+        self.layout_height = max(layout_height, 1)
+        self.layout_dpr = max(layout_dpr, 1.0)
+        self.previous_activity_layout = previous_activity_layout
+        self.previous_activity_image = previous_activity_image
         self._is_running = True
 
     def cancel(self):
@@ -796,17 +1194,25 @@ class FetchWorker(QThread):
         error: str,
         stages: list[TimelineStage] | None = None,
         icon_bytes: dict[str, bytes] | None = None,
+        activity_data: ActivityTimelineData | None = None,
+        activity_layout: ActivityLayoutSnapshot | None = None,
+        activity_image: QImage | None = None,
+        timings_ms: tuple[tuple[str, float], ...] = (),
     ) -> None:
         self.data_fetched.emit(
             DensityTimelineSnapshot(
-                buckets,
-                has_interval,
-                start_time,
-                duration,
-                error,
-                self.time_source.value,
-                stages or [],
-                icon_bytes or {},
+                buckets=buckets,
+                has_interval=has_interval,
+                start_time=start_time,
+                duration=duration,
+                error=error,
+                source_value=self.time_source.value,
+                stages=stages or [],
+                icon_bytes=icon_bytes or {},
+                activity_data=activity_data,
+                activity_layout=activity_layout,
+                activity_image=activity_image,
+                timings_ms=timings_ms,
             )
         )
 
@@ -849,6 +1255,8 @@ class FetchWorker(QThread):
                     f"{resolved_source.source.value} DB missing at: {resolved_source.database_path}",
                 )
                 return
+            timings: list[tuple[str, float]] = []
+            density_started = time.perf_counter()
             raw_buckets = _DENSITY_BUCKET_CACHE.load(
                 resolved_source,
                 stream_start_time,
@@ -856,29 +1264,101 @@ class FetchWorker(QThread):
                 closed_interval=self.session_end_bound > 0,
                 cancelled=lambda: not self._is_running,
             )
+            timings.append(("density_load", (time.perf_counter() - density_started) * 1000))
             if not self._is_running:
                 return
             buckets = integrate_density(raw_buckets)
             stages: list[TimelineStage] = []
             icon_bytes: dict[str, bytes] = {}
+            activity_data: ActivityTimelineData | None = None
+            activity_layout: ActivityLayoutSnapshot | None = None
+            activity_image: QImage | None = None
             if self.config.show_app_timeline:
                 try:
-                    app_minutes = _APP_TIMELINE_CACHE.load(
+                    activity_started = time.perf_counter()
+                    activity_data = _APP_TIMELINE_CACHE.load_activity(
                         resolved_source,
                         stream_start_time,
                         interval_end,
                         closed_interval=self.session_end_bound > 0,
                         cancelled=lambda: not self._is_running,
                     )
-                    stages = build_timeline_stages(app_minutes, len(raw_buckets))
-                    icon_hashes = {
-                        app.icon_sha256
-                        for stage in stages
-                        for app in stage.apps[: self.config.max_stage_icons]
-                        if app.icon_sha256
-                    }
+                    timings.append(("activity_load", (time.perf_counter() - activity_started) * 1000))
+                    if activity_data.contract_version >= 2:
+                        policy = ActivityLayoutPolicy(
+                            max_tracks=self.config.max_app_tracks,
+                            min_icon_size=self.config.icon_min_size,
+                            max_icon_size=self.config.icon_max_size,
+                            stack_offset_ratio=self.config.stack_offset_ratio,
+                            stack_similarity=self.config.stack_similarity_ratio,
+                        )
+                        icon_bottom = max(
+                            self.layout_height - TIMELINE_MAJOR_TICK_HEIGHT - TIMELINE_ICON_RULER_GAP,
+                            1,
+                        )
+                        band_height = min(self.config.icon_band_height, icon_bottom)
+                        previous = self.previous_activity_layout
+                        if (
+                            activity_data.cache_hit
+                            and previous is not None
+                            and previous.bucket_count == len(raw_buckets)
+                            and previous.width == self.layout_width
+                            and previous.band_height == band_height
+                            and previous.policy == policy
+                        ):
+                            activity_layout = previous
+                            timings.append(("activity_layout", 0.0))
+                        else:
+                            layout_started = time.perf_counter()
+                            activity_layout = build_activity_layout(
+                                activity_data.app_records,
+                                activity_data.global_records,
+                                len(raw_buckets),
+                                self.layout_width,
+                                band_height,
+                                policy=policy,
+                                previous=previous,
+                                changed_from_bucket=activity_data.changed_from_bucket,
+                                cancelled=lambda: not self._is_running,
+                            )
+                            timings.append(("activity_layout", (time.perf_counter() - layout_started) * 1000))
+                        icon_hashes = {
+                            geometry.component.icon_sha256
+                            for geometry in activity_layout.components
+                            if geometry.icon is not None and geometry.component.icon_sha256
+                        }
+                    else:
+                        stages = build_timeline_stages(list(activity_data.app_records), len(raw_buckets))
+                        icon_hashes = {
+                            app.icon_sha256
+                            for stage in stages
+                            for app in stage.apps[: self.config.max_stage_icons]
+                            if app.icon_sha256
+                        }
+                    icon_started = time.perf_counter()
                     icon_bytes = _ICON_BYTE_CACHE.load(resolved_source.database_path, icon_hashes)
+                    timings.append(("icon_load", (time.perf_counter() - icon_started) * 1000))
+                    if activity_layout is not None:
+                        if (
+                            activity_layout is self.previous_activity_layout
+                            and self.previous_activity_image is not None
+                        ):
+                            activity_image = self.previous_activity_image
+                            timings.append(("activity_raster", 0.0))
+                        else:
+                            raster_started = time.perf_counter()
+                            activity_image = render_activity_image(
+                                activity_layout,
+                                icon_bytes,
+                                self.config,
+                                self.layout_height,
+                                self.layout_dpr,
+                            )
+                            timings.append(("activity_raster", (time.perf_counter() - raster_started) * 1000))
                 except Exception as error:
+                    activity_data = None
+                    activity_layout = None
+                    activity_image = None
                     logging.warning("App timeline unavailable; keeping heatmap-only rendering: %s", error)
 
             # Keep leading zero-activity buckets so the heatmap remains aligned with the
@@ -895,6 +1375,10 @@ class FetchWorker(QThread):
                 "",
                 stages,
                 icon_bytes,
+                activity_data,
+                activity_layout,
+                activity_image,
+                tuple(timings),
             )
 
         except Exception as e:
@@ -1004,8 +1488,7 @@ class PiecesDensityWidget(BaseWidget):
             or not self._overlay.is_streaming
         ):
             if getattr(self._overlay, "hover_idx", None) is not None:
-                self._overlay.hover_idx = None
-                self._overlay.update()
+                self._overlay.set_hover_bucket(None)
                 QToolTip.hideText()
             return
 
@@ -1031,21 +1514,21 @@ class PiecesDensityWidget(BaseWidget):
             bucket_index = min(max(bucket_index, 0), len(self._overlay.buckets) - 1)
 
             if getattr(self._overlay, "hover_idx", None) != bucket_index:
-                self._overlay.hover_idx = bucket_index
-                self._overlay.update()
+                self._overlay.set_hover_bucket(bucket_index)
 
             val = self._overlay.buckets[bucket_index]
             ts = self._overlay.stream_start_time + bucket_index * 60
             tooltip_text = density_tooltip_html(val, datetime.fromtimestamp(ts))
-            app_tooltip = stage_tooltip_html(self._overlay.stage_at(bucket_index))
+            app_tooltip = self._overlay.activity_tooltip_at(bucket_index)
+            if not app_tooltip:
+                app_tooltip = stage_tooltip_html(self._overlay.stage_at(bucket_index))
             if app_tooltip:
                 tooltip_text = f"{tooltip_text}<br>{app_tooltip}"
 
             QToolTip.showText(cursor_pos, tooltip_text)
         else:
             if getattr(self._overlay, "hover_idx", None) is not None:
-                self._overlay.hover_idx = None
-                self._overlay.update()
+                self._overlay.set_hover_bucket(None)
                 QToolTip.hideText()
 
     def _fetch_data(self):
@@ -1059,6 +1542,8 @@ class PiecesDensityWidget(BaseWidget):
         except RuntimeError:
             # C++ object already deleted; treat as no active worker
             self._worker = None
+
+        self._update_overlay_geometry()
 
         override_time = 0.0
         end_bound = 0.0
@@ -1081,6 +1566,11 @@ class PiecesDensityWidget(BaseWidget):
             force_session,
             end_bound,
             interval_error,
+            self._overlay.width(),
+            self._overlay.height(),
+            self._overlay.devicePixelRatioF(),
+            self._overlay.activity_layout,
+            self._overlay.activity_image,
         )
         self._worker.data_fetched.connect(self._on_data_fetched)
         self._worker.finished.connect(self._on_worker_finished)
@@ -1124,11 +1614,32 @@ class PiecesDensityWidget(BaseWidget):
         self._controls_left.update_buttons()
         self._controls_right.update_buttons(snapshot.duration)
 
+        unchanged_visual = (
+            snapshot.activity_layout is not None
+            and snapshot.activity_layout is self._overlay.activity_layout
+            and snapshot.activity_image is self._overlay.activity_image
+            and snapshot.buckets == self._overlay.buckets
+            and snapshot.error == self._overlay.error_msg
+            and snapshot.start_time == self._overlay.stream_start_time
+        )
         self._overlay.buckets = snapshot.buckets
         self._overlay.is_streaming = snapshot.has_interval
         self._overlay.stream_start_time = snapshot.start_time
         self._overlay.error_msg = snapshot.error
-        self._overlay.set_timeline(snapshot.stages, snapshot.icon_bytes)
+        if not unchanged_visual:
+            self._overlay.set_timeline(
+                snapshot.stages,
+                snapshot.icon_bytes,
+                snapshot.activity_data,
+                snapshot.activity_layout,
+                snapshot.activity_image,
+            )
+        logging.debug(
+            "pieces activity worker metrics timings_ms=%s cache_build_ms=%.3f unchanged=%s",
+            dict(snapshot.timings_ms),
+            self._overlay._activity_cache_build_ms,
+            unchanged_visual,
+        )
 
         if snapshot.has_interval:
             self._stream_start_time = snapshot.start_time
@@ -1140,7 +1651,8 @@ class PiecesDensityWidget(BaseWidget):
             else:
                 self._update_overlay_geometry()
                 self._place_overlay_below_bar()
-            self._overlay.update()
+            if not unchanged_visual:
+                self._overlay.update()
         else:
             if self._overlay.isVisible():
                 self._overlay.hide()

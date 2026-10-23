@@ -93,3 +93,35 @@ class PixmapLru:
         if pixmap is not None:
             self._items.move_to_end(key)
         return pixmap
+
+
+class ImageLru:
+    """Thread-safe worker-side decoded/scaled images keyed by content, size, and DPR."""
+
+    def __init__(self, maximum_entries: int = 256):
+        self._maximum_entries = maximum_entries
+        self._items: OrderedDict[tuple[str, int, float], QImage] = OrderedDict()
+        self._lock = threading.Lock()
+
+    def get_or_prepare(self, icon_hash: str, payload: bytes, logical_size: float, dpr: float) -> QImage | None:
+        key = PixmapLru._key(icon_hash, logical_size, dpr)
+        with self._lock:
+            image = self._items.get(key)
+            if image is not None:
+                self._items.move_to_end(key)
+                return image
+            image = QImage.fromData(payload, "PNG")
+            if image.isNull():
+                return None
+            target = max(round(key[1] * dpr), 1)
+            image = image.scaled(
+                target,
+                target,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            image.setDevicePixelRatio(dpr)
+            self._items[key] = image
+            while len(self._items) > self._maximum_entries:
+                self._items.popitem(last=False)
+            return image

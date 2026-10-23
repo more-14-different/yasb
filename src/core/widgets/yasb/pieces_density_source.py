@@ -111,6 +111,8 @@ class ActivityTimelineData:
     app_records: tuple[AppMinuteRecord, ...]
     global_records: tuple[GlobalMinuteRecord, ...]
     contract_version: int
+    changed_from_bucket: int = 0
+    cache_hit: bool = False
 
 
 @dataclass
@@ -429,6 +431,40 @@ def query_app_minutes(
     return list(query_activity_timeline(resolved, stream_start, query_start, query_end).app_records)
 
 
+def _query_v1_app_records(
+    connection: sqlite3.Connection,
+    stream_start: float,
+    start_text: str,
+    end_text: str,
+) -> dict[tuple[int, str], AppMinuteRecord]:
+    records: dict[tuple[int, str], AppMinuteRecord] = {}
+    rows = connection.execute(
+        "select cast((unixepoch(minute_start, 'subsec') - ?) / 60 as integer), "
+        "canonical_app_id, display_name, icon_sha256, engaged_score_milli, "
+        "engaged_milliseconds, foreground_milliseconds, direct_event_count, "
+        "interaction_level, attribution_confidence_milli "
+        "from timeline_app_minutes_v1 where minute_start >= ? and minute_start < ? "
+        "order by minute_start, engaged_score_milli desc, canonical_app_id",
+        (stream_start, start_text, end_text),
+    ).fetchall()
+    for row in rows:
+        record = AppMinuteRecord(
+            bucket=int(row[0]),
+            canonical_app_id=str(row[1]),
+            display_name=str(row[2]),
+            icon_sha256=str(row[3]) if row[3] is not None else None,
+            engaged_score_milli=int(row[4]),
+            engaged_milliseconds=int(row[5]),
+            foreground_milliseconds=int(row[6]),
+            direct_event_count=int(row[7]),
+            interaction_level=str(row[8]),
+            attribution_confidence_milli=int(row[9]),
+            direct_input_count=int(row[7]),
+        )
+        records[(record.bucket, record.canonical_app_id)] = record
+    return records
+
+
 def query_activity_timeline(
     resolved: ResolvedDensitySource,
     stream_start: float,
@@ -447,30 +483,7 @@ def query_activity_timeline(
         records: dict[tuple[int, str], AppMinuteRecord] = {}
         has_v2 = features.supports_app_timeline_v2 and features.supports_global_timeline_v2
         if features.supports_app_timeline and not has_v2:
-            rows = connection.execute(
-                "select cast((unixepoch(minute_start, 'subsec') - ?) / 60 as integer), "
-                "canonical_app_id, display_name, icon_sha256, engaged_score_milli, "
-                "engaged_milliseconds, foreground_milliseconds, direct_event_count, "
-                "interaction_level, attribution_confidence_milli "
-                "from timeline_app_minutes_v1 where minute_start >= ? and minute_start < ? "
-                "order by minute_start, engaged_score_milli desc, canonical_app_id",
-                (stream_start, start_text, end_text),
-            ).fetchall()
-            for row in rows:
-                record = AppMinuteRecord(
-                    bucket=int(row[0]),
-                    canonical_app_id=str(row[1]),
-                    display_name=str(row[2]),
-                    icon_sha256=str(row[3]) if row[3] is not None else None,
-                    engaged_score_milli=int(row[4]),
-                    engaged_milliseconds=int(row[5]),
-                    foreground_milliseconds=int(row[6]),
-                    direct_event_count=int(row[7]),
-                    interaction_level=str(row[8]),
-                    attribution_confidence_milli=int(row[9]),
-                    direct_input_count=int(row[7]),
-                )
-                records[(record.bucket, record.canonical_app_id)] = record
+            records = _query_v1_app_records(connection, stream_start, start_text, end_text)
 
         if has_v2:
             v1_join = (
@@ -621,6 +634,30 @@ def query_activity_timeline(
                         reasons,
                     )
                 )
+        effective_contract_version = 2 if has_v2 else 1
+        has_legacy_gap = False
+        if has_v2 and features.supports_app_timeline:
+            has_legacy_gap = bool(
+                connection.execute(
+                    "select exists(select 1 from timeline_app_minutes_v1 legacy "
+                    "where legacy.minute_start >= ? and legacy.minute_start < ? "
+                    "and not exists(select 1 from timeline_global_minutes_v2 global "
+                    "where global.minute_start=legacy.minute_start))",
+                    (start_text, end_text),
+                ).fetchone()[0]
+            )
+        if has_v2 and (not global_records or has_legacy_gap):
+            if records:
+                if not global_records:
+                    raise sqlite3.DatabaseError("screenpipe graph has app activity v2 facts without global v2 facts")
+                records.clear()
+            global_records.clear()
+            records = (
+                _query_v1_app_records(connection, stream_start, start_text, end_text)
+                if features.supports_app_timeline
+                else {}
+            )
+            effective_contract_version = 1
         ordered_records = tuple(
             sorted(
                 records.values(),
@@ -633,7 +670,7 @@ def query_activity_timeline(
                 ),
             )
         )
-        return ActivityTimelineData(ordered_records, tuple(global_records), 2 if has_v2 else 1)
+        return ActivityTimelineData(ordered_records, tuple(global_records), effective_contract_version)
     finally:
         connection.close()
 
@@ -690,7 +727,14 @@ class AppTimelineCache:
         with self._lock:
             entry = self._entries.get(key)
             if entry and entry.complete:
-                return ActivityTimelineData(tuple(entry.records), tuple(entry.global_records), entry.contract_version)
+                bucket_count = max(math.ceil((interval_end - stream_start) / 60), 1)
+                return ActivityTimelineData(
+                    tuple(entry.records),
+                    tuple(entry.global_records),
+                    entry.contract_version,
+                    bucket_count,
+                    True,
+                )
             if cancelled():
                 return ActivityTimelineData((), (), contract_version)
             refresh = _query_screenpipe_refresh_state(
@@ -700,7 +744,14 @@ class AppTimelineCache:
             )
             watermark = refresh.watermark if refresh else None
             if entry and refresh is not None and refresh.earliest_changed_minute is None:
-                return ActivityTimelineData(tuple(entry.records), tuple(entry.global_records), entry.contract_version)
+                bucket_count = max(math.ceil((interval_end - stream_start) / 60), 1)
+                return ActivityTimelineData(
+                    tuple(entry.records),
+                    tuple(entry.global_records),
+                    entry.contract_version,
+                    bucket_count,
+                    True,
+                )
             if entry and refresh is not None:
                 earliest_changed_minute = refresh.earliest_changed_minute
                 assert earliest_changed_minute is not None
@@ -722,8 +773,20 @@ class AppTimelineCache:
                 interval_end,
                 features=features,
             )
+            if entry is not None and entry.contract_version != refreshed.contract_version:
+                refresh_bucket = 0
+                records = []
+                global_records = []
+                refreshed = query_activity_timeline(
+                    resolved,
+                    stream_start,
+                    stream_start,
+                    interval_end,
+                    features=features,
+                )
             records.extend(refreshed.app_records)
             global_records.extend(refreshed.global_records)
+            result_contract_version = refreshed.contract_version
             if cancelled():
                 return ActivityTimelineData((), (), contract_version)
             records.sort(
@@ -739,13 +802,19 @@ class AppTimelineCache:
             self._entries[key] = _AppCacheEntry(
                 records,
                 global_records,
-                contract_version,
+                result_contract_version,
                 closed_interval,
                 watermark,
             )
             while len(self._entries) > self._MAX_ENTRIES:
                 self._entries.pop(next(iter(self._entries)))
-            return ActivityTimelineData(tuple(records), tuple(global_records), contract_version)
+            return ActivityTimelineData(
+                tuple(records),
+                tuple(global_records),
+                result_contract_version,
+                refresh_bucket,
+                False,
+            )
 
 
 class DensityBucketCache:

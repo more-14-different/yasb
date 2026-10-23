@@ -483,7 +483,10 @@ class AppTimelineSourceTests(unittest.TestCase):
             ):
                 second = cache.load_activity(resolved, start, start + 60, True)
 
-            self.assertEqual(second, first)
+            self.assertEqual(second.app_records, first.app_records)
+            self.assertEqual(second.global_records, first.global_records)
+            self.assertTrue(second.cache_hit)
+            self.assertEqual(second.changed_from_bucket, 1)
 
     def test_database_generation_replacement_invalidates_closed_activity_cache(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -609,6 +612,20 @@ class AppTimelineSourceTests(unittest.TestCase):
                 connection.close()
             self.assertIn("idx_timeline_app_v2_minute", " ".join(str(row[3]) for row in app_plan))
             self.assertIn("idx_timeline_global_v2_minute", " ".join(str(row[3]) for row in global_plan))
+
+            connection = sqlite3.connect(database_path)
+            try:
+                connection.execute(
+                    "insert into timeline_app_minutes_v1 values "
+                    "('2026-07-19T10:00:00Z','app:legacy','Legacy',null,5000,2000,2000,1,'direct',800)"
+                )
+                connection.commit()
+            finally:
+                connection.close()
+            fallback = query_activity_timeline(resolved, start, start, start + 120)
+            self.assertEqual(fallback.contract_version, 1)
+            self.assertEqual(fallback.global_records, ())
+            self.assertEqual({record.canonical_app_id for record in fallback.app_records}, {"app:legacy", "app:code"})
 
     def test_v2_malformed_residuals_are_rejected(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

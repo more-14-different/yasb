@@ -43,8 +43,12 @@ class PiecesDensityConfig(CustomBaseModel):
     icon_band_height: int = Field(default=50, ge=20, le=100)
     icon_min_gap: int = Field(default=3, ge=0, le=20)
     stack_similarity_ratio: float = Field(default=0.75, ge=0, le=1)
-    stack_offset_ratio: float = Field(default=0.28, ge=0, le=1)
+    stack_offset_ratio: float = Field(default=0.15, ge=0, le=0.5)
     show_passive_foreground: bool = True
+    max_app_tracks: int = Field(default=5, ge=1, le=8)
+    show_direct_ribbon: bool = True
+    show_non_direct_cloud: bool = True
+    show_unattributed_residual: bool = True
 
     # Interactivity
     show_tooltip: bool = True
