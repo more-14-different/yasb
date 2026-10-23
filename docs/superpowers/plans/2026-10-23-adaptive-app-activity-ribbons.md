@@ -281,3 +281,14 @@ Each completed phase appends:
 - `cargo fmt --all -- --check` and `cargo clippy --all-targets --all-features -- -D warnings` — passed.
 - No production database, cold bundle, configuration, or running service was modified.
 
+### Phase 2 evidence — 2026-10-23
+
+- `event-logger` commit `e7aae48` (`feat(screenpipe): preserve activity v2 across graph bundles`) was pushed to `feat/adaptive-app-activity-signals-v2`.
+- Graph schema v7 stores representative RGB and its algorithm version beside icon-version metadata; PNG bytes remain in the content-addressed bundle store. New captures persist color metadata and explicit migrations can backfill it from reachable PNG assets.
+- Bundle archive/verify/restore/merge carries v2 global, app, residual, icon, and color facts as one availability unit. Merge uses explicit columns, validates conservation, is idempotent, and accepts schema v5 sources without v2 or color columns.
+- Historical app approximations remain `historical_approx` and intentionally produce no separated v2 facts when their evidence cannot support the split.
+- The YouTube Screenpipe collection adapter prefers explicit v2 direct/non-direct context and retains its v1 fallback.
+- Storage contract, service documentation, and the consumer inventory now describe the additive v2/fallback boundary.
+- `cargo test` — 332 library tests plus 38 binary tests passed; no failures. Format and strict Clippy checks passed.
+- The live consumer verifier reported all contracts healthy/restricted except the currently running pre-Phase-5 YASB process, whose runtime source marker is stale. This deployment-state check is explicitly deferred to the frozen-build restart in Phase 5; no production database, cold bundle, configuration, or service was modified in Phase 2.
+
