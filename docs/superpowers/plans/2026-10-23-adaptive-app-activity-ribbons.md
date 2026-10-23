@@ -292,3 +292,16 @@ Each completed phase appends:
 - `cargo test` — 332 library tests plus 38 binary tests passed; no failures. Format and strict Clippy checks passed.
 - The live consumer verifier reported all contracts healthy/restricted except the currently running pre-Phase-5 YASB process, whose runtime source marker is stale. This deployment-state check is explicitly deferred to the frozen-build restart in Phase 5; no production database, cold bundle, configuration, or service was modified in Phase 2.
 
+### Phase 3 evidence — 2026-10-23
+
+- `yasb-fork` adds immutable app, global, and unattributed-reason v2 source records while preserving the v1 app-minute model and Pieces heatmap-only fallback.
+- Graph capabilities are cached per file identity. Closed activity selections are keyed by graph identity, database/WAL data version, interval, and contract version; a warm re-selection test proves that no SQLite connection is reopened.
+- Open selections retain their acquisition watermark and refresh only the affected minute suffix. Database file replacement invalidates a closed selection even when its configured path is unchanged.
+- The v2 path performs two bounded selects (app and global) and does not pre-read the standalone v1 result set. Consumer-side checks reject negative, malformed, or non-conserved app/global category and residual facts before layout.
+- Explicit unavailable Screenpipe graph paths remain unavailable instead of borrowing icons from another source, preserving the rule that cold heatmap and icon availability move together.
+- Query-plan assertions confirm both v2 selections use their minute-led indexes.
+- `.venv\Scripts\python.exe -m pytest tests\test_pieces_density.py -q` — 39 tests plus 2 subtests passed in 0.96 s.
+- `.venv\Scripts\python.exe -m pytest -q` — 1,223 tests plus 2 subtests passed in 48.40 s.
+- `.venv\Scripts\python.exe -m ruff check src tests` — passed.
+- No production database, cold bundle, configuration, or running service was modified in Phase 3.
+

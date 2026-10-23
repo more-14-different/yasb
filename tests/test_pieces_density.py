@@ -1,4 +1,5 @@
 import hashlib
+import os
 import sqlite3
 import sys
 import tempfile
@@ -31,11 +32,13 @@ from core.widgets.yasb.pieces_density_source import (  # noqa: E402
     DensityBucketCache,
     DensitySource,
     ResolvedDensitySource,
+    UnattributedReasonCount,
     _query_screenpipe_refresh_state,
     _ScreenpipeRefreshState,
     _ScreenpipeWatermark,
     inspect_screenpipe_graph_features,
     integrate_density,
+    query_activity_timeline,
     query_app_minutes,
     query_density_buckets,
     resolve_density_source,
@@ -383,6 +386,38 @@ class DensitySourceTests(unittest.TestCase):
 
 
 class AppTimelineSourceTests(unittest.TestCase):
+    @staticmethod
+    def _create_v1_graph(database_path: Path, app_id: str = "app:code", minute: int = 0):
+        timestamp = f"2026-07-19T10:{minute:02d}:00Z"
+        connection = sqlite3.connect(database_path)
+        try:
+            connection.executescript(
+                "create table graph_schema (singleton integer primary key, version integer);"
+                "insert into graph_schema values (1, 5);"
+                "create table source_activity_minutes (minute_start text, frame_count integer, "
+                "ui_event_count integer, source_pack_sha256 text);"
+                "create table source_acquisitions (source_pack_sha256 text, observed_at text);"
+                "create table timeline_app_minutes_v1 ("
+                "minute_start text, canonical_app_id text, display_name text, icon_sha256 text, "
+                "engaged_score_milli integer, engaged_milliseconds integer, foreground_milliseconds integer, "
+                "direct_event_count integer, interaction_level text, attribution_confidence_milli integer);"
+            )
+            connection.execute(
+                "insert into source_acquisitions values (?, ?)",
+                (f"pack-{minute}", timestamp),
+            )
+            connection.execute(
+                "insert into source_activity_minutes values (?, 1, 1, ?)",
+                (timestamp, f"pack-{minute}"),
+            )
+            connection.execute(
+                "insert into timeline_app_minutes_v1 values (?, ?, ?, ?, 9000, 3000, 3000, 2, 'direct', 950)",
+                (timestamp, app_id, app_id, "a" * 64),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
     def test_v5_timeline_query_returns_relative_minutes_and_app_facts(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             database_path = Path(temporary_directory) / "graph.sqlite3"
@@ -419,6 +454,207 @@ class AppTimelineSourceTests(unittest.TestCase):
         resolved = ResolvedDensitySource(DensitySource.PIECES, "unused.sqlite", None)
         self.assertEqual(query_app_minutes(resolved, 0, 0, 60), [])
         self.assertEqual(AppTimelineCache().load(resolved, 0, 60, False), [])
+
+    def test_explicit_unavailable_cold_graph_does_not_fall_back_to_another_icon_source(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            missing = Path(temporary_directory) / "offline-cold-graph.sqlite3"
+            pieces = Path(temporary_directory) / "pieces.sqlite3"
+            pieces.touch()
+
+            resolved = resolve_density_source("screenpipe_graph", str(missing), str(pieces))
+
+            self.assertEqual(resolved.source, DensitySource.SCREENPIPE_GRAPH)
+            self.assertEqual(resolved.database_path, str(missing))
+            with self.assertRaises(FileNotFoundError):
+                AppTimelineCache().load_activity(resolved, 0, 60, True)
+
+    def test_closed_activity_cache_reselection_performs_no_database_query(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            database_path = Path(temporary_directory) / "graph.sqlite3"
+            self._create_v1_graph(database_path)
+            start = datetime.fromisoformat("2026-07-19T10:00:00+00:00").timestamp()
+            resolved = ResolvedDensitySource(DensitySource.SCREENPIPE_GRAPH, str(database_path), None)
+            cache = AppTimelineCache()
+
+            first = cache.load_activity(resolved, start, start + 60, True)
+            with patch(
+                "core.widgets.yasb.pieces_density_source._open_read_only",
+                side_effect=AssertionError("warm selection reopened SQLite"),
+            ):
+                second = cache.load_activity(resolved, start, start + 60, True)
+
+            self.assertEqual(second, first)
+
+    def test_database_generation_replacement_invalidates_closed_activity_cache(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            database_path = Path(temporary_directory) / "graph.sqlite3"
+            replacement_path = Path(temporary_directory) / "replacement.sqlite3"
+            self._create_v1_graph(database_path, "app:code")
+            self._create_v1_graph(replacement_path, "app:edge")
+            start = datetime.fromisoformat("2026-07-19T10:00:00+00:00").timestamp()
+            resolved = ResolvedDensitySource(DensitySource.SCREENPIPE_GRAPH, str(database_path), None)
+            cache = AppTimelineCache()
+
+            first = cache.load_activity(resolved, start, start + 60, True)
+            os.replace(replacement_path, database_path)
+            second = cache.load_activity(resolved, start, start + 60, True)
+
+            self.assertEqual(first.app_records[0].canonical_app_id, "app:code")
+            self.assertEqual(second.app_records[0].canonical_app_id, "app:edge")
+
+    def test_changed_watermark_refreshes_only_the_affected_activity_suffix(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            database_path = Path(temporary_directory) / "graph.sqlite3"
+            self._create_v1_graph(database_path, minute=0)
+            start = datetime.fromisoformat("2026-07-19T10:00:00+00:00").timestamp()
+            resolved = ResolvedDensitySource(DensitySource.SCREENPIPE_GRAPH, str(database_path), None)
+            cache = AppTimelineCache()
+            cache.load_activity(resolved, start, start + 60, False)
+            connection = sqlite3.connect(database_path)
+            try:
+                connection.executescript(
+                    "insert into source_acquisitions values ('pack-1','2026-07-19T10:01:00Z');"
+                    "insert into source_activity_minutes values ('2026-07-19T10:01:00Z',1,1,'pack-1');"
+                    "insert into timeline_app_minutes_v1 values "
+                    "('2026-07-19T10:01:00Z','app:edge','app:edge',"
+                    f"'{('b' * 64)}',9000,3000,3000,2,'direct',950);"
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            with patch(
+                "core.widgets.yasb.pieces_density_source.query_activity_timeline",
+                wraps=query_activity_timeline,
+            ) as query:
+                data = cache.load_activity(resolved, start, start + 120, False)
+
+            self.assertEqual(query.call_count, 1)
+            self.assertEqual(query.call_args.args[2], start + 60)
+            self.assertEqual([record.bucket for record in data.app_records], [0, 1])
+
+    def test_v7_query_prefers_conserved_v2_signals_and_color_metadata(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            database_path = Path(temporary_directory) / "graph.sqlite3"
+            connection = sqlite3.connect(database_path)
+            try:
+                connection.executescript(
+                    "create table graph_schema (singleton integer primary key, version integer);"
+                    "insert into graph_schema values (1, 7);"
+                    "create table source_activity_minutes (minute_start text, effective_frame_count integer, "
+                    "effective_ui_event_count integer, source_pack_sha256 text);"
+                    "create table source_acquisitions (source_pack_sha256 text, observed_at text);"
+                    "create table app_icon_versions (app_id text, icon_sha256 text, valid_to text, "
+                    "representative_color_rgb integer, color_algorithm_version integer);"
+                    "create table timeline_app_minutes_v1 (minute_start text, canonical_app_id text, "
+                    "display_name text, icon_sha256 text, engaged_score_milli integer, "
+                    "engaged_milliseconds integer, foreground_milliseconds integer, direct_event_count integer, "
+                    "interaction_level text, attribution_confidence_milli integer);"
+                    "create table timeline_app_minutes_v2 (minute_start text, canonical_app_id text, "
+                    "display_name text, icon_sha256 text, direct_input_count integer, key_count integer, "
+                    "click_count integer, scroll_count integer, text_count integer, clipboard_count integer, "
+                    "other_input_count integer, non_direct_activity_count integer, effective_frame_count integer, "
+                    "effective_non_direct_ui_event_count integer, foreground_milliseconds integer, "
+                    "interaction_level text, attribution_confidence_milli integer, projection_kind text);"
+                    "create table timeline_global_minutes_v2 (minute_start text, direct_input_count integer, "
+                    "non_direct_activity_count integer, attributed_direct_input_count integer, "
+                    "attributed_non_direct_activity_count integer, unattributed_direct_input_count integer, "
+                    "unattributed_non_direct_activity_count integer, unattributed_reason_counts_json text);"
+                    "create index idx_timeline_app_v2_minute on timeline_app_minutes_v2(minute_start);"
+                    "create index idx_timeline_global_v2_minute on timeline_global_minutes_v2(minute_start);"
+                    "insert into timeline_app_minutes_v1 values "
+                    "('2026-07-19T10:01:00Z','app:code','Code','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',9000,3000,3000,9,'direct',950);"
+                    "insert into timeline_app_minutes_v2 values "
+                    "('2026-07-19T10:01:00Z','app:code','Code','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',2,1,1,0,0,0,0,5,4,1,3000,'direct',950,'exact');"
+                    "insert into timeline_global_minutes_v2 values "
+                    "('2026-07-19T10:01:00Z',3,7,2,5,1,2,"
+                    "'{\"direct_input:missing_app_identity\":1,\"non_direct_activity:missing_app_identity\":2}');"
+                    "insert into app_icon_versions values ('app:code', "
+                    "'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', null, 2121983, 1);"
+                )
+                connection.commit()
+            finally:
+                connection.close()
+            start = datetime.fromisoformat("2026-07-19T10:00:00+00:00").timestamp()
+            resolved = ResolvedDensitySource(DensitySource.SCREENPIPE_GRAPH, str(database_path), None)
+
+            data = query_activity_timeline(resolved, start, start, start + 120)
+
+            self.assertEqual(data.contract_version, 2)
+            self.assertEqual(len(data.app_records), 1)
+            self.assertEqual(data.app_records[0].direct_event_count, 2)
+            self.assertEqual(data.app_records[0].non_direct_activity_count, 5)
+            self.assertEqual(data.app_records[0].representative_color_rgb, 2121983)
+            self.assertEqual(data.global_records[0].unattributed_direct_input_count, 1)
+            self.assertIn(
+                UnattributedReasonCount("non_direct_activity", "missing_app_identity", 2),
+                data.global_records[0].unattributed_reason_counts,
+            )
+
+            connection = sqlite3.connect(database_path)
+            try:
+                app_plan = connection.execute(
+                    "explain query plan select canonical_app_id from timeline_app_minutes_v2 "
+                    "where minute_start >= ? and minute_start < ? order by minute_start",
+                    ("2026-07-19T10:00:00Z", "2026-07-19T10:02:00Z"),
+                ).fetchall()
+                global_plan = connection.execute(
+                    "explain query plan select direct_input_count from timeline_global_minutes_v2 "
+                    "where minute_start >= ? and minute_start < ? order by minute_start",
+                    ("2026-07-19T10:00:00Z", "2026-07-19T10:02:00Z"),
+                ).fetchall()
+            finally:
+                connection.close()
+            self.assertIn("idx_timeline_app_v2_minute", " ".join(str(row[3]) for row in app_plan))
+            self.assertIn("idx_timeline_global_v2_minute", " ".join(str(row[3]) for row in global_plan))
+
+    def test_v2_malformed_residuals_are_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            database_path = Path(temporary_directory) / "graph.sqlite3"
+            connection = sqlite3.connect(database_path)
+            try:
+                connection.executescript(
+                    "create table graph_schema (singleton integer primary key, version integer);"
+                    "insert into graph_schema values (1, 7);"
+                    "create table source_activity_minutes (minute_start text, effective_frame_count integer, "
+                    "effective_ui_event_count integer, source_pack_sha256 text);"
+                    "create table source_acquisitions (source_pack_sha256 text, observed_at text);"
+                    "create table timeline_app_minutes_v2 (minute_start text, canonical_app_id text, "
+                    "display_name text, icon_sha256 text, direct_input_count integer, key_count integer, "
+                    "click_count integer, scroll_count integer, text_count integer, clipboard_count integer, "
+                    "other_input_count integer, non_direct_activity_count integer, effective_frame_count integer, "
+                    "effective_non_direct_ui_event_count integer, foreground_milliseconds integer, "
+                    "interaction_level text, attribution_confidence_milli integer, projection_kind text);"
+                    "create table timeline_global_minutes_v2 (minute_start text, direct_input_count integer, "
+                    "non_direct_activity_count integer, attributed_direct_input_count integer, "
+                    "attributed_non_direct_activity_count integer, unattributed_direct_input_count integer, "
+                    "unattributed_non_direct_activity_count integer, unattributed_reason_counts_json text);"
+                    "insert into timeline_global_minutes_v2 values "
+                    "('2026-07-19T10:00:00Z',1,0,2,0,-1,0,'{}');"
+                )
+                connection.commit()
+            finally:
+                connection.close()
+            start = datetime.fromisoformat("2026-07-19T10:00:00+00:00").timestamp()
+            resolved = ResolvedDensitySource(DensitySource.SCREENPIPE_GRAPH, str(database_path), None)
+
+            with self.assertRaisesRegex(sqlite3.DatabaseError, "negative activity v2 residual"):
+                query_activity_timeline(resolved, start, start, start + 60)
+
+            connection = sqlite3.connect(database_path)
+            try:
+                connection.execute(
+                    "update timeline_global_minutes_v2 set direct_input_count=1, "
+                    "attributed_direct_input_count=0, unattributed_direct_input_count=1, "
+                    "unattributed_reason_counts_json='not-json'"
+                )
+                connection.commit()
+            finally:
+                connection.close()
+            with self.assertRaisesRegex(sqlite3.DatabaseError, "malformed JSON"):
+                query_activity_timeline(resolved, start, start, start + 60)
 
 
 class AppTimelineStageTests(unittest.TestCase):

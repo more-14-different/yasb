@@ -1,3 +1,4 @@
+import json
 import math
 import os
 import sqlite3
@@ -29,6 +30,9 @@ class ScreenpipeGraphFeatures:
     density_ui_column: str | None
     supports_acquisition_watermark: bool
     supports_app_timeline: bool
+    supports_app_timeline_v2: bool = False
+    supports_global_timeline_v2: bool = False
+    supports_icon_colors: bool = False
 
     @property
     def supports_density(self) -> bool:
@@ -67,11 +71,53 @@ class AppMinuteRecord:
     direct_event_count: int
     interaction_level: str
     attribution_confidence_milli: int
+    direct_input_count: int = 0
+    key_count: int = 0
+    click_count: int = 0
+    scroll_count: int = 0
+    text_count: int = 0
+    clipboard_count: int = 0
+    other_input_count: int = 0
+    non_direct_activity_count: int = 0
+    effective_frame_count: int = 0
+    effective_non_direct_ui_event_count: int = 0
+    projection_kind: str = "exact"
+    representative_color_rgb: int | None = None
+    color_algorithm_version: int | None = None
+    contract_version: int = 1
+
+
+@dataclass(frozen=True)
+class UnattributedReasonCount:
+    signal_kind: str
+    reason: str
+    count: int
+
+
+@dataclass(frozen=True)
+class GlobalMinuteRecord:
+    bucket: int
+    direct_input_count: int
+    non_direct_activity_count: int
+    attributed_direct_input_count: int
+    attributed_non_direct_activity_count: int
+    unattributed_direct_input_count: int
+    unattributed_non_direct_activity_count: int
+    unattributed_reason_counts: tuple[UnattributedReasonCount, ...]
+
+
+@dataclass(frozen=True)
+class ActivityTimelineData:
+    app_records: tuple[AppMinuteRecord, ...]
+    global_records: tuple[GlobalMinuteRecord, ...]
+    contract_version: int
 
 
 @dataclass
 class _AppCacheEntry:
     records: list[AppMinuteRecord]
+    global_records: list[GlobalMinuteRecord]
+    contract_version: int
     complete: bool
     source_watermark: _ScreenpipeWatermark | None = None
 
@@ -88,6 +134,45 @@ _APP_TIMELINE_COLUMNS = {
     "interaction_level",
     "attribution_confidence_milli",
 }
+
+_APP_TIMELINE_V2_COLUMNS = {
+    "minute_start",
+    "canonical_app_id",
+    "display_name",
+    "icon_sha256",
+    "direct_input_count",
+    "key_count",
+    "click_count",
+    "scroll_count",
+    "text_count",
+    "clipboard_count",
+    "other_input_count",
+    "non_direct_activity_count",
+    "effective_frame_count",
+    "effective_non_direct_ui_event_count",
+    "foreground_milliseconds",
+    "interaction_level",
+    "attribution_confidence_milli",
+    "projection_kind",
+}
+
+_GLOBAL_TIMELINE_V2_COLUMNS = {
+    "minute_start",
+    "direct_input_count",
+    "non_direct_activity_count",
+    "attributed_direct_input_count",
+    "attributed_non_direct_activity_count",
+    "unattributed_direct_input_count",
+    "unattributed_non_direct_activity_count",
+    "unattributed_reason_counts_json",
+}
+
+_FEATURE_CACHE_MAX_ENTRIES = 16
+type _GraphIdentity = tuple[str, int, int]
+type _GraphDataVersion = tuple[int, int, int, int]
+
+_FEATURE_CACHE: dict[_GraphIdentity, ScreenpipeGraphFeatures] = {}
+_FEATURE_CACHE_LOCK = threading.Lock()
 
 
 def _expand_path(value: str) -> str:
@@ -162,6 +247,21 @@ def _open_read_only(database_path: str) -> sqlite3.Connection:
     return connection
 
 
+def _graph_identity(database_path: str) -> _GraphIdentity:
+    absolute_path = os.path.abspath(database_path)
+    stat = os.stat(absolute_path)
+    return os.path.normcase(absolute_path), int(stat.st_dev), int(stat.st_ino)
+
+
+def _graph_data_version(database_path: str) -> _GraphDataVersion:
+    stat = os.stat(database_path)
+    try:
+        wal_stat = os.stat(f"{database_path}-wal")
+    except FileNotFoundError:
+        return int(stat.st_mtime_ns), int(stat.st_size), 0, 0
+    return int(stat.st_mtime_ns), int(stat.st_size), int(wal_stat.st_mtime_ns), int(wal_stat.st_size)
+
+
 def _object_columns(connection: sqlite3.Connection, name: str) -> set[str]:
     return {str(row[1]) for row in connection.execute(f"pragma table_info({name})")}
 
@@ -199,6 +299,15 @@ def _inspect_screenpipe_graph_features(connection: sqlite3.Connection) -> Screen
     timeline_columns = (
         _object_columns(connection, "timeline_app_minutes_v1") if "timeline_app_minutes_v1" in objects else set()
     )
+    timeline_v2_columns = (
+        _object_columns(connection, "timeline_app_minutes_v2") if "timeline_app_minutes_v2" in objects else set()
+    )
+    global_v2_columns = (
+        _object_columns(connection, "timeline_global_minutes_v2")
+        if "timeline_global_minutes_v2" in objects
+        else set()
+    )
+    icon_columns = _object_columns(connection, "app_icon_versions") if "app_icon_versions" in objects else set()
     return ScreenpipeGraphFeatures(
         schema_version=schema_version,
         density_frame_column=frame_column if "minute_start" in minute_columns else None,
@@ -206,15 +315,28 @@ def _inspect_screenpipe_graph_features(connection: sqlite3.Connection) -> Screen
         supports_acquisition_watermark={"source_pack_sha256", "observed_at"}.issubset(acquisition_columns)
         and "source_pack_sha256" in minute_columns,
         supports_app_timeline=_APP_TIMELINE_COLUMNS.issubset(timeline_columns),
+        supports_app_timeline_v2=_APP_TIMELINE_V2_COLUMNS.issubset(timeline_v2_columns),
+        supports_global_timeline_v2=_GLOBAL_TIMELINE_V2_COLUMNS.issubset(global_v2_columns),
+        supports_icon_colors={"representative_color_rgb", "color_algorithm_version"}.issubset(icon_columns),
     )
 
 
 def inspect_screenpipe_graph_features(database_path: str) -> ScreenpipeGraphFeatures:
+    key = _graph_identity(database_path)
+    with _FEATURE_CACHE_LOCK:
+        cached = _FEATURE_CACHE.get(key)
+        if cached is not None:
+            return cached
     connection = _open_read_only(database_path)
     try:
-        return _inspect_screenpipe_graph_features(connection)
+        features = _inspect_screenpipe_graph_features(connection)
     finally:
         connection.close()
+    with _FEATURE_CACHE_LOCK:
+        _FEATURE_CACHE[key] = features
+        while len(_FEATURE_CACHE) > _FEATURE_CACHE_MAX_ENTRIES:
+            _FEATURE_CACHE.pop(next(iter(_FEATURE_CACHE)))
+    return features
 
 
 def _parse_rfc3339(value: str) -> float:
@@ -224,10 +346,11 @@ def _parse_rfc3339(value: str) -> float:
 def _query_screenpipe_refresh_state(
     database_path: str,
     previous_watermark: _ScreenpipeWatermark | None,
+    features: ScreenpipeGraphFeatures | None = None,
 ) -> _ScreenpipeRefreshState | None:
     connection = _open_read_only(database_path)
     try:
-        features = _inspect_screenpipe_graph_features(connection)
+        features = features or _inspect_screenpipe_graph_features(connection)
         if not features.supports_acquisition_watermark:
             return None
         max_rowid = int(connection.execute("select coalesce(max(rowid), 0) from source_acquisitions").fetchone()[0])
@@ -255,7 +378,7 @@ def _query_screenpipe_refresh_state(
                 "select min(m.minute_start) "
                 "from source_acquisitions a "
                 "left join source_activity_minutes m on m.source_pack_sha256 = a.source_pack_sha256 "
-                "where a.rowid > ? or a.observed_at >= ?",
+                "where a.rowid > ? or a.observed_at > ?",
                 (previous_watermark.max_rowid, previous_watermark.observed_at),
             ).fetchone()
         earliest = _parse_rfc3339(str(row[0])) if row and row[0] is not None else None
@@ -303,36 +426,214 @@ def query_app_minutes(
     query_start: float,
     query_end: float,
 ) -> list[AppMinuteRecord]:
+    return list(query_activity_timeline(resolved, stream_start, query_start, query_end).app_records)
+
+
+def query_activity_timeline(
+    resolved: ResolvedDensitySource,
+    stream_start: float,
+    query_start: float,
+    query_end: float,
+    *,
+    features: ScreenpipeGraphFeatures | None = None,
+) -> ActivityTimelineData:
     if resolved.source is not DensitySource.SCREENPIPE_GRAPH:
-        return []
+        return ActivityTimelineData((), (), 1)
+    features = features or inspect_screenpipe_graph_features(resolved.database_path)
     connection = _open_read_only(resolved.database_path)
     try:
-        if not _inspect_screenpipe_graph_features(connection).supports_app_timeline:
-            return []
-        rows = connection.execute(
-            "select cast((unixepoch(minute_start, 'subsec') - ?) / 60 as integer), "
-            "canonical_app_id, display_name, icon_sha256, engaged_score_milli, "
-            "engaged_milliseconds, foreground_milliseconds, direct_event_count, "
-            "interaction_level, attribution_confidence_milli "
-            "from timeline_app_minutes_v1 where minute_start >= ? and minute_start < ? "
-            "order by minute_start, engaged_score_milli desc, canonical_app_id",
-            (stream_start, _rfc3339(query_start), _rfc3339(query_end)),
-        ).fetchall()
-        return [
-            AppMinuteRecord(
-                bucket=int(row[0]),
-                canonical_app_id=str(row[1]),
-                display_name=str(row[2]),
-                icon_sha256=str(row[3]) if row[3] is not None else None,
-                engaged_score_milli=int(row[4]),
-                engaged_milliseconds=int(row[5]),
-                foreground_milliseconds=int(row[6]),
-                direct_event_count=int(row[7]),
-                interaction_level=str(row[8]),
-                attribution_confidence_milli=int(row[9]),
+        start_text = _rfc3339(query_start)
+        end_text = _rfc3339(query_end)
+        records: dict[tuple[int, str], AppMinuteRecord] = {}
+        has_v2 = features.supports_app_timeline_v2 and features.supports_global_timeline_v2
+        if features.supports_app_timeline and not has_v2:
+            rows = connection.execute(
+                "select cast((unixepoch(minute_start, 'subsec') - ?) / 60 as integer), "
+                "canonical_app_id, display_name, icon_sha256, engaged_score_milli, "
+                "engaged_milliseconds, foreground_milliseconds, direct_event_count, "
+                "interaction_level, attribution_confidence_milli "
+                "from timeline_app_minutes_v1 where minute_start >= ? and minute_start < ? "
+                "order by minute_start, engaged_score_milli desc, canonical_app_id",
+                (stream_start, start_text, end_text),
+            ).fetchall()
+            for row in rows:
+                record = AppMinuteRecord(
+                    bucket=int(row[0]),
+                    canonical_app_id=str(row[1]),
+                    display_name=str(row[2]),
+                    icon_sha256=str(row[3]) if row[3] is not None else None,
+                    engaged_score_milli=int(row[4]),
+                    engaged_milliseconds=int(row[5]),
+                    foreground_milliseconds=int(row[6]),
+                    direct_event_count=int(row[7]),
+                    interaction_level=str(row[8]),
+                    attribution_confidence_milli=int(row[9]),
+                    direct_input_count=int(row[7]),
+                )
+                records[(record.bucket, record.canonical_app_id)] = record
+
+        if has_v2:
+            v1_join = (
+                "left join timeline_app_minutes_v1 legacy "
+                "on legacy.minute_start=v2.minute_start "
+                "and legacy.canonical_app_id=v2.canonical_app_id "
+                if features.supports_app_timeline
+                else ""
             )
-            for row in rows
-        ]
+            score_projection = (
+                "coalesce(legacy.engaged_score_milli, "
+                "v2.direct_input_count * 2000 + v2.non_direct_activity_count * 100), "
+                "coalesce(legacy.engaged_milliseconds, 0), "
+                if features.supports_app_timeline
+                else "v2.direct_input_count * 2000 + v2.non_direct_activity_count * 100, 0, "
+            )
+            color_join = (
+                "left join app_icon_versions color on color.app_id=v2.canonical_app_id "
+                "and color.icon_sha256=v2.icon_sha256 and color.valid_to is null "
+                if features.supports_icon_colors
+                else ""
+            )
+            color_projection = (
+                "color.representative_color_rgb, color.color_algorithm_version "
+                if features.supports_icon_colors
+                else "null, null "
+            )
+            rows = connection.execute(
+                "select cast((unixepoch(v2.minute_start, 'subsec') - ?) / 60 as integer), "
+                "v2.canonical_app_id, v2.display_name, v2.icon_sha256, "
+                f"{score_projection}"
+                "v2.foreground_milliseconds, v2.direct_input_count, v2.interaction_level, "
+                "v2.attribution_confidence_milli, v2.direct_input_count, v2.key_count, "
+                "v2.click_count, v2.scroll_count, v2.text_count, v2.clipboard_count, "
+                "v2.other_input_count, v2.non_direct_activity_count, v2.effective_frame_count, "
+                "v2.effective_non_direct_ui_event_count, v2.projection_kind, "
+                f"{color_projection}"
+                "from timeline_app_minutes_v2 v2 "
+                f"{v1_join}{color_join}"
+                "where v2.minute_start >= ? and v2.minute_start < ? "
+                "order by v2.minute_start, v2.direct_input_count desc, "
+                "v2.non_direct_activity_count desc, v2.canonical_app_id",
+                (stream_start, start_text, end_text),
+            ).fetchall()
+            for row in rows:
+                direct_counts = tuple(int(row[index]) for index in range(10, 17))
+                non_direct_counts = tuple(int(row[index]) for index in range(17, 20))
+                if any(value < 0 for value in (*direct_counts, *non_direct_counts)):
+                    raise sqlite3.DatabaseError("screenpipe graph contains a negative app activity v2 count")
+                direct, key, click, scroll, text_count, clipboard, other = direct_counts
+                non_direct, frames, non_direct_ui = non_direct_counts
+                if direct != key + click + scroll + text_count + clipboard + other:
+                    raise sqlite3.DatabaseError("screenpipe graph violates app direct activity v2 conservation")
+                if non_direct != frames + non_direct_ui:
+                    raise sqlite3.DatabaseError("screenpipe graph violates app non-direct activity v2 conservation")
+                record = AppMinuteRecord(
+                    bucket=int(row[0]),
+                    canonical_app_id=str(row[1]),
+                    display_name=str(row[2]),
+                    icon_sha256=str(row[3]) if row[3] is not None else None,
+                    engaged_score_milli=int(row[4]),
+                    engaged_milliseconds=int(row[5]),
+                    foreground_milliseconds=int(row[6]),
+                    direct_event_count=int(row[7]),
+                    interaction_level=str(row[8]),
+                    attribution_confidence_milli=int(row[9]),
+                    direct_input_count=direct,
+                    key_count=key,
+                    click_count=click,
+                    scroll_count=scroll,
+                    text_count=text_count,
+                    clipboard_count=clipboard,
+                    other_input_count=other,
+                    non_direct_activity_count=non_direct,
+                    effective_frame_count=frames,
+                    effective_non_direct_ui_event_count=non_direct_ui,
+                    projection_kind=str(row[20]),
+                    representative_color_rgb=int(row[21]) if row[21] is not None else None,
+                    color_algorithm_version=int(row[22]) if row[22] is not None else None,
+                    contract_version=2,
+                )
+                records[(record.bucket, record.canonical_app_id)] = record
+
+        global_records: list[GlobalMinuteRecord] = []
+        if has_v2:
+            rows = connection.execute(
+                "select cast((unixepoch(minute_start, 'subsec') - ?) / 60 as integer), "
+                "direct_input_count, non_direct_activity_count, attributed_direct_input_count, "
+                "attributed_non_direct_activity_count, unattributed_direct_input_count, "
+                "unattributed_non_direct_activity_count, unattributed_reason_counts_json "
+                "from timeline_global_minutes_v2 where minute_start >= ? and minute_start < ? "
+                "order by minute_start",
+                (stream_start, start_text, end_text),
+            ).fetchall()
+            for row in rows:
+                counts = tuple(int(row[index]) for index in range(1, 7))
+                if any(value < 0 for value in counts):
+                    raise sqlite3.DatabaseError("screenpipe graph contains a negative activity v2 residual")
+                direct, non_direct, attributed_direct, attributed_non_direct, residual_direct, residual_non_direct = (
+                    counts
+                )
+                if direct != attributed_direct + residual_direct or non_direct != (
+                    attributed_non_direct + residual_non_direct
+                ):
+                    raise sqlite3.DatabaseError("screenpipe graph violates activity v2 conservation")
+                try:
+                    reasons_value = json.loads(str(row[7]))
+                except (TypeError, ValueError) as error:
+                    raise sqlite3.DatabaseError("screenpipe graph residual reasons are malformed JSON") from error
+                if not isinstance(reasons_value, dict):
+                    raise sqlite3.DatabaseError("screenpipe graph residual reasons are not an object")
+                try:
+                    reasons = tuple(
+                        sorted(
+                            (
+                                UnattributedReasonCount(*str(key).split(":", 1), int(value))
+                                for key, value in reasons_value.items()
+                                if ":" in str(key)
+                            ),
+                            key=lambda item: (item.signal_kind, item.reason),
+                        )
+                    )
+                except (TypeError, ValueError) as error:
+                    raise sqlite3.DatabaseError("screenpipe graph residual reasons contain a malformed count") from error
+                if len(reasons) != len(reasons_value):
+                    raise sqlite3.DatabaseError("screenpipe graph residual reason key lacks a signal kind")
+                if any(
+                    reason.signal_kind not in {"direct_input", "non_direct_activity"} for reason in reasons
+                ):
+                    raise sqlite3.DatabaseError("screenpipe graph residual reason has an unknown signal kind")
+                if any(reason.count < 0 for reason in reasons):
+                    raise sqlite3.DatabaseError("screenpipe graph contains a negative residual reason count")
+                reason_direct = sum(reason.count for reason in reasons if reason.signal_kind == "direct_input")
+                reason_non_direct = sum(
+                    reason.count for reason in reasons if reason.signal_kind == "non_direct_activity"
+                )
+                if reason_direct != residual_direct or reason_non_direct != residual_non_direct:
+                    raise sqlite3.DatabaseError("screenpipe graph residual reasons violate activity v2 conservation")
+                global_records.append(
+                    GlobalMinuteRecord(
+                        int(row[0]),
+                        direct,
+                        non_direct,
+                        attributed_direct,
+                        attributed_non_direct,
+                        residual_direct,
+                        residual_non_direct,
+                        reasons,
+                    )
+                )
+        ordered_records = tuple(
+            sorted(
+                records.values(),
+                key=lambda item: (
+                    item.bucket,
+                    -item.direct_input_count,
+                    -item.non_direct_activity_count,
+                    -item.engaged_score_milli,
+                    item.canonical_app_id,
+                ),
+            )
+        )
+        return ActivityTimelineData(ordered_records, tuple(global_records), 2 if has_v2 else 1)
     finally:
         connection.close()
 
@@ -341,7 +642,10 @@ class AppTimelineCache:
     _MAX_ENTRIES = 8
 
     def __init__(self):
-        self._entries: dict[tuple[str, float, float | None], _AppCacheEntry] = {}
+        self._entries: dict[
+            tuple[_GraphIdentity, float, float | None, int, _GraphDataVersion | None],
+            _AppCacheEntry,
+        ] = {}
         self._lock = threading.Lock()
 
     def load(
@@ -352,26 +656,51 @@ class AppTimelineCache:
         closed_interval: bool,
         cancelled: Callable[[], bool] = lambda: False,
     ) -> list[AppMinuteRecord]:
+        return list(
+            self.load_activity(
+                resolved,
+                stream_start,
+                interval_end,
+                closed_interval,
+                cancelled,
+            ).app_records
+        )
+
+    def load_activity(
+        self,
+        resolved: ResolvedDensitySource,
+        stream_start: float,
+        interval_end: float,
+        closed_interval: bool,
+        cancelled: Callable[[], bool] = lambda: False,
+    ) -> ActivityTimelineData:
         if resolved.source is not DensitySource.SCREENPIPE_GRAPH:
-            return []
+            return ActivityTimelineData((), (), 1)
+        graph_identity = _graph_identity(resolved.database_path)
+        data_version = _graph_data_version(resolved.database_path) if closed_interval else None
+        features = inspect_screenpipe_graph_features(resolved.database_path)
+        contract_version = int(features.supports_app_timeline_v2 and features.supports_global_timeline_v2) + 1
         key = (
-            os.path.normcase(resolved.database_path),
+            graph_identity,
             stream_start,
             interval_end if closed_interval else None,
+            contract_version,
+            data_version,
         )
         with self._lock:
             entry = self._entries.get(key)
             if entry and entry.complete:
-                return list(entry.records)
+                return ActivityTimelineData(tuple(entry.records), tuple(entry.global_records), entry.contract_version)
             if cancelled():
-                return []
+                return ActivityTimelineData((), (), contract_version)
             refresh = _query_screenpipe_refresh_state(
                 resolved.database_path,
                 entry.source_watermark if entry else None,
+                features,
             )
             watermark = refresh.watermark if refresh else None
             if entry and refresh is not None and refresh.earliest_changed_minute is None:
-                return list(entry.records)
+                return ActivityTimelineData(tuple(entry.records), tuple(entry.global_records), entry.contract_version)
             if entry and refresh is not None:
                 earliest_changed_minute = refresh.earliest_changed_minute
                 assert earliest_changed_minute is not None
@@ -381,24 +710,42 @@ class AppTimelineCache:
                     else 0
                 )
                 records = [record for record in entry.records if record.bucket < refresh_bucket]
+                global_records = [record for record in entry.global_records if record.bucket < refresh_bucket]
             else:
                 refresh_bucket = 0
                 records = []
-            records.extend(
-                query_app_minutes(
-                    resolved,
-                    stream_start,
-                    stream_start + refresh_bucket * 60,
-                    interval_end,
+                global_records = []
+            refreshed = query_activity_timeline(
+                resolved,
+                stream_start,
+                stream_start + refresh_bucket * 60,
+                interval_end,
+                features=features,
+            )
+            records.extend(refreshed.app_records)
+            global_records.extend(refreshed.global_records)
+            if cancelled():
+                return ActivityTimelineData((), (), contract_version)
+            records.sort(
+                key=lambda item: (
+                    item.bucket,
+                    -item.direct_input_count,
+                    -item.non_direct_activity_count,
+                    -item.engaged_score_milli,
+                    item.canonical_app_id,
                 )
             )
-            if cancelled():
-                return []
-            records.sort(key=lambda item: (item.bucket, -item.engaged_score_milli, item.canonical_app_id))
-            self._entries[key] = _AppCacheEntry(records, closed_interval, watermark)
+            global_records.sort(key=lambda item: item.bucket)
+            self._entries[key] = _AppCacheEntry(
+                records,
+                global_records,
+                contract_version,
+                closed_interval,
+                watermark,
+            )
             while len(self._entries) > self._MAX_ENTRIES:
                 self._entries.pop(next(iter(self._entries)))
-            return list(records)
+            return ActivityTimelineData(tuple(records), tuple(global_records), contract_version)
 
 
 class DensityBucketCache:
