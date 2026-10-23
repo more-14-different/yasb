@@ -214,6 +214,7 @@ def layout_timeline_stages(
     width: float,
     band_height: float,
     *,
+    band_top: float = 0,
     min_size: float = 12,
     max_size: float = 24,
     max_icons: int = 5,
@@ -290,7 +291,7 @@ def layout_timeline_stages(
             # Keep every stage attached to the density timeline.  The alternating
             # direction controls the order inside a stage, not whether its icon
             # group hangs from the top or rises from the bottom of the band.
-            bottom_shift = band_height - max(item.y + item.size for item in placements)
+            bottom_shift = band_top + band_height - max(item.y + item.size for item in placements)
             if bottom_shift:
                 placements = [replace(item, y=item.y + bottom_shift) for item in placements]
             previous_right = max(item.x + item.size for item in placements)

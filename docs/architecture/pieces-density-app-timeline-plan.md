@@ -602,8 +602,9 @@ DensityTimelineSnapshot
 
 ### 10.3 overlay band
 
-保持当前 85px 实际高度作为兼容起点：上方约 48–50px 为 icon band，下方约 35–37px 为
-heatmap/ruler band。删除几何中的 magic `-15` 前，先用 regression screenshot 固定当前位置。
+保持当前 85px 实际高度作为兼容起点。`icon_band_height` 是图标组的最大纵向占用高度，图标组
+整体以主刻度线顶端上方 2px 为底部基线；它可以覆盖 heatmap，但不覆盖刻度线。删除几何中的
+magic `-15` 前，先用 regression screenshot 固定当前位置。
 
 建议新增配置，但默认即可工作：
 

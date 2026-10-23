@@ -53,6 +53,8 @@ TRUTH_TIME_REQUIRED_COLUMNS = {
 _DENSITY_BUCKET_CACHE = DensityBucketCache()
 _APP_TIMELINE_CACHE = AppTimelineCache()
 _ICON_BYTE_CACHE = IconByteCache()
+TIMELINE_MAJOR_TICK_HEIGHT = 10.0
+TIMELINE_ICON_RULER_GAP = 2.0
 
 
 @dataclass(frozen=True)
@@ -535,10 +537,13 @@ class DensityOverlay(QFrame):
         self._rebuild_timeline_layout()
 
     def _rebuild_timeline_layout(self) -> None:
+        icon_bottom = max(self.height() - TIMELINE_MAJOR_TICK_HEIGHT - TIMELINE_ICON_RULER_GAP, 0)
+        icon_band_height = min(self.config.icon_band_height, icon_bottom)
         self.timeline_layouts = layout_timeline_stages(
             self.timeline_stages,
             self.width(),
-            min(self.config.icon_band_height, self.height()),
+            icon_band_height,
+            band_top=icon_bottom - icon_band_height,
             min_size=self.config.icon_min_size,
             max_size=self.config.icon_max_size,
             max_icons=self.config.max_stage_icons,
@@ -720,7 +725,7 @@ class DensityOverlay(QFrame):
                     painter.setPen(pen_major)
 
                     x = i * step_x
-                    painter.drawLine(QPointF(x, h), QPointF(x, h - 10))
+                    painter.drawLine(QPointF(x, h), QPointF(x, h - TIMELINE_MAJOR_TICK_HEIGHT))
                     label = format_compact_time(dt)
                     label_width = font_metrics.horizontalAdvance(label)
                     label_x = ruler_label_x(
