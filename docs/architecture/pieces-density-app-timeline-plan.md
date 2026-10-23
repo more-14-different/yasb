@@ -1,10 +1,10 @@
 # Pieces Density App Timeline：技术审计与实施方案
 
-状态：Phase 0–1 已完成，Phase 2 尚未开始
+状态：Phase 0–2 已完成，Phase 3 尚未开始
 
 规划分支：`plan/timeline-app-icons-audit`
 
-实施分支：两个仓库均为 `feat/timeline-app-icons-phase0`
+实施分支：按阶段递进；当前为两个仓库的 `feat/timeline-app-icons-phase2`
 
 审计日期：2026-10-23
 
@@ -33,6 +33,20 @@ Phase 1 实施记录：
 - `timeline_app_minutes_v1` 是 YASB 的稳定消费 view；graph v4 仍由 YASB 作为 heatmap-only
   source 支持。
 - graph merge 已覆盖 App identities/facts 并通过重复 merge 幂等测试；Phase 1 没有迁移生产库。
+
+Phase 2 实施记录：
+
+- event-logger `2b8f2c9`：新增独立 WinEvent hook/message-pump 与一秒批处理 resolver；native
+  callback 只向 bounded channel 投递原始 handle/event/time，metadata、图标和 SQLite 工作均在
+  resolver thread 完成。
+- resolver 按 PID + process creation time 缓存快照，保存 AUMID 或 executable-file identity、
+  variant、bounded window context 和 foreground span；source-local 名称可双向升级到已有强身份。
+- input attribution 已加入 WinEvent foreground span，优先级位于 linked frame 之后、弱
+  Screenpipe focus boundary 之前；collector 启动、解析或持久化失败均只降级，不阻断 acquisition。
+- 图标按 HWND、class、EXE 顺序解析，归一化为 128×128 alpha PNG，并在 DB transaction 前发布
+  到 SHA-256 CAS；current manifest 使用 Windows replace-existing/write-through 原子替换。
+- Rust lib tests 316/316 通过，`cargo clippy --all-targets -- -D warnings` 通过；Phase 2 仍未迁移
+  production graph。
 
 ## 1. 结论
 
