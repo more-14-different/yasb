@@ -498,6 +498,61 @@ class AppIconCacheTests(unittest.TestCase):
     def test_invalid_hash_cannot_escape_the_graph_bundle(self):
         self.assertIsNone(icon_asset_path("C:/bundle/graph.sqlite3", "../outside"))
 
+    def test_database_and_icon_share_the_bundle_mount_and_restore_boundary(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            mounted = root / "mounted"
+            mounted.mkdir()
+            graph = mounted / "activity-memory-continuous-v2.sqlite3"
+            payload = b"\x89PNG\r\n\x1a\nportable-bundle-icon"
+            icon_hash = hashlib.sha256(payload).hexdigest()
+            icon = icon_asset_path(str(graph), icon_hash)
+            assert icon is not None
+            icon.parent.mkdir(parents=True)
+            icon.write_bytes(payload)
+            connection = sqlite3.connect(graph)
+            try:
+                connection.executescript(
+                    "create table graph_schema (singleton integer primary key, version integer);"
+                    "insert into graph_schema values (1, 5);"
+                    "create table source_activity_minutes (minute_start text, effective_frame_count integer, "
+                    "effective_ui_event_count integer, source_pack_sha256 text);"
+                    "create table source_acquisitions (source_pack_sha256 text, observed_at text);"
+                    "create table timeline_app_minutes_v1 ("
+                    "minute_start text, canonical_app_id text, display_name text, icon_sha256 text, "
+                    "engaged_score_milli integer, engaged_milliseconds integer, foreground_milliseconds integer, "
+                    "direct_event_count integer, interaction_level text, attribution_confidence_milli integer);"
+                    "insert into source_activity_minutes values "
+                    "('2026-07-19T10:00:00Z', 2, 1, 'pack-a');"
+                    "insert into source_acquisitions values ('pack-a', '2026-07-19T10:01:00Z');"
+                    f"insert into timeline_app_minutes_v1 values ('2026-07-19T10:00:00Z', "
+                    f"'app:code', 'Code', '{icon_hash}', 9000, 3000, 3000, 2, 'direct', 950);"
+                )
+                connection.commit()
+            finally:
+                connection.close()
+            start = datetime.fromisoformat("2026-07-19T10:00:00+00:00").timestamp()
+            resolved = ResolvedDensitySource(DensitySource.SCREENPIPE_GRAPH, str(graph), None)
+
+            self.assertEqual(query_density_buckets(resolved, start, start, start + 60), [(0, 3)])
+            self.assertEqual(query_app_minutes(resolved, start, start, start + 60)[0].icon_sha256, icon_hash)
+            self.assertEqual(IconByteCache().load(str(graph), {icon_hash}), {icon_hash: payload})
+
+            offline = mounted.rename(root / "offline")
+            self.assertFalse(graph.exists())
+            self.assertFalse(icon.exists())
+            with self.assertRaises(sqlite3.OperationalError):
+                query_density_buckets(resolved, start, start, start + 60)
+
+            restored = offline.rename(root / "restored")
+            restored_graph = restored / graph.name
+            restored_resolved = ResolvedDensitySource(DensitySource.SCREENPIPE_GRAPH, str(restored_graph), None)
+            self.assertEqual(query_density_buckets(restored_resolved, start, start, start + 60), [(0, 3)])
+            self.assertEqual(
+                IconByteCache().load(str(restored_graph), {icon_hash}),
+                {icon_hash: payload},
+            )
+
 
 class RefreshTests(unittest.TestCase):
     def test_running_worker_is_cancelled_and_refresh_is_queued(self):

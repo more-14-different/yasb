@@ -1,10 +1,10 @@
 # Pieces Density App Timeline：技术审计与实施方案
 
-状态：Phase 0–4 已完成，Phase 5 尚未开始
+状态：Phase 0–5 已完成；production graph 迁移待单独协调执行
 
 规划分支：`plan/timeline-app-icons-audit`
 
-实施分支：按阶段递进；当前为两个仓库的 `feat/timeline-app-icons-phase4`
+实施分支：按阶段递进；当前为两个仓库的 `feat/timeline-app-icons-phase5`
 
 审计日期：2026-10-23
 
@@ -73,6 +73,23 @@ Phase 4 实施记录：
   `authority=context_only` 与 `semantic_node_authority=false`。
 - Rust all-target 共 356 项测试通过，Clippy `-D warnings` 通过；Phase 4 仍未触碰 production
   graph，也没有自动运行 approximate backfill。
+
+Phase 5 实施记录：
+
+- event-logger `9d86da8`：新增 `screenpipe-graph-bundle` v1 及 `archive-bundle`、
+  `verify-bundle`、`restore-bundle`、`merge-bundle` 命令；SQLite online snapshot、所有 timeline
+  facts 可达的 icon versions、icon manifest 与 bundle hash 在同一目录发布和验证。
+- verifier 只读检查 manifest/hash、SQLite size/hash/quick-check/foreign keys、DB-to-manifest
+  bindings、PNG signature/content hash 与规范 CAS 路径；拒绝覆盖目标、篡改 icon 和非 CAS 文件
+  引用。merge 复用或复制 CAS，沿用 graph 幂等 merge，并重写目标 current icon manifest。
+- event-logger all-target 共 363 项测试及 Clippy `-D warnings` 通过；其中 6 项覆盖旧 schema 空
+  icon 集、完整 archive/verify/restore、整包 offline/remount、tamper rejection、路径 confinement
+  和重复 merge。
+- YASB consumer regression 验证 SQLite 与相邻 icon CAS 随 bundle root 一起移动：root offline
+  后 heatmap 与 icon 同时不可用，换根 restore 后二者均从新根恢复；YASB 不保存绝对 icon 路径。
+- cold rotation、storage contract 与 consumer inventory 已切换到 bundle v1。所有 Phase 均未
+  修改用户 config/theme，也未迁移 production graph；生产升级应在 graph service 停写、先归档
+  v4 检查点并完成统一 cutover 时另行执行。
 
 ## 1. 结论
 
