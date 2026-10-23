@@ -1,10 +1,10 @@
 # Pieces Density App Timeline：技术审计与实施方案
 
-状态：Phase 0–3 已完成，Phase 4 尚未开始
+状态：Phase 0–4 已完成，Phase 5 尚未开始
 
 规划分支：`plan/timeline-app-icons-audit`
 
-实施分支：按阶段递进；当前为两个仓库的 `feat/timeline-app-icons-phase3`
+实施分支：按阶段递进；当前为两个仓库的 `feat/timeline-app-icons-phase4`
 
 审计日期：2026-10-23
 
@@ -60,6 +60,19 @@ Phase 3 实施记录：
   direct inputs、engaged seconds 和 confidence。
 - 相关测试 32 项（另含 2 subtests）通过，7 日/10,080 minute 合成输入阶段构建约 10.8ms、
   layout 约 1ms；self-contained frozen dev bundle 构建通过。Phase 3 未修改用户 config/theme。
+
+Phase 4 实施记录：
+
+- event-logger `5a71ca9`：将历史 App 投影拆为既有 bounded raw replay（exact）和显式
+  `backfill-app-activity-approx`（只有 microblock 时）两条路径。
+- approximate facts 以 `projection_kind=historical_approx`、`interaction_level=uncertain`、低
+  confidence、零 direct/engaged score 保存；命令幂等，后续 exact replay 会按 source pack
+  删除并替换 approximate facts。
+- YouTube Screenpipe acquisition 为每个 evidence microblock 附最多 3 个 engaged App，并贯穿
+  SourcePack evidence、lexical retrieval 和 compact review source；contract 固定标记
+  `authority=context_only` 与 `semantic_node_authority=false`。
+- Rust all-target 共 356 项测试通过，Clippy `-D warnings` 通过；Phase 4 仍未触碰 production
+  graph，也没有自动运行 approximate backfill。
 
 ## 1. 结论
 
