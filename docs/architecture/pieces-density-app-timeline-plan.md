@@ -1,6 +1,6 @@
 # Pieces Density App Timeline：技术审计与实施方案
 
-状态：Phase 0–5 已完成；production graph 迁移待单独协调执行
+状态：Phase 0–5 与 production graph v5 cutover 已完成
 
 规划分支：`plan/timeline-app-icons-audit`
 
@@ -88,8 +88,15 @@ Phase 5 实施记录：
 - YASB consumer regression 验证 SQLite 与相邻 icon CAS 随 bundle root 一起移动：root offline
   后 heatmap 与 icon 同时不可用，换根 restore 后二者均从新根恢复；YASB 不保存绝对 icon 路径。
 - cold rotation、storage contract 与 consumer inventory 已切换到 bundle v1。所有 Phase 均未
-  修改用户 config/theme，也未迁移 production graph；生产升级应在 graph service 停写、先归档
-  v4 检查点并完成统一 cutover 时另行执行。
+  修改用户 config/theme。
+- 2026-10-23 production cutover：先在 N: 保存并验证 v4 bundle，再通过 restore 副本演练后将
+  active graph 从 v4 幂等迁移到 v5；39,240 条 density minute facts 保持不变。10,130 个
+  pre-receipt windows 以 `completeness=inaccessible` 补齐兼容 envelope（保留 206,644 source
+  refs，不提升证据权限），随后为 21,168 个历史 packs 写入 129,269 条零 direct/engaged 的
+  `historical_approx` facts。post-v5 bundle 含 reachable icon 并通过 hash/quick-check/FK 验证。
+- YASB Dev 已从当前分支重建启动；production consumer verifier 为 5 healthy、0 failing，
+  `pieces_density` runtime 已确认使用 `screenpipe_graph`。Screenpipe 24h entitlement 仍显式标记
+  restricted，不被 migration 或 approximate facts 掩盖。
 
 ## 1. 结论
 
