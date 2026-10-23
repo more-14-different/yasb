@@ -115,6 +115,30 @@ class ActivityComponentTests(unittest.TestCase):
         self.assertEqual(second.metrics.reused_component_count, 1)
         self.assertEqual(second.metrics.component_count, 3)
 
+    def test_shared_cache_hit_without_previous_layout_builds_the_full_interval(self):
+        records = [
+            app_minute(1, direct=1),
+            app_minute(8, app_id="app:edge", direct=1),
+            app_minute(10, app_id="app:terminal", direct=1),
+        ]
+
+        layout = build_activity_layout(
+            records,
+            [],
+            12,
+            240,
+            60,
+            previous=None,
+            changed_from_bucket=12,
+        )
+
+        self.assertEqual(layout.metrics.reused_component_count, 0)
+        self.assertEqual(layout.metrics.component_count, 3)
+        self.assertEqual(
+            {geometry.component.app_id for geometry in layout.components},
+            {"app:code", "app:edge", "app:terminal"},
+        )
+
 
 class ActivityScalingAndPackingTests(unittest.TestCase):
     def test_app_and_global_robust_scales_are_separate_and_deterministic(self):

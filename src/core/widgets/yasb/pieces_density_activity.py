@@ -606,12 +606,17 @@ def build_activity_layout(
     width = max(int(width), 1)
     bucket_count = max(int(bucket_count), 1)
     prior_components = tuple(item.component for item in previous.components) if previous else ()
+    # A changed suffix is meaningful only relative to a layout from the same
+    # interval. Another monitor can hit the shared data cache without owning a
+    # prior layout; treating that cold build as incremental drops every
+    # component before the suffix.
+    incremental_from = changed_from_bucket if previous is not None else None
     components, reused = build_activity_components(
         app_records,
         bucket_count,
         policy=policy,
         previous_components=prior_components,
-        changed_from_bucket=changed_from_bucket,
+        changed_from_bucket=incremental_from,
         cancelled=cancelled,
     )
     app_direct_scale = robust_signal_scale(
@@ -640,7 +645,7 @@ def build_activity_layout(
         and previous.policy == policy
         and previous.app_direct_scale == app_direct_scale
         and previous.app_non_direct_scale == app_non_direct_scale
-        and changed_from_bucket is not None
+        and incremental_from is not None
     ):
         previous_geometry = {item.component.component_id: item for item in previous.components}
         for component in components:
