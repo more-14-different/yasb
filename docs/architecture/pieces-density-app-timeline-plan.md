@@ -1,10 +1,24 @@
 # Pieces Density App Timeline：技术审计与实施方案
 
-状态：规划完成，尚未实施
+状态：Phase 0 查询与兼容性基线已完成，Phase 1 尚未开始
 
-分支：`plan/timeline-app-icons-audit`
+规划分支：`plan/timeline-app-icons-audit`
+
+实施分支：两个仓库均为 `feat/timeline-app-icons-phase0`
 
 审计日期：2026-10-23
+
+Phase 0 实施记录：
+
+- event-logger `0d492af`：为全局 minute range、source-pack replacement 和 acquisition
+  watermark 增加索引，并用 `EXPLAIN QUERY PLAN` 锁定 reader/ingestion/delta refresh 路径。
+- yasb-fork `f185db9e`：增加 graph feature detection、v4 heatmap-only 兼容合同，以及由
+  acquisition rowid/observed-at 双水位驱动的增量 minute refresh。
+- production graph 尚未由本分支执行写迁移；索引会在 graph service 使用新版本首次进行
+  正常 writable initialization 时幂等创建。
+- 只读 production-scale 基线为 39,138 条 minute facts：旧计划的 7 日查询为全表扫描并建立
+  临时 GROUP BY B-tree，热缓存约 23–27ms；相同数据的内存副本创建新索引后改为 range
+  search、无临时 B-tree，约 2–4ms，查询结果一致。
 
 ## 1. 结论
 
