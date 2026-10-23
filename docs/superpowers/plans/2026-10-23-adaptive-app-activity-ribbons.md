@@ -54,10 +54,10 @@ No production graph or cold archive is upgraded until Phase 6. Every phase ends 
 
 ### Phase 1 schema decision
 
-Add effective v2 signal columns without reinterpreting existing v1 columns:
+Add effective v2 signal facts without reinterpreting existing v1 columns or changing their physical row layout:
 
-- Global/source minute facts retain raw/effective/suppressed frame and UI totals and add raw/effective/suppressed direct-input and non-direct-UI totals.
-- App/source minute facts retain v1 scoring fields and add effective direct-input totals, effective direct category totals, suppressed direct totals, and raw/effective/suppressed non-direct UI totals.
+- Global/source v1 minute facts retain raw/effective/suppressed frame and UI totals; a keyed v2 companion fact adds raw/effective/suppressed direct-input and non-direct-UI totals.
+- App/source v1 minute facts retain scoring fields and physical compatibility; a keyed v2 companion fact adds effective direct-input totals, effective direct category totals, suppressed direct totals, and raw/effective/suppressed non-direct UI totals.
 - Frame activity continues to use existing raw/effective/suppressed app frame columns.
 - A bounded residual-reason fact records unattributed effective counts using a versioned reason vocabulary.
 - `timeline_app_minutes_v2` and `timeline_global_minutes_v2` aggregate already-projected facts; YASB does not classify raw observations.
@@ -269,4 +269,15 @@ Each completed phase appends:
 - The live v1 app query plan uses `idx_source_app_activity_minutes_minute` for the bounded minute predicate. The view still needs temporary B-trees for grouping and final ordering; v2 plan tests must prevent regression to an unbounded source-fact scan and should evaluate whether the final sort can be reduced.
 - A read-only 24-hour production query returned 317 v1 app-minute rows. Ten process-level SQLite CLI samples measured 13.93 ms minimum, 17.37 ms median, and 48.55 ms maximum/p95. This includes CLI startup and is retained only as a before-change diagnostic, not as the worker latency acceptance measurement.
 - No database, bundle, configuration, or runtime service was modified.
+
+### Phase 1 evidence — 2026-10-23
+
+- `event-logger` commit `0bd63f7` (`feat(screenpipe): add conserved app activity v2 signals`) was pushed to `feat/adaptive-app-activity-signals-v2`.
+- Graph schema v6 adds keyed global, app, and unattributed v2 signal facts plus `timeline_app_minutes_v2` and `timeline_global_minutes_v2`; the v1 view has an exact column regression assertion and remains unchanged.
+- New exact source packs classify direct input before non-direct activity, retain raw/effective/suppressed counts, exclude focus-only events from both signals, and preserve v1 projection behavior independently.
+- Every source-pack transaction verifies per-minute direct and non-direct conservation before commit. Graph migration verification rejects conservation violations, and corrupted app totals remain visible as negative residuals rather than being clamped.
+- Bounded v2 app/global query-plan tests confirm use of minute-led indexes.
+- `cargo test` — 330 library tests plus 38 binary tests passed; no failures.
+- `cargo fmt --all -- --check` and `cargo clippy --all-targets --all-features -- -D warnings` — passed.
+- No production database, cold bundle, configuration, or running service was modified.
 
