@@ -231,6 +231,36 @@ class DensitySourceTests(unittest.TestCase):
             self.assertTrue(features.supports_acquisition_watermark)
             self.assertFalse(features.supports_app_timeline)
 
+    def test_v5_graph_features_detect_stable_app_timeline_view(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            database_path = Path(temporary_directory) / "screenpipe-graph.sqlite"
+            connection = sqlite3.connect(database_path)
+            try:
+                connection.executescript(
+                    "create table graph_schema (singleton integer primary key, version integer not null);"
+                    "insert into graph_schema values (1, 5);"
+                    "create table source_acquisitions ("
+                    "source_pack_sha256 text primary key, observed_at text not null);"
+                    "create table source_activity_minutes ("
+                    "minute_start text, frame_count integer, ui_event_count integer, "
+                    "source_pack_sha256 text);"
+                    "create view timeline_app_minutes_v1 as select "
+                    "null as minute_start, null as canonical_app_id, null as display_name, "
+                    "null as icon_sha256, null as engaged_score_milli, "
+                    "null as engaged_milliseconds, null as foreground_milliseconds, "
+                    "null as direct_event_count, null as interaction_level, "
+                    "null as attribution_confidence_milli;"
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            features = inspect_screenpipe_graph_features(str(database_path))
+
+            self.assertEqual(features.schema_version, 5)
+            self.assertTrue(features.supports_density)
+            self.assertTrue(features.supports_app_timeline)
+
     def test_screenpipe_watermark_detects_historical_rows_inserted_by_merge(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             database_path = Path(temporary_directory) / "screenpipe-graph.sqlite"

@@ -1,6 +1,6 @@
 # Pieces Density App Timeline：技术审计与实施方案
 
-状态：Phase 0 查询与兼容性基线已完成，Phase 1 尚未开始
+状态：Phase 0–1 已完成，Phase 2 尚未开始
 
 规划分支：`plan/timeline-app-icons-audit`
 
@@ -19,6 +19,20 @@ Phase 0 实施记录：
 - 只读 production-scale 基线为 39,138 条 minute facts：旧计划的 7 日查询为全表扫描并建立
   临时 GROUP BY B-tree，热缓存约 23–27ms；相同数据的内存副本创建新索引后改为 range
   search、无临时 B-tree，约 2–4ms，查询结果一致。
+
+Phase 1 实施记录：
+
+- event-logger graph schema 升至 v5，增加规范 App、identity key、安装变体、窗口上下文、
+  前台 span、icon version 和 acquisition-bound per-App minute facts。
+- ingestion 在 semantic inference 前以同一 transaction 写入 App facts；重试先按 source-pack
+  替换，保持幂等，semantic failure 不会丢失确定性活动事实。
+- v1 attribution 采用事件自身 App、linked focused frame、既有一秒 focus boundary 的严格顺序；
+  未来 app switch 不会反向覆盖旧点击，focus/switch 自身始终为零 effort。
+- v1 score 保存 raw typed counts、unioned engaged milliseconds、bounded burst bonus、confidence
+  和 scoring version；纯 passive frame 的 score 为零。
+- `timeline_app_minutes_v1` 是 YASB 的稳定消费 view；graph v4 仍由 YASB 作为 heatmap-only
+  source 支持。
+- graph merge 已覆盖 App identities/facts 并通过重复 merge 幂等测试；Phase 1 没有迁移生产库。
 
 ## 1. 结论
 
