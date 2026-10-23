@@ -1,3 +1,4 @@
+import base64
 import logging
 import math
 import os
@@ -161,13 +162,12 @@ def activity_tooltip_html(
     layout: ActivityLayoutSnapshot | None,
     data: ActivityTimelineData | None,
     bucket: int,
+    icon_data_urls: dict[str, str] | None = None,
 ) -> str:
     if layout is None or data is None:
         return ""
     global_record = next((record for record in data.global_records if record.bucket == bucket), None)
-    app_records = {
-        record.canonical_app_id: record for record in data.app_records if record.bucket == bucket
-    }
+    app_records = {record.canonical_app_id: record for record in data.app_records if record.bucket == bucket}
     components = [
         geometry
         for geometry in layout.components
@@ -175,14 +175,49 @@ def activity_tooltip_html(
     ]
     components.sort(
         key=lambda geometry: (
-            -(app_records.get(geometry.component.app_id).direct_input_count if geometry.component.app_id in app_records else 0),
             -(
-                app_records.get(geometry.component.app_id).non_direct_activity_count
+                app_records[geometry.component.app_id].direct_input_count
+                if geometry.component.app_id in app_records
+                else 0
+            ),
+            -(
+                app_records[geometry.component.app_id].non_direct_activity_count
                 if geometry.component.app_id in app_records
                 else 0
             ),
             geometry.component.app_id,
         )
+    )
+    direct_total = (
+        global_record.direct_input_count
+        if global_record is not None
+        else sum(record.direct_input_count for record in app_records.values())
+    )
+    activity_total = (
+        global_record.non_direct_activity_count
+        if global_record is not None
+        else sum(record.non_direct_activity_count for record in app_records.values())
+    )
+
+    def count_with_share(value: int, total: int) -> str:
+        percentage = value / total * 100 if total > 0 else 0
+        return f"{value} ({percentage:.0f}%)"
+
+    def icon_cell(icon_sha256: str | None) -> str:
+        source = (icon_data_urls or {}).get(icon_sha256 or "")
+        if not source:
+            return '<td width="16"></td>'
+        return f'<td width="16" align="center"><img src="{source}" width="14" height="14"></td>'
+
+    header = (
+        "<tr>"
+        '<td width="16"></td>'
+        '<th align="left"><font color="#a0a0a0">app</font></th>'
+        '<th align="right"><font color="#a0a0a0">input</font></th>'
+        '<th align="right"><font color="#a0a0a0">activity</font></th>'
+        '<th align="left"><font color="#a0a0a0">status</font></th>'
+        '<th align="left"><font color="#a0a0a0">attribution</font></th>'
+        "</tr>"
     )
     rows: list[str] = []
     for geometry in components[:8]:
@@ -200,10 +235,10 @@ def activity_tooltip_html(
             state = "interval"
         rows.append(
             "<tr>"
-            f'<td><font color="{component.color.hex_rgb}">●</font></td>'
+            f"{icon_cell(component.icon_sha256)}"
             f'<td style="white-space: nowrap;"><b>{escape(component.display_name)}</b></td>'
-            f'<td style="white-space: nowrap;">{direct} input</td>'
-            f'<td style="white-space: nowrap;">{non_direct} activity</td>'
+            f'<td align="right" style="white-space: nowrap;">{count_with_share(direct, direct_total)}</td>'
+            f'<td align="right" style="white-space: nowrap;">{count_with_share(non_direct, activity_total)}</td>'
             f'<td style="white-space: nowrap;">{state}</td>'
             f'<td style="white-space: nowrap;">{component.confidence_milli / 10:.0f}%</td>'
             "</tr>"
@@ -211,20 +246,22 @@ def activity_tooltip_html(
     if global_record is not None:
         residual = global_record.unattributed_direct_input_count + global_record.unattributed_non_direct_activity_count
         reasons = ", ".join(
-            f"{reason.signal_kind}:{escape(reason.reason)}={reason.count}"
+            f"{'input' if reason.signal_kind == 'direct_input' else 'activity'}: "
+            f"{escape(reason.reason.replace('_', ' '))} ({reason.count})"
             for reason in global_record.unattributed_reason_counts
+            if reason.count > 0
         )
         rows.append(
             "<tr>"
-            '<td><font color="#a0a0a0">◆</font></td>'
+            '<td width="16"></td>'
             '<td style="white-space: nowrap;"><b>Global</b></td>'
-            f'<td style="white-space: nowrap;">{global_record.direct_input_count} input</td>'
-            f'<td style="white-space: nowrap;">{global_record.non_direct_activity_count} activity</td>'
+            f'<td align="right" style="white-space: nowrap;">{count_with_share(global_record.direct_input_count, direct_total)}</td>'
+            f'<td align="right" style="white-space: nowrap;">{count_with_share(global_record.non_direct_activity_count, activity_total)}</td>'
             f'<td style="white-space: nowrap;">{residual} residual</td>'
             f'<td style="white-space: nowrap;">{reasons or "fully attributed"}</td>'
             "</tr>"
         )
-    return f'<table cellspacing="3" cellpadding="3">{"".join(rows)}</table>' if rows else ""
+    return f'<table cellspacing="3" cellpadding="3">{header}{"".join(rows)}</table>' if rows else ""
 
 
 def ruler_label_x(
@@ -466,9 +503,7 @@ def render_activity_image(
                     if sample.direct_level <= 0:
                         continue
                     next_x = (
-                        geometry.envelope[index + 1].pixel
-                        if index + 1 < len(geometry.envelope)
-                        else sample.pixel + 1
+                        geometry.envelope[index + 1].pixel if index + 1 < len(geometry.envelope) else sample.pixel + 1
                     )
                     painter.fillRect(
                         QRectF(sample.pixel, baseline - 1.5, max(next_x - sample.pixel, 1), 3.0),
@@ -837,6 +872,7 @@ class DensityOverlay(QFrame):
         self.timeline_stages: list[TimelineStage] = []
         self.timeline_layouts: list[StageLayout] = []
         self.icon_bytes: dict[str, bytes] = {}
+        self.tooltip_icon_data_urls: dict[str, str] = {}
         self.activity_data: ActivityTimelineData | None = None
         self.activity_layout: ActivityLayoutSnapshot | None = None
         self.activity_image: QImage | None = None
@@ -857,6 +893,10 @@ class DensityOverlay(QFrame):
     ) -> None:
         self.timeline_stages = stages
         self.icon_bytes = icon_bytes
+        self.tooltip_icon_data_urls = {
+            icon_hash: f"data:image/png;base64,{base64.b64encode(payload).decode('ascii')}"
+            for icon_hash, payload in icon_bytes.items()
+        }
         self.activity_data = activity_data
         self.activity_layout = activity_layout
         self.activity_image = activity_image
@@ -899,7 +939,12 @@ class DensityOverlay(QFrame):
         )
 
     def activity_tooltip_at(self, bucket: int) -> str:
-        return activity_tooltip_html(self.activity_layout, self.activity_data, bucket)
+        return activity_tooltip_html(
+            self.activity_layout,
+            self.activity_data,
+            bucket,
+            self.tooltip_icon_data_urls,
+        )
 
     @override
     def resizeEvent(self, a0: QResizeEvent | None) -> None:
@@ -1414,7 +1459,7 @@ class FetchWorker(QThread):
                         icon_hashes = {
                             geometry.component.icon_sha256
                             for geometry in activity_layout.components
-                            if geometry.icon is not None and geometry.component.icon_sha256
+                            if geometry.component.icon_sha256
                         }
                     else:
                         stages = build_timeline_stages(list(activity_data.app_records), len(raw_buckets))

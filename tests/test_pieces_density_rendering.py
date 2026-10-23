@@ -46,20 +46,36 @@ def _fixture(width: int = 3_840):
     return records, globals_, build_activity_layout(records, globals_, 1_440, width, 50)
 
 
-def test_activity_tooltip_exposes_app_signals_global_residual_and_reason():
+def test_activity_tooltip_is_a_labeled_icon_table_with_signal_shares_and_nonzero_reasons():
     records = (app_minute(3, direct=2, non_direct=5, color=0x204060),)
-    reason = UnattributedReasonCount("non_direct_activity", "missing_app_identity", 2)
-    globals_ = (GlobalMinuteRecord(3, 3, 7, 2, 5, 1, 2, (reason,)),)
+    reasons = (
+        UnattributedReasonCount("non_direct_activity", "missing_app_identity", 2),
+        UnattributedReasonCount("non_direct_activity", "already_accounted_for", 0),
+    )
+    globals_ = (GlobalMinuteRecord(3, 3, 7, 2, 5, 1, 2, reasons),)
     data = ActivityTimelineData(records, globals_, 2)
     layout = build_activity_layout(records, globals_, 10, 500, 50)
+    icon_hash = records[0].icon_sha256
+    assert icon_hash is not None
 
-    tooltip = activity_tooltip_html(layout, data, 3)
+    tooltip = activity_tooltip_html(layout, data, 3, {icon_hash: "data:image/png;base64,AAAA"})
 
+    assert "app" in tooltip
+    assert "input" in tooltip
+    assert "activity" in tooltip
+    assert "status" in tooltip
+    assert "attribution" in tooltip
     assert "app:code" in tooltip
-    assert "2 input" in tooltip
-    assert "5 activity" in tooltip
+    assert '<img src="data:image/png;base64,AAAA"' in tooltip
+    assert "●" not in tooltip
+    assert "◆" not in tooltip
+    assert "2 (67%)" in tooltip
+    assert "5 (71%)" in tooltip
+    assert "3 (100%)" in tooltip
+    assert "7 (100%)" in tooltip
     assert "3 residual" in tooltip
-    assert "missing_app_identity=2" in tooltip
+    assert "activity: missing app identity (2)" in tooltip
+    assert "already accounted for" not in tooltip
 
 
 def test_worker_raster_contains_global_direct_and_non_direct_channels():
