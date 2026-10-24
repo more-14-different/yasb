@@ -109,6 +109,18 @@ def selected_session_index(sessions: list[float], selected_start: float | None) 
     )
 
 
+def session_snapshot_is_current(
+    sessions: list[float],
+    selected_start: float | None,
+    snapshot_start: float,
+    has_interval: bool,
+) -> bool:
+    index = selected_session_index(sessions, selected_start)
+    if index is None:
+        return not has_interval
+    return has_interval and abs(sessions[index] - snapshot_start) < 0.001
+
+
 def format_compact_date(value: datetime, include_year: bool = False) -> str:
     """Format a date without padding month or day with a leading zero."""
     if include_year:
@@ -1748,6 +1760,20 @@ class PiecesDensityWidget(BaseWidget):
         # Discard stale result: time source was toggled while the worker was running.
         # The next timer tick will re-fetch with the correct source.
         if TimeSource.parse(snapshot.source_value) is not self._time_source:
+            return
+
+        sessions = self._session_manager.get_sessions(self._time_source)
+        if not self._session_manager.last_error and not session_snapshot_is_current(
+            sessions,
+            self._selected_session_start,
+            snapshot.start_time,
+            snapshot.has_interval,
+        ):
+            logging.info(
+                "Discarding stale pieces interval snapshot start=%s; sessions changed while fetching",
+                snapshot.start_time,
+            )
+            self.request_refresh()
             return
 
         self._controls_left.update_buttons()

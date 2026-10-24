@@ -24,6 +24,7 @@ from core.widgets.yasb.pieces_density import (  # noqa: E402
     ruler_label_baseline,
     ruler_label_x,
     selected_session_index,
+    session_snapshot_is_current,
 )
 from core.widgets.yasb.pieces_density_icons import IconByteCache, icon_asset_path  # noqa: E402
 from core.widgets.yasb.pieces_density_source import (  # noqa: E402
@@ -143,6 +144,17 @@ class SessionSelectionTests(unittest.TestCase):
 
     def test_none_always_selects_latest_session(self):
         self.assertEqual(selected_session_index([100.0, 200.0, 300.0], None), 2)
+
+    def test_auto_follow_rejects_snapshot_when_a_new_latest_session_appears(self):
+        self.assertFalse(session_snapshot_is_current([100.0, 200.0], None, 100.0, True))
+        self.assertTrue(session_snapshot_is_current([100.0, 200.0], None, 200.0, True))
+
+    def test_explicit_historical_selection_survives_a_new_latest_session(self):
+        self.assertTrue(session_snapshot_is_current([100.0, 200.0, 300.0], 200.0, 200.0, True))
+
+    def test_no_interval_snapshot_becomes_stale_when_first_session_appears(self):
+        self.assertTrue(session_snapshot_is_current([], None, 0.0, False))
+        self.assertFalse(session_snapshot_is_current([100.0], None, 0.0, False))
 
 
 class CompactTimeFormatTests(unittest.TestCase):
@@ -631,7 +643,7 @@ class AppTimelineSourceTests(unittest.TestCase):
                     "0,0,0,0,0,0,0,0,0,0,45000,'passive',925,'exact');"
                     "insert into timeline_global_minutes_v2 values "
                     "('2026-07-19T10:01:00Z',3,7,2,5,1,2,"
-                    "'{\"direct_input:missing_app_identity\":1,\"non_direct_activity:missing_app_identity\":2}');"
+                    '\'{"direct_input:missing_app_identity":1,"non_direct_activity:missing_app_identity":2}\');'
                     "insert into app_icon_versions values ('app:code', "
                     "'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', null, 2121983, 1);"
                 )
@@ -646,9 +658,7 @@ class AppTimelineSourceTests(unittest.TestCase):
             self.assertEqual(data.contract_version, 2)
             self.assertEqual(len(data.app_records), 2)
             code = next(record for record in data.app_records if record.canonical_app_id == "app:code")
-            focus_only = next(
-                record for record in data.app_records if record.canonical_app_id == "app:terminal"
-            )
+            focus_only = next(record for record in data.app_records if record.canonical_app_id == "app:terminal")
             self.assertEqual(code.direct_event_count, 2)
             self.assertEqual(code.engaged_score_milli, 9000)
             self.assertEqual(code.engaged_milliseconds, 3000)
@@ -697,9 +707,7 @@ class AppTimelineSourceTests(unittest.TestCase):
                 {record.canonical_app_id for record in fallback.app_records},
                 {"app:legacy", "app:terminal", "app:code"},
             )
-            legacy = next(
-                record for record in fallback.app_records if record.canonical_app_id == "app:legacy"
-            )
+            legacy = next(record for record in fallback.app_records if record.canonical_app_id == "app:legacy")
             self.assertEqual(legacy.projection_kind, "historical_approx")
             self.assertEqual(legacy.foreground_milliseconds, 0)
 
