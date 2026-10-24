@@ -61,18 +61,19 @@ def test_activity_tooltip_moves_global_totals_to_header_and_keeps_app_shares():
     tooltip = activity_tooltip_html(layout, data, 3, {icon_hash: "data:image/png;base64,AAAA"})
 
     assert "app" in tooltip
-    assert "3 input" in tooltip
-    assert "7 activity" in tooltip
+    assert '<font color="#ffffff">3</font>' in tooltip
+    assert '<font color="#ffffff">7</font>' in tooltip
     assert "status" in tooltip
     assert "attribution" in tooltip
-    assert tooltip.count('<th align="left" style="white-space: nowrap;">') == 3
+    assert tooltip.count('<th align="left" style="white-space: nowrap;">') == 5
     assert tooltip.count('<th align="right" style="white-space: nowrap;">') == 2
     assert "app:code" in tooltip
-    assert '<img src="data:image/png;base64,AAAA"' in tooltip
+    assert '<td width="16" align="center" valign="middle">' in tooltip
+    assert '<img src="data:image/png;base64,AAAA" width="14" height="14" style="vertical-align: middle;">' in tooltip
     assert "●" not in tooltip
     assert "◆" not in tooltip
-    assert "2 (67%)" in tooltip
-    assert "5 (71%)" in tooltip
+    assert '>2</td><td align="left" style="white-space: nowrap;">(67%)<' in tooltip
+    assert '>5</td><td align="left" style="white-space: nowrap;">(71%)<' in tooltip
     assert "(100%)" not in tooltip
     assert "<b>Global</b>" not in tooltip
     assert "residual" not in tooltip

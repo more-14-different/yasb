@@ -199,24 +199,33 @@ def activity_tooltip_html(
         else sum(record.non_direct_activity_count for record in app_records.values())
     )
 
-    def count_with_share(value: int, total: int) -> str:
+    def count_cells_with_share(value: int, total: int) -> str:
         percentage = value / total * 100 if total > 0 else 0
-        return f"{value} ({percentage:.0f}%)"
+        return (
+            f'<td align="right" style="white-space: nowrap;">{value}</td>'
+            f'<td align="left" style="white-space: nowrap;">({percentage:.0f}%)</td>'
+        )
 
     def icon_cell(icon_sha256: str | None) -> str:
         source = (icon_data_urls or {}).get(icon_sha256 or "")
         if not source:
             return '<td width="16"></td>'
-        return f'<td width="16" align="center"><img src="{source}" width="14" height="14"></td>'
+        return (
+            '<td width="16" align="center" valign="middle">'
+            f'<img src="{source}" width="14" height="14" style="vertical-align: middle;">'
+            "</td>"
+        )
 
-    input_header = f"{global_record.direct_input_count} input" if global_record is not None else "input"
-    activity_header = f"{global_record.non_direct_activity_count} activity" if global_record is not None else "activity"
+    input_header_count = str(global_record.direct_input_count) if global_record is not None else ""
+    activity_header_count = str(global_record.non_direct_activity_count) if global_record is not None else ""
     header = (
         "<tr>"
         '<td width="16"></td>'
         '<th align="left" style="white-space: nowrap;"><font color="#a0a0a0">app</font></th>'
-        f'<th align="right" style="white-space: nowrap;"><font color="#a0a0a0">{input_header}</font></th>'
-        f'<th align="right" style="white-space: nowrap;"><font color="#a0a0a0">{activity_header}</font></th>'
+        f'<th align="right" style="white-space: nowrap;"><font color="#ffffff">{input_header_count}</font></th>'
+        '<th align="left" style="white-space: nowrap;"><font color="#a0a0a0">input</font></th>'
+        f'<th align="right" style="white-space: nowrap;"><font color="#ffffff">{activity_header_count}</font></th>'
+        '<th align="left" style="white-space: nowrap;"><font color="#a0a0a0">activity</font></th>'
         '<th align="left" style="white-space: nowrap;"><font color="#a0a0a0">status</font></th>'
         '<th align="left" style="white-space: nowrap;"><font color="#a0a0a0">attribution</font></th>'
         "</tr>"
@@ -239,8 +248,8 @@ def activity_tooltip_html(
             "<tr>"
             f"{icon_cell(component.icon_sha256)}"
             f'<td style="white-space: nowrap;"><b>{escape(component.display_name)}</b></td>'
-            f'<td align="right" style="white-space: nowrap;">{count_with_share(direct, direct_total)}</td>'
-            f'<td align="right" style="white-space: nowrap;">{count_with_share(non_direct, activity_total)}</td>'
+            f"{count_cells_with_share(direct, direct_total)}"
+            f"{count_cells_with_share(non_direct, activity_total)}"
             f'<td style="white-space: nowrap;">{state}</td>'
             f'<td style="white-space: nowrap;">{component.confidence_milli / 10:.0f}%</td>'
             "</tr>"
