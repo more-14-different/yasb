@@ -40,7 +40,13 @@ from core.widgets.yasb.pieces_density_activity import (
     ActivityLayoutSnapshot,
     build_activity_layout,
 )
-from core.widgets.yasb.pieces_density_icons import IconByteCache, ImageLru, PixmapLru
+from core.widgets.yasb.pieces_density_icons import (
+    IconByteCache,
+    ImageLru,
+    PixmapLru,
+    surface_icon_png,
+    surface_icon_variant_key,
+)
 from core.widgets.yasb.pieces_density_source import (
     ActivityTimelineData,
     AppTimelineCache,
@@ -223,8 +229,10 @@ def activity_tooltip_html(
             f'<td align="left" style="white-space: nowrap;"><font color="#a0a0a0">({percentage:.0f}%)</font></td>'
         )
 
-    def icon_cell(icon_sha256: str | None) -> str:
-        source = (icon_data_urls or {}).get(icon_sha256 or "")
+    def icon_cell(icon_sha256: str | None, surface_kind: str) -> str:
+        icon_hash = icon_sha256 or ""
+        source = (icon_data_urls or {}).get(surface_icon_variant_key(icon_hash, surface_kind))
+        source = source or (icon_data_urls or {}).get(icon_hash)
         if not source:
             return '<td width="16"></td>'
         return (
@@ -263,7 +271,7 @@ def activity_tooltip_html(
             state = "interval"
         rows.append(
             "<tr>"
-            f"{icon_cell(component.icon_sha256)}"
+            f"{icon_cell(component.icon_sha256, component.surface_kind)}"
             f'<td style="white-space: nowrap;"><font color="#ffffff"><b>{escape(component.display_name)}</b></font></td>'
             f"{count_cells_with_share(direct, direct_total)}"
             f"{count_cells_with_share(non_direct, activity_total)}"
@@ -556,7 +564,13 @@ def render_activity_image(
         payload = icon_bytes.get(icon_hash)
         if payload is None:
             continue
-        icon_image = _ICON_IMAGE_CACHE.get_or_prepare(icon_hash, payload, icon.size, dpr)
+        icon_image = _ICON_IMAGE_CACHE.get_or_prepare(
+            icon_hash,
+            payload,
+            icon.size,
+            dpr,
+            geometry.component.surface_kind,
+        )
         if icon_image is None:
             continue
         painter.setOpacity(icon.opacity)
@@ -916,6 +930,24 @@ class DensityOverlay(QFrame):
             icon_hash: f"data:image/png;base64,{base64.b64encode(payload).decode('ascii')}"
             for icon_hash, payload in icon_bytes.items()
         }
+        if activity_layout is not None:
+            variants = {
+                (component.component.icon_sha256, component.component.surface_kind)
+                for component in activity_layout.components
+                if component.component.icon_sha256
+            }
+            for icon_hash, surface_kind in variants:
+                assert icon_hash is not None
+                payload = icon_bytes.get(icon_hash)
+                if payload is None:
+                    continue
+                variant = surface_icon_png(payload, surface_kind)
+                if variant is None:
+                    continue
+                key = surface_icon_variant_key(icon_hash, surface_kind)
+                self.tooltip_icon_data_urls[key] = (
+                    f"data:image/png;base64,{base64.b64encode(variant).decode('ascii')}"
+                )
         self.activity_data = activity_data
         self.activity_layout = activity_layout
         self.activity_image = activity_image

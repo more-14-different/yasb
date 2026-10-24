@@ -702,10 +702,28 @@ def query_activity_timeline(
         if has_v2 and has_legacy_gap:
             if global_records:
                 exact_buckets = {record.bucket for record in global_records}
+                surface_records_by_parent: dict[
+                    tuple[int, str], list[tuple[tuple[int, str], AppMinuteRecord]]
+                ] = {}
+                for record_key, candidate in records.items():
+                    surface_records_by_parent.setdefault(
+                        (candidate.bucket, candidate.canonical_app_id),
+                        [],
+                    ).append((record_key, candidate))
                 for key, legacy in legacy_records.items():
                     if legacy.bucket in exact_buckets:
                         continue
-                    focus = records.get(key)
+                    matches = surface_records_by_parent.get(
+                        (legacy.bucket, legacy.canonical_app_id),
+                        [],
+                    )
+                    focus = max(
+                        (candidate for _, candidate in matches),
+                        key=lambda item: item.foreground_milliseconds,
+                        default=None,
+                    )
+                    for record_key, _ in matches:
+                        records.pop(record_key)
                     legacy = replace(
                         legacy,
                         foreground_milliseconds=0,

@@ -53,6 +53,7 @@ class ActivityComponent:
     component_id: str
     app_id: str
     display_name: str
+    surface_kind: str
     icon_sha256: str | None
     color: AppColor
     start_bucket: int
@@ -218,6 +219,7 @@ def _component_from_run(
         component_id=f"{app_id}:{start_bucket}:{end_bucket}",
         app_id=app_id,
         display_name=latest.display_name,
+        surface_kind=latest.surface_kind,
         icon_sha256=icon_sha256,
         color=resolve_app_color(latest),
         start_bucket=start_bucket,

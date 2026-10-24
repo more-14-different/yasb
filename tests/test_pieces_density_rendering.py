@@ -1,9 +1,11 @@
+import hashlib
 import math
 import time
 from dataclasses import replace
 from typing import cast
 from unittest.mock import patch
 
+from PyQt6.QtCore import QBuffer, QByteArray, QIODevice
 from PyQt6.QtGui import QImage, QPainter
 from PyQt6.QtWidgets import QApplication
 
@@ -17,6 +19,7 @@ from core.widgets.yasb.pieces_density import (
     render_activity_image,
 )
 from core.widgets.yasb.pieces_density_activity import build_activity_layout
+from core.widgets.yasb.pieces_density_icons import surface_icon_png, surface_icon_variant_key
 from core.widgets.yasb.pieces_density_source import (
     ActivityTimelineData,
     GlobalMinuteRecord,
@@ -90,7 +93,7 @@ def test_activity_tooltip_moves_global_totals_to_header_and_keeps_app_shares():
 def test_activity_tooltip_uses_surface_identity_without_collapsing_parent_app():
     parent_id = "app:explorer"
     desktop = replace(
-        app_minute(3, parent_id, direct=2, non_direct=5, icon=False),
+        app_minute(3, parent_id, direct=2, non_direct=5),
         display_name="Desktop",
         activity_id=f"{parent_id}:desktop",
         surface_kind="desktop",
@@ -98,7 +101,7 @@ def test_activity_tooltip_uses_surface_identity_without_collapsing_parent_app():
         contract_version=3,
     )
     taskbar = replace(
-        app_minute(3, parent_id, direct=3, non_direct=1, icon=False),
+        app_minute(3, parent_id, direct=3, non_direct=1),
         display_name="Taskbar",
         activity_id=f"{parent_id}:taskbar",
         surface_kind="taskbar",
@@ -110,7 +113,17 @@ def test_activity_tooltip_uses_surface_identity_without_collapsing_parent_app():
     data = ActivityTimelineData(records, globals_, 3)
     layout = build_activity_layout(records, globals_, 10, 500, 50)
 
-    tooltip = activity_tooltip_html(layout, data, 3)
+    icon_hash = desktop.icon_sha256
+    assert icon_hash is not None
+    tooltip = activity_tooltip_html(
+        layout,
+        data,
+        3,
+        {
+            surface_icon_variant_key(icon_hash, "desktop"): "data:image/png;base64,DESKTOP",
+            surface_icon_variant_key(icon_hash, "taskbar"): "data:image/png;base64,TASKBAR",
+        },
+    )
 
     assert "<b>Desktop</b>" in tooltip
     assert "<b>Taskbar</b>" in tooltip
@@ -122,6 +135,28 @@ def test_activity_tooltip_uses_surface_identity_without_collapsing_parent_app():
     assert '<font color="#a0a0a0">(60%)</font>' in tooltip
     assert '<font color="#a0a0a0">(83%)</font>' in tooltip
     assert '<font color="#a0a0a0">(17%)</font>' in tooltip
+    assert 'src="data:image/png;base64,DESKTOP"' in tooltip
+    assert 'src="data:image/png;base64,TASKBAR"' in tooltip
+
+
+def test_explorer_surface_icons_have_four_distinct_badges():
+    source = QImage(32, 32, QImage.Format.Format_ARGB32_Premultiplied)
+    source.fill(0xFF2D7D9A)
+    encoded = QByteArray()
+    buffer = QBuffer(encoded)
+    assert buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+    assert source.save(buffer, "PNG")
+    buffer.close()
+    payload = bytes(encoded)
+
+    variants = {
+        kind: surface_icon_png(payload, kind)
+        for kind in ("desktop", "taskbar", "system_tray", "file_explorer")
+    }
+
+    assert all(value is not None and value.startswith(b"\x89PNG\r\n\x1a\n") for value in variants.values())
+    digests = {hashlib.sha256(value).hexdigest() for value in variants.values() if value is not None}
+    assert len(digests) == 4
 
 
 def test_worker_raster_contains_global_direct_and_non_direct_channels():

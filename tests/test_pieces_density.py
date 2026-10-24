@@ -748,6 +748,12 @@ class AppTimelineSourceTests(unittest.TestCase):
                     "insert into timeline_activity_surface_minutes_v1 values "
                     "('2026-07-19T10:00:00Z','app:explorer:desktop','app:explorer','desktop',"
                     "'Desktop','explorer.exe',null,2,0,2,0,0,0,0,1,1,0,45000,'direct',950,'historical_approx');"
+                    "insert into timeline_activity_surface_minutes_v1 values "
+                    "('2026-07-19T10:01:00Z','app:explorer:taskbar','app:explorer','taskbar',"
+                    "'Taskbar','explorer.exe',null,0,0,0,0,0,0,0,0,0,0,30000,'passive',900,'historical_approx');"
+                    "insert into timeline_app_minutes_v1 values "
+                    "('2026-07-19T10:01:00Z','app:explorer','explorer.exe',null,"
+                    "5000,2000,2000,1,'direct',800,'historical_approx');"
                     "insert into timeline_global_minutes_v2 values "
                     "('2026-07-19T10:00:00Z',2,1,2,1,0,0,'{}');"
                 )
@@ -757,16 +763,22 @@ class AppTimelineSourceTests(unittest.TestCase):
 
             start = datetime.fromisoformat("2026-07-19T10:00:00+00:00").timestamp()
             resolved = ResolvedDensitySource(DensitySource.SCREENPIPE_GRAPH, str(database_path), None)
-            data = query_activity_timeline(resolved, start, start, start + 60)
+            data = query_activity_timeline(resolved, start, start, start + 120)
 
             self.assertEqual(data.contract_version, 3)
-            self.assertEqual(len(data.app_records), 1)
-            desktop = data.app_records[0]
+            self.assertEqual(len(data.app_records), 2)
+            desktop = next(record for record in data.app_records if record.bucket == 0)
             self.assertEqual(desktop.activity_id, "app:explorer:desktop")
             self.assertEqual(desktop.canonical_app_id, "app:explorer")
             self.assertEqual(desktop.surface_kind, "desktop")
             self.assertEqual(desktop.display_name, "Desktop")
             self.assertEqual(desktop.parent_display_name, "explorer.exe")
+            historical = next(record for record in data.app_records if record.bucket == 1)
+            self.assertIsNone(historical.activity_id)
+            self.assertEqual(historical.canonical_app_id, "app:explorer")
+            self.assertEqual(historical.direct_input_count, 1)
+            self.assertEqual(historical.foreground_milliseconds, 30000)
+            self.assertEqual(historical.projection_kind, "historical_approx")
 
     def test_v2_malformed_residuals_are_rejected(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
