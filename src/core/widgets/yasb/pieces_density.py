@@ -68,6 +68,7 @@ _ICON_BYTE_CACHE = IconByteCache()
 _ICON_IMAGE_CACHE = ImageLru()
 TIMELINE_MAJOR_TICK_HEIGHT = 10.0
 TIMELINE_ICON_RULER_GAP = 2.0
+GLOBAL_DENSITY_MAX_HEIGHT = 80.0
 HOVER_CURVE_RADIUS_BUCKETS = 5
 APP_HOVER_WHITE_BLEND = 0.55
 
@@ -381,6 +382,11 @@ def density_curve_points(
     return [QPointF(index * step_x, height - value * y_scale) for index, value in enumerate(buckets)]
 
 
+def global_density_top(height: int | float) -> float:
+    """Return the top of the fixed-height global density underlay."""
+    return max(float(height) - GLOBAL_DENSITY_MAX_HEIGHT, 0.0)
+
+
 def smooth_curve_path(points: Sequence[QPointF], start_index: int = 0, end_index: int | None = None) -> QPainterPath:
     path = QPainterPath()
     if not points:
@@ -449,13 +455,15 @@ def render_activity_image(
     painter = QPainter(image)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
     global_height = max(height - TIMELINE_MAJOR_TICK_HEIGHT, 1.0)
+    # The global surface is the underlay. App clouds, ribbons, pins, leaders,
+    # and icons are deliberately painted after it so they always remain above.
     draw_density_heatmap(
         painter,
         density_buckets,
         config,
         layout.width,
         height,
-        density_top=min(layout.band_height, height),
+        density_top=global_density_top(height),
     )
 
     if layout.global_envelope:
@@ -1090,7 +1098,7 @@ class DensityOverlay(QFrame):
             self.buckets,
             self.width(),
             self.height(),
-            min(layout.band_height, self.height()),
+            global_density_top(self.height()),
         )
         if len(density_points) == layout.bucket_count:
             painter.strokePath(
@@ -1173,7 +1181,7 @@ class DensityOverlay(QFrame):
             self.hover_idx = None
 
         step_x = w / (n - 1) if n > 1 else w
-        density_top = min(self.config.icon_band_height, h) if self.timeline_layouts else 0
+        density_top = global_density_top(h)
 
         # Draw Hover Highlight (±5 mins)
         if self.hover_idx is not None:

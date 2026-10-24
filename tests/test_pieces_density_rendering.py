@@ -11,6 +11,7 @@ from core.widgets.yasb.pieces_density import (
     DensityOverlay,
     PiecesDensityWidget,
     activity_tooltip_html,
+    global_density_top,
     mix_color_with_white,
     render_activity_image,
 )
@@ -101,8 +102,10 @@ def test_worker_raster_restores_multicolor_smooth_density_surface():
     layout = build_activity_layout([], [], 4, 400, 50)
     image = render_activity_image(layout, [0, 8, 0, 0], {}, PiecesDensityConfig(), 85, 1.0)
 
-    hot = image.pixelColor(133, 52)
-    middle = image.pixelColor(133, 66)
+    assert global_density_top(85) == 5
+    assert image.pixelColor(133, 3).alpha() == 0
+    hot = image.pixelColor(133, 7)
+    middle = image.pixelColor(133, 45)
     cool = image.pixelColor(133, 81)
     assert hot.red() > hot.blue()
     assert middle.red() > middle.blue()
