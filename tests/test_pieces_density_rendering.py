@@ -46,7 +46,7 @@ def _fixture(width: int = 3_840):
     return records, globals_, build_activity_layout(records, globals_, 1_440, width, 50)
 
 
-def test_activity_tooltip_is_a_labeled_icon_table_with_signal_shares_and_nonzero_reasons():
+def test_activity_tooltip_moves_global_totals_to_header_and_keeps_app_shares():
     records = (app_minute(3, direct=2, non_direct=5, color=0x204060),)
     reasons = (
         UnattributedReasonCount("non_direct_activity", "missing_app_identity", 2),
@@ -61,21 +61,23 @@ def test_activity_tooltip_is_a_labeled_icon_table_with_signal_shares_and_nonzero
     tooltip = activity_tooltip_html(layout, data, 3, {icon_hash: "data:image/png;base64,AAAA"})
 
     assert "app" in tooltip
-    assert "input" in tooltip
-    assert "activity" in tooltip
+    assert "3 input" in tooltip
+    assert "7 activity" in tooltip
     assert "status" in tooltip
     assert "attribution" in tooltip
+    assert tooltip.count('<th align="left" style="white-space: nowrap;">') == 3
+    assert tooltip.count('<th align="right" style="white-space: nowrap;">') == 2
     assert "app:code" in tooltip
     assert '<img src="data:image/png;base64,AAAA"' in tooltip
     assert "●" not in tooltip
     assert "◆" not in tooltip
     assert "2 (67%)" in tooltip
     assert "5 (71%)" in tooltip
-    assert "3 (100%)" in tooltip
-    assert "7 (100%)" in tooltip
-    assert "3 residual" in tooltip
-    assert "activity: missing app identity (2)" in tooltip
-    assert "already accounted for" not in tooltip
+    assert "(100%)" not in tooltip
+    assert "<b>Global</b>" not in tooltip
+    assert "residual" not in tooltip
+    assert "missing app identity" not in tooltip
+    assert "fully attributed" not in tooltip
 
 
 def test_worker_raster_contains_global_direct_and_non_direct_channels():

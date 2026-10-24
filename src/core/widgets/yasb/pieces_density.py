@@ -209,14 +209,16 @@ def activity_tooltip_html(
             return '<td width="16"></td>'
         return f'<td width="16" align="center"><img src="{source}" width="14" height="14"></td>'
 
+    input_header = f"{global_record.direct_input_count} input" if global_record is not None else "input"
+    activity_header = f"{global_record.non_direct_activity_count} activity" if global_record is not None else "activity"
     header = (
         "<tr>"
         '<td width="16"></td>'
-        '<th align="left"><font color="#a0a0a0">app</font></th>'
-        '<th align="right"><font color="#a0a0a0">input</font></th>'
-        '<th align="right"><font color="#a0a0a0">activity</font></th>'
-        '<th align="left"><font color="#a0a0a0">status</font></th>'
-        '<th align="left"><font color="#a0a0a0">attribution</font></th>'
+        '<th align="left" style="white-space: nowrap;"><font color="#a0a0a0">app</font></th>'
+        f'<th align="right" style="white-space: nowrap;"><font color="#a0a0a0">{input_header}</font></th>'
+        f'<th align="right" style="white-space: nowrap;"><font color="#a0a0a0">{activity_header}</font></th>'
+        '<th align="left" style="white-space: nowrap;"><font color="#a0a0a0">status</font></th>'
+        '<th align="left" style="white-space: nowrap;"><font color="#a0a0a0">attribution</font></th>'
         "</tr>"
     )
     rows: list[str] = []
@@ -243,25 +245,9 @@ def activity_tooltip_html(
             f'<td style="white-space: nowrap;">{component.confidence_milli / 10:.0f}%</td>'
             "</tr>"
         )
-    if global_record is not None:
-        residual = global_record.unattributed_direct_input_count + global_record.unattributed_non_direct_activity_count
-        reasons = ", ".join(
-            f"{'input' if reason.signal_kind == 'direct_input' else 'activity'}: "
-            f"{escape(reason.reason.replace('_', ' '))} ({reason.count})"
-            for reason in global_record.unattributed_reason_counts
-            if reason.count > 0
-        )
-        rows.append(
-            "<tr>"
-            '<td width="16"></td>'
-            '<td style="white-space: nowrap;"><b>Global</b></td>'
-            f'<td align="right" style="white-space: nowrap;">{count_with_share(global_record.direct_input_count, direct_total)}</td>'
-            f'<td align="right" style="white-space: nowrap;">{count_with_share(global_record.non_direct_activity_count, activity_total)}</td>'
-            f'<td style="white-space: nowrap;">{residual} residual</td>'
-            f'<td style="white-space: nowrap;">{reasons or "fully attributed"}</td>'
-            "</tr>"
-        )
-    return f'<table cellspacing="3" cellpadding="3">{header}{"".join(rows)}</table>' if rows else ""
+    if not rows and global_record is None:
+        return ""
+    return f'<table cellspacing="3" cellpadding="3">{header}{"".join(rows)}</table>'
 
 
 def ruler_label_x(
