@@ -67,13 +67,17 @@ def test_activity_tooltip_moves_global_totals_to_header_and_keeps_app_shares():
     assert "attribution" in tooltip
     assert tooltip.count('<th align="left" style="white-space: nowrap;">') == 5
     assert tooltip.count('<th align="right" style="white-space: nowrap;">') == 2
-    assert "app:code" in tooltip
+    assert '<font color="#ffffff"><b>app:code</b></font>' in tooltip
     assert '<td width="16" align="center" valign="middle">' in tooltip
     assert '<img src="data:image/png;base64,AAAA" width="14" height="14" style="vertical-align: middle;">' in tooltip
     assert "●" not in tooltip
     assert "◆" not in tooltip
-    assert '>2</td><td align="left" style="white-space: nowrap;">(67%)<' in tooltip
-    assert '>5</td><td align="left" style="white-space: nowrap;">(71%)<' in tooltip
+    assert '<font color="#ffffff">2</font>' in tooltip
+    assert '<font color="#ffffff">5</font>' in tooltip
+    assert '<font color="#a0a0a0">(67%)</font>' in tooltip
+    assert '<font color="#a0a0a0">(71%)</font>' in tooltip
+    assert '<font color="#ffffff">direct</font>' in tooltip
+    assert '<font color="#a0a0a0">95%</font>' in tooltip
     assert "(100%)" not in tooltip
     assert "<b>Global</b>" not in tooltip
     assert "residual" not in tooltip

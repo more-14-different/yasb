@@ -202,8 +202,8 @@ def activity_tooltip_html(
     def count_cells_with_share(value: int, total: int) -> str:
         percentage = value / total * 100 if total > 0 else 0
         return (
-            f'<td align="right" style="white-space: nowrap;">{value}</td>'
-            f'<td align="left" style="white-space: nowrap;">({percentage:.0f}%)</td>'
+            f'<td align="right" style="white-space: nowrap;"><font color="#ffffff">{value}</font></td>'
+            f'<td align="left" style="white-space: nowrap;"><font color="#a0a0a0">({percentage:.0f}%)</font></td>'
         )
 
     def icon_cell(icon_sha256: str | None) -> str:
@@ -247,11 +247,11 @@ def activity_tooltip_html(
         rows.append(
             "<tr>"
             f"{icon_cell(component.icon_sha256)}"
-            f'<td style="white-space: nowrap;"><b>{escape(component.display_name)}</b></td>'
+            f'<td style="white-space: nowrap;"><font color="#ffffff"><b>{escape(component.display_name)}</b></font></td>'
             f"{count_cells_with_share(direct, direct_total)}"
             f"{count_cells_with_share(non_direct, activity_total)}"
-            f'<td style="white-space: nowrap;">{state}</td>'
-            f'<td style="white-space: nowrap;">{component.confidence_milli / 10:.0f}%</td>'
+            f'<td style="white-space: nowrap;"><font color="#ffffff">{state}</font></td>'
+            f'<td style="white-space: nowrap;"><font color="#a0a0a0">{component.confidence_milli / 10:.0f}%</font></td>'
             "</tr>"
         )
     if not rows and global_record is None:
