@@ -180,7 +180,11 @@ def activity_tooltip_html(
     if layout is None or data is None:
         return ""
     global_record = next((record for record in data.global_records if record.bucket == bucket), None)
-    app_records = {record.canonical_app_id: record for record in data.app_records if record.bucket == bucket}
+    app_records = {
+        record.activity_id or record.canonical_app_id: record
+        for record in data.app_records
+        if record.bucket == bucket
+    }
     components = [
         geometry
         for geometry in layout.components

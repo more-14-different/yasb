@@ -1,5 +1,6 @@
 import math
 import time
+from dataclasses import replace
 from typing import cast
 from unittest.mock import patch
 
@@ -84,6 +85,43 @@ def test_activity_tooltip_moves_global_totals_to_header_and_keeps_app_shares():
     assert "residual" not in tooltip
     assert "missing app identity" not in tooltip
     assert "fully attributed" not in tooltip
+
+
+def test_activity_tooltip_uses_surface_identity_without_collapsing_parent_app():
+    parent_id = "app:explorer"
+    desktop = replace(
+        app_minute(3, parent_id, direct=2, non_direct=5, icon=False),
+        display_name="Desktop",
+        activity_id=f"{parent_id}:desktop",
+        surface_kind="desktop",
+        parent_display_name="explorer.exe",
+        contract_version=3,
+    )
+    taskbar = replace(
+        app_minute(3, parent_id, direct=3, non_direct=1, icon=False),
+        display_name="Taskbar",
+        activity_id=f"{parent_id}:taskbar",
+        surface_kind="taskbar",
+        parent_display_name="explorer.exe",
+        contract_version=3,
+    )
+    records = (desktop, taskbar)
+    globals_ = (global_minute(3, 5, 6),)
+    data = ActivityTimelineData(records, globals_, 3)
+    layout = build_activity_layout(records, globals_, 10, 500, 50)
+
+    tooltip = activity_tooltip_html(layout, data, 3)
+
+    assert "<b>Desktop</b>" in tooltip
+    assert "<b>Taskbar</b>" in tooltip
+    assert '<font color="#ffffff">2</font>' in tooltip
+    assert '<font color="#ffffff">3</font>' in tooltip
+    assert '<font color="#ffffff">5</font>' in tooltip
+    assert '<font color="#ffffff">1</font>' in tooltip
+    assert '<font color="#a0a0a0">(40%)</font>' in tooltip
+    assert '<font color="#a0a0a0">(60%)</font>' in tooltip
+    assert '<font color="#a0a0a0">(83%)</font>' in tooltip
+    assert '<font color="#a0a0a0">(17%)</font>' in tooltip
 
 
 def test_worker_raster_contains_global_direct_and_non_direct_channels():
