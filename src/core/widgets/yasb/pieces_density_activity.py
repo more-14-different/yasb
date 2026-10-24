@@ -179,7 +179,8 @@ def robust_signal_scale(values: Iterable[int], percentile: float = 0.95) -> Sign
 def resolve_app_color(record: AppMinuteRecord) -> AppColor:
     if record.representative_color_rgb is not None and 0 <= record.representative_color_rgb <= 0xFFFFFF:
         return AppColor(record.representative_color_rgb, "persisted", record.color_algorithm_version)
-    digest = hashlib.sha256(record.canonical_app_id.encode("utf-8")).digest()
+    identity = record.activity_id or record.canonical_app_id
+    digest = hashlib.sha256(identity.encode("utf-8")).digest()
     return AppColor(_HASH_PALETTE[int.from_bytes(digest[:2], "big") % len(_HASH_PALETTE)], "stable_hash", None)
 
 
@@ -264,9 +265,10 @@ def build_activity_components(
     for record in records:
         if cancelled():
             return (), 0
-        rebuild_start = rebuild_starts.get(record.canonical_app_id, rebuild_base)
+        activity_id = record.activity_id or record.canonical_app_id
+        rebuild_start = rebuild_starts.get(activity_id, rebuild_base)
         if 0 <= record.bucket < bucket_count and (changed_from_bucket is None or record.bucket >= rebuild_start):
-            grouped.setdefault(record.canonical_app_id, {})[record.bucket] = record
+            grouped.setdefault(activity_id, {})[record.bucket] = record
 
     components: list[ActivityComponent] = list(reusable_components)
     for app_id in sorted(grouped):

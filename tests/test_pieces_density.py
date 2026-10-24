@@ -711,6 +711,63 @@ class AppTimelineSourceTests(unittest.TestCase):
             self.assertEqual(legacy.projection_kind, "historical_approx")
             self.assertEqual(legacy.foreground_milliseconds, 0)
 
+    def test_v9_query_prefers_activity_surfaces_without_replacing_parent_app_identity(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            database_path = Path(temporary_directory) / "graph.sqlite3"
+            connection = sqlite3.connect(database_path)
+            try:
+                connection.executescript(
+                    "create table graph_schema (singleton integer primary key, version integer);"
+                    "insert into graph_schema values (1, 9);"
+                    "create table source_activity_minutes (minute_start text, effective_frame_count integer, "
+                    "effective_ui_event_count integer, source_pack_sha256 text);"
+                    "create table source_acquisitions (source_pack_sha256 text, observed_at text);"
+                    "create table app_icon_versions (app_id text, icon_sha256 text, valid_to text, "
+                    "representative_color_rgb integer, color_algorithm_version integer);"
+                    "create table timeline_app_minutes_v1 (minute_start text, canonical_app_id text, "
+                    "display_name text, icon_sha256 text, engaged_score_milli integer, "
+                    "engaged_milliseconds integer, foreground_milliseconds integer, direct_event_count integer, "
+                    "interaction_level text, attribution_confidence_milli integer, projection_kind text);"
+                    "create table timeline_app_minutes_v2 (minute_start text, canonical_app_id text, "
+                    "display_name text, icon_sha256 text, direct_input_count integer, key_count integer, "
+                    "click_count integer, scroll_count integer, text_count integer, clipboard_count integer, "
+                    "other_input_count integer, non_direct_activity_count integer, effective_frame_count integer, "
+                    "effective_non_direct_ui_event_count integer, foreground_milliseconds integer, "
+                    "interaction_level text, attribution_confidence_milli integer, projection_kind text);"
+                    "create table timeline_activity_surface_minutes_v1 (minute_start text, activity_id text, "
+                    "canonical_app_id text, surface_kind text, display_name text, parent_display_name text, "
+                    "icon_sha256 text, direct_input_count integer, key_count integer, click_count integer, "
+                    "scroll_count integer, text_count integer, clipboard_count integer, other_input_count integer, "
+                    "non_direct_activity_count integer, effective_frame_count integer, "
+                    "effective_non_direct_ui_event_count integer, foreground_milliseconds integer, "
+                    "interaction_level text, attribution_confidence_milli integer, projection_kind text);"
+                    "create table timeline_global_minutes_v2 (minute_start text, direct_input_count integer, "
+                    "non_direct_activity_count integer, attributed_direct_input_count integer, "
+                    "attributed_non_direct_activity_count integer, unattributed_direct_input_count integer, "
+                    "unattributed_non_direct_activity_count integer, unattributed_reason_counts_json text);"
+                    "insert into timeline_activity_surface_minutes_v1 values "
+                    "('2026-07-19T10:00:00Z','app:explorer:desktop','app:explorer','desktop',"
+                    "'Desktop','explorer.exe',null,2,0,2,0,0,0,0,1,1,0,45000,'direct',950,'historical_approx');"
+                    "insert into timeline_global_minutes_v2 values "
+                    "('2026-07-19T10:00:00Z',2,1,2,1,0,0,'{}');"
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            start = datetime.fromisoformat("2026-07-19T10:00:00+00:00").timestamp()
+            resolved = ResolvedDensitySource(DensitySource.SCREENPIPE_GRAPH, str(database_path), None)
+            data = query_activity_timeline(resolved, start, start, start + 60)
+
+            self.assertEqual(data.contract_version, 3)
+            self.assertEqual(len(data.app_records), 1)
+            desktop = data.app_records[0]
+            self.assertEqual(desktop.activity_id, "app:explorer:desktop")
+            self.assertEqual(desktop.canonical_app_id, "app:explorer")
+            self.assertEqual(desktop.surface_kind, "desktop")
+            self.assertEqual(desktop.display_name, "Desktop")
+            self.assertEqual(desktop.parent_display_name, "explorer.exe")
+
     def test_v2_malformed_residuals_are_rejected(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             database_path = Path(temporary_directory) / "graph.sqlite3"

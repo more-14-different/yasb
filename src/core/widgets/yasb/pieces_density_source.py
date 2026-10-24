@@ -34,6 +34,7 @@ class ScreenpipeGraphFeatures:
     supports_app_timeline_v2: bool = False
     supports_global_timeline_v2: bool = False
     supports_icon_colors: bool = False
+    supports_activity_surface_timeline: bool = False
 
     @property
     def supports_density(self) -> bool:
@@ -86,6 +87,9 @@ class AppMinuteRecord:
     representative_color_rgb: int | None = None
     color_algorithm_version: int | None = None
     contract_version: int = 1
+    activity_id: str | None = None
+    surface_kind: str = "application"
+    parent_display_name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -169,6 +173,12 @@ _GLOBAL_TIMELINE_V2_COLUMNS = {
     "unattributed_direct_input_count",
     "unattributed_non_direct_activity_count",
     "unattributed_reason_counts_json",
+}
+
+_ACTIVITY_SURFACE_COLUMNS = _APP_TIMELINE_V2_COLUMNS | {
+    "activity_id",
+    "surface_kind",
+    "parent_display_name",
 }
 
 _FEATURE_CACHE_MAX_ENTRIES = 16
@@ -311,6 +321,11 @@ def _inspect_screenpipe_graph_features(connection: sqlite3.Connection) -> Screen
         if "timeline_global_minutes_v2" in objects
         else set()
     )
+    surface_columns = (
+        _object_columns(connection, "timeline_activity_surface_minutes_v1")
+        if "timeline_activity_surface_minutes_v1" in objects
+        else set()
+    )
     icon_columns = _object_columns(connection, "app_icon_versions") if "app_icon_versions" in objects else set()
     return ScreenpipeGraphFeatures(
         schema_version=schema_version,
@@ -323,6 +338,7 @@ def _inspect_screenpipe_graph_features(connection: sqlite3.Connection) -> Screen
         supports_app_timeline_v2=_APP_TIMELINE_V2_COLUMNS.issubset(timeline_v2_columns),
         supports_global_timeline_v2=_GLOBAL_TIMELINE_V2_COLUMNS.issubset(global_v2_columns),
         supports_icon_colors={"representative_color_rgb", "color_algorithm_version"}.issubset(icon_columns),
+        supports_activity_surface_timeline=_ACTIVITY_SURFACE_COLUMNS.issubset(surface_columns),
     )
 
 
@@ -512,6 +528,11 @@ def query_activity_timeline(
             records = legacy_records
 
         if has_v2:
+            timeline_object = (
+                "timeline_activity_surface_minutes_v1"
+                if features.supports_activity_surface_timeline
+                else "timeline_app_minutes_v2"
+            )
             color_join = (
                 "left join app_icon_versions color on color.app_id=v2.canonical_app_id "
                 "and color.icon_sha256=v2.icon_sha256 and color.valid_to is null "
@@ -523,9 +544,17 @@ def query_activity_timeline(
                 if features.supports_icon_colors
                 else "null, null "
             )
+            identity_projection = (
+                "v2.activity_id, v2.canonical_app_id, v2.surface_kind, "
+                "v2.display_name, v2.parent_display_name, v2.icon_sha256, "
+                if features.supports_activity_surface_timeline
+                else "v2.canonical_app_id, v2.canonical_app_id, 'application', "
+                "v2.display_name, v2.display_name, v2.icon_sha256, "
+            )
             rows = connection.execute(
                 "select cast((unixepoch(v2.minute_start, 'subsec') - ?) / 60 as integer), "
-                "v2.canonical_app_id, v2.display_name, v2.icon_sha256, "
+                + identity_projection
+                +
                 "v2.direct_input_count * 2000 + v2.non_direct_activity_count * 100, 0, "
                 "v2.foreground_milliseconds, v2.direct_input_count, v2.interaction_level, "
                 "v2.attribution_confidence_milli, v2.direct_input_count, v2.key_count, "
@@ -533,7 +562,7 @@ def query_activity_timeline(
                 "v2.other_input_count, v2.non_direct_activity_count, v2.effective_frame_count, "
                 "v2.effective_non_direct_ui_event_count, v2.projection_kind, "
                 f"{color_projection}"
-                "from timeline_app_minutes_v2 v2 "
+                f"from {timeline_object} v2 "
                 f"{color_join}"
                 "where v2.minute_start >= ? and v2.minute_start < ? "
                 "order by v2.minute_start, v2.direct_input_count desc, "
@@ -541,8 +570,8 @@ def query_activity_timeline(
                 (stream_start, start_text, end_text),
             ).fetchall()
             for row in rows:
-                direct_counts = tuple(int(row[index]) for index in range(10, 17))
-                non_direct_counts = tuple(int(row[index]) for index in range(17, 20))
+                direct_counts = tuple(int(row[index]) for index in range(13, 20))
+                non_direct_counts = tuple(int(row[index]) for index in range(20, 23))
                 if any(value < 0 for value in (*direct_counts, *non_direct_counts)):
                     raise sqlite3.DatabaseError("screenpipe graph contains a negative app activity v2 count")
                 direct, key, click, scroll, text_count, clipboard, other = direct_counts
@@ -551,18 +580,18 @@ def query_activity_timeline(
                     raise sqlite3.DatabaseError("screenpipe graph violates app direct activity v2 conservation")
                 if non_direct != frames + non_direct_ui:
                     raise sqlite3.DatabaseError("screenpipe graph violates app non-direct activity v2 conservation")
-                legacy = legacy_records.get((int(row[0]), str(row[1])))
+                legacy = legacy_records.get((int(row[0]), str(row[2])))
                 record = AppMinuteRecord(
                     bucket=int(row[0]),
-                    canonical_app_id=str(row[1]),
-                    display_name=str(row[2]),
-                    icon_sha256=str(row[3]) if row[3] is not None else None,
-                    engaged_score_milli=(legacy.engaged_score_milli if legacy else int(row[4])),
-                    engaged_milliseconds=(legacy.engaged_milliseconds if legacy else int(row[5])),
-                    foreground_milliseconds=int(row[6]),
-                    direct_event_count=int(row[7]),
-                    interaction_level=str(row[8]),
-                    attribution_confidence_milli=int(row[9]),
+                    canonical_app_id=str(row[2]),
+                    display_name=str(row[4]),
+                    icon_sha256=str(row[6]) if row[6] is not None else None,
+                    engaged_score_milli=(legacy.engaged_score_milli if legacy else int(row[7])),
+                    engaged_milliseconds=(legacy.engaged_milliseconds if legacy else int(row[8])),
+                    foreground_milliseconds=int(row[9]),
+                    direct_event_count=int(row[10]),
+                    interaction_level=str(row[11]),
+                    attribution_confidence_milli=int(row[12]),
                     direct_input_count=direct,
                     key_count=key,
                     click_count=click,
@@ -573,12 +602,19 @@ def query_activity_timeline(
                     non_direct_activity_count=non_direct,
                     effective_frame_count=frames,
                     effective_non_direct_ui_event_count=non_direct_ui,
-                    projection_kind=str(row[20]),
-                    representative_color_rgb=int(row[21]) if row[21] is not None else None,
-                    color_algorithm_version=int(row[22]) if row[22] is not None else None,
-                    contract_version=2,
+                    projection_kind=str(row[23]),
+                    representative_color_rgb=(
+                        int(row[24]) if row[24] is not None and str(row[3]) == "application" else None
+                    ),
+                    color_algorithm_version=(
+                        int(row[25]) if row[25] is not None and str(row[3]) == "application" else None
+                    ),
+                    contract_version=3 if features.supports_activity_surface_timeline else 2,
+                    activity_id=str(row[1]),
+                    surface_kind=str(row[3]),
+                    parent_display_name=str(row[5]),
                 )
-                records[(record.bucket, record.canonical_app_id)] = record
+                records[(record.bucket, record.activity_id or record.canonical_app_id)] = record
 
         global_records: list[GlobalMinuteRecord] = []
         if has_v2:
@@ -647,7 +683,9 @@ def query_activity_timeline(
                         reasons,
                     )
                 )
-        effective_contract_version = 2 if has_v2 else 1
+        effective_contract_version = (
+            3 if has_v2 and features.supports_activity_surface_timeline else 2 if has_v2 else 1
+        )
         global_buckets: set[int] = set()
         if has_v2:
             global_buckets = {record.bucket for record in global_records}
@@ -695,7 +733,7 @@ def query_activity_timeline(
                     -item.direct_input_count,
                     -item.non_direct_activity_count,
                     -item.engaged_score_milli,
-                    item.canonical_app_id,
+                    item.activity_id or item.canonical_app_id,
                 ),
             )
         )
@@ -745,7 +783,13 @@ class AppTimelineCache:
         graph_identity = _graph_identity(resolved.database_path)
         data_version = _graph_data_version(resolved.database_path) if closed_interval else None
         features = inspect_screenpipe_graph_features(resolved.database_path)
-        contract_version = int(features.supports_app_timeline_v2 and features.supports_global_timeline_v2) + 1
+        contract_version = (
+            3
+            if features.supports_app_timeline_v2
+            and features.supports_global_timeline_v2
+            and features.supports_activity_surface_timeline
+            else int(features.supports_app_timeline_v2 and features.supports_global_timeline_v2) + 1
+        )
         key = (
             graph_identity,
             stream_start,
@@ -845,7 +889,7 @@ class AppTimelineCache:
                     -item.direct_input_count,
                     -item.non_direct_activity_count,
                     -item.engaged_score_milli,
-                    item.canonical_app_id,
+                    item.activity_id or item.canonical_app_id,
                 )
             )
             global_records.sort(key=lambda item: item.bucket)
