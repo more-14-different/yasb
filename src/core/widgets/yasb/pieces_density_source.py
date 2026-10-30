@@ -118,6 +118,8 @@ class ActivityTimelineData:
     contract_version: int
     changed_from_bucket: int = 0
     cache_hit: bool = False
+    data_revision: int = 0
+    change_base_revision: int = 0
 
 
 @dataclass
@@ -128,6 +130,7 @@ class _AppCacheEntry:
     complete: bool
     source_watermark: _ScreenpipeWatermark | None = None
     data_version: tuple[int, int, int, int] | None = None
+    revision: int = 1
 
 
 _APP_TIMELINE_COLUMNS = {
@@ -826,6 +829,8 @@ class AppTimelineCache:
                     entry.contract_version,
                     bucket_count,
                     True,
+                    entry.revision,
+                    entry.revision,
                 )
             if cancelled():
                 return ActivityTimelineData((), (), contract_version)
@@ -848,6 +853,8 @@ class AppTimelineCache:
                     entry.contract_version,
                     bucket_count,
                     True,
+                    entry.revision,
+                    entry.revision,
                 )
             if entry and refresh is not None:
                 earliest_changed_minute = refresh.earliest_changed_minute
@@ -869,6 +876,8 @@ class AppTimelineCache:
                         entry.contract_version,
                         bucket_count,
                         True,
+                        entry.revision,
+                        entry.revision,
                     )
                 records = [record for record in entry.records if record.bucket < refresh_bucket]
                 global_records = [record for record in entry.global_records if record.bucket < refresh_bucket]
@@ -911,6 +920,8 @@ class AppTimelineCache:
                 )
             )
             global_records.sort(key=lambda item: item.bucket)
+            base_revision = entry.revision if entry is not None else 0
+            data_revision = base_revision + 1
             self._entries[key] = _AppCacheEntry(
                 records,
                 global_records,
@@ -918,6 +929,7 @@ class AppTimelineCache:
                 closed_interval,
                 watermark,
                 data_version,
+                data_revision,
             )
             while len(self._entries) > self._MAX_ENTRIES:
                 self._entries.pop(next(iter(self._entries)))
@@ -927,6 +939,8 @@ class AppTimelineCache:
                 result_contract_version,
                 refresh_bucket,
                 False,
+                data_revision,
+                base_revision,
             )
 
 

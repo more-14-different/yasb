@@ -95,6 +95,37 @@ class DensityTimelineSnapshot:
     timings_ms: tuple[tuple[str, float], ...] = ()
 
 
+def _activity_layout_update_plan(
+    activity_data: ActivityTimelineData,
+    previous_revision: int,
+    previous: ActivityLayoutSnapshot | None,
+    bucket_count: int,
+    width: int,
+    band_height: float,
+    policy: ActivityLayoutPolicy,
+) -> tuple[bool, ActivityLayoutSnapshot | None, int | None]:
+    """Choose direct reuse, incremental rebuild, or a safe full rebuild.
+
+    The data cache is shared by all monitor widgets, but each widget owns a
+    different layout. A cache hit only describes the shared data entry; it does
+    not prove that this monitor's previous layout was built from that revision.
+    """
+    geometry_matches = (
+        previous is not None
+        and previous.bucket_count == bucket_count
+        and previous.width == width
+        and previous.band_height == band_height
+        and previous.policy == policy
+    )
+    if not geometry_matches:
+        return False, None, None
+    if previous_revision == activity_data.data_revision:
+        return True, previous, None
+    if previous_revision == activity_data.change_base_revision:
+        return False, previous, activity_data.changed_from_bucket
+    return False, None, None
+
+
 class _AnimatedBar(Protocol):
     animation_tick: pyqtBoundSignal
     animation_finished: pyqtBoundSignal
@@ -1345,6 +1376,7 @@ class FetchWorker(QThread):
         layout_height: int = 1,
         layout_dpr: float = 1.0,
         previous_activity_layout: ActivityLayoutSnapshot | None = None,
+        previous_activity_revision: int = 0,
         previous_activity_image: QImage | None = None,
         previous_density_buckets: tuple[int, ...] = (),
     ):
@@ -1361,6 +1393,7 @@ class FetchWorker(QThread):
         self.layout_height = max(layout_height, 1)
         self.layout_dpr = max(layout_dpr, 1.0)
         self.previous_activity_layout = previous_activity_layout
+        self.previous_activity_revision = previous_activity_revision
         self.previous_activity_image = previous_activity_image
         self.previous_density_buckets = previous_density_buckets
         self._is_running = True
@@ -1483,14 +1516,17 @@ class FetchWorker(QThread):
                         )
                         band_height = min(self.config.icon_band_height, icon_bottom)
                         previous = self.previous_activity_layout
-                        if (
-                            activity_data.cache_hit
-                            and previous is not None
-                            and previous.bucket_count == len(raw_buckets)
-                            and previous.width == self.layout_width
-                            and previous.band_height == band_height
-                            and previous.policy == policy
-                        ):
+                        reuse_layout, incremental_previous, changed_from_bucket = _activity_layout_update_plan(
+                            activity_data,
+                            self.previous_activity_revision,
+                            previous,
+                            len(raw_buckets),
+                            self.layout_width,
+                            band_height,
+                            policy,
+                        )
+                        if reuse_layout:
+                            assert previous is not None
                             activity_layout = previous
                             timings.append(("activity_layout", 0.0))
                         else:
@@ -1502,8 +1538,8 @@ class FetchWorker(QThread):
                                 self.layout_width,
                                 band_height,
                                 policy=policy,
-                                previous=previous,
-                                changed_from_bucket=activity_data.changed_from_bucket,
+                                previous=incremental_previous,
+                                changed_from_bucket=changed_from_bucket,
                                 cancelled=lambda: not self._is_running,
                             )
                             timings.append(("activity_layout", (time.perf_counter() - layout_started) * 1000))
@@ -1764,6 +1800,11 @@ class PiecesDensityWidget(BaseWidget):
             self._overlay.height(),
             self._overlay.devicePixelRatioF(),
             self._overlay.activity_layout if same_interval else None,
+            (
+                self._overlay.activity_data.data_revision
+                if same_interval and self._overlay.activity_data is not None
+                else 0
+            ),
             self._overlay.activity_image if same_interval else None,
             tuple(self._overlay.buckets) if same_interval else (),
         )

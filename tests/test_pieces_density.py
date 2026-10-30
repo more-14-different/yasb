@@ -17,6 +17,7 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 from core.widgets.yasb.pieces_density import (  # noqa: E402
     PiecesDensityWidget,
     SessionManager,
+    _activity_layout_update_plan,
     density_tooltip_html,
     format_compact_date,
     format_compact_duration,
@@ -26,8 +27,10 @@ from core.widgets.yasb.pieces_density import (  # noqa: E402
     selected_session_index,
     session_snapshot_is_current,
 )
+from core.widgets.yasb.pieces_density_activity import ActivityLayoutPolicy, build_activity_layout  # noqa: E402
 from core.widgets.yasb.pieces_density_icons import IconByteCache, icon_asset_path  # noqa: E402
 from core.widgets.yasb.pieces_density_source import (  # noqa: E402
+    ActivityTimelineData,
     AppMinuteRecord,
     AppTimelineCache,
     DensityBucketCache,
@@ -579,7 +582,7 @@ class AppTimelineSourceTests(unittest.TestCase):
             start = datetime.fromisoformat("2026-07-19T10:00:00+00:00").timestamp()
             resolved = ResolvedDensitySource(DensitySource.SCREENPIPE_GRAPH, str(database_path), None)
             cache = AppTimelineCache()
-            cache.load_activity(resolved, start, start + 60, False)
+            initial = cache.load_activity(resolved, start, start + 60, False)
             connection = sqlite3.connect(database_path)
             try:
                 connection.executescript(
@@ -599,9 +602,74 @@ class AppTimelineSourceTests(unittest.TestCase):
             ) as query:
                 data = cache.load_activity(resolved, start, start + 120, False)
 
+            follower = cache.load_activity(resolved, start, start + 120, False)
+
             self.assertEqual(query.call_count, 1)
             self.assertEqual(query.call_args.args[2], start + 60)
             self.assertEqual([record.bucket for record in data.app_records], [0, 1])
+            self.assertEqual((initial.data_revision, initial.change_base_revision), (1, 0))
+            self.assertEqual((data.data_revision, data.change_base_revision), (2, 1))
+            self.assertTrue(follower.cache_hit)
+            self.assertEqual((follower.data_revision, follower.change_base_revision), (2, 2))
+
+    def test_monitor_layout_does_not_reuse_a_shared_cache_revision_it_never_rendered(self):
+        def record(bucket: int, app_id: str) -> AppMinuteRecord:
+            return AppMinuteRecord(
+                bucket=bucket,
+                canonical_app_id=app_id,
+                display_name=app_id,
+                icon_sha256=(app_id.encode().hex() + "0" * 64)[:64],
+                engaged_score_milli=2000,
+                engaged_milliseconds=1000,
+                foreground_milliseconds=1000,
+                direct_event_count=1,
+                interaction_level="direct",
+                attribution_confidence_milli=950,
+                direct_input_count=1,
+            )
+
+        original = record(1, "app:code")
+        added = record(10, "app:ghostty")
+        policy = ActivityLayoutPolicy()
+        previous = build_activity_layout([original], [], 12, 240, 60, policy=policy)
+
+        follower_data = ActivityTimelineData(
+            (original, added),
+            (),
+            2,
+            changed_from_bucket=12,
+            cache_hit=True,
+            data_revision=2,
+            change_base_revision=2,
+        )
+        reuse, incremental_previous, changed_from = _activity_layout_update_plan(
+            follower_data,
+            1,
+            previous,
+            12,
+            240,
+            60,
+            policy,
+        )
+
+        self.assertFalse(reuse)
+        self.assertIsNone(incremental_previous)
+        self.assertIsNone(changed_from)
+
+        refreshed = build_activity_layout(
+            follower_data.app_records,
+            follower_data.global_records,
+            12,
+            240,
+            60,
+            policy=policy,
+            previous=incremental_previous,
+            changed_from_bucket=changed_from,
+        )
+        self.assertEqual(
+            {geometry.component.app_id for geometry in refreshed.components},
+            {"app:code", "app:ghostty"},
+        )
 
     def test_v8_query_prefers_conserved_v2_signals_and_allows_focus_only_rows(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
